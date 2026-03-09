@@ -90,6 +90,14 @@ impl JsCodegen {
     }
 
     fn generate_variable(&mut self, v: &VariableStmt) -> Result<(), CodegenError> {
+        self.generate_variable_internal(v, true)
+    }
+
+    fn generate_variable_internal(
+        &mut self,
+        v: &VariableStmt,
+        add_semicolon: bool,
+    ) -> Result<(), CodegenError> {
         let keyword = match v.kind {
             VariableKind::Var => "var",
             VariableKind::Let => "let",
@@ -113,7 +121,9 @@ impl JsCodegen {
                 }
             }
         }
-        self.output.push_str(";\n");
+        if add_semicolon {
+            self.output.push_str(";\n");
+        }
         Ok(())
     }
 
@@ -651,30 +661,44 @@ impl JsCodegen {
 
         if let Some(ref init) = f.init {
             match init {
-                ForInit::Variable(v) => self.generate_variable(v)?,
+                ForInit::Variable(v) => self.generate_variable_internal(v, false)?,
                 ForInit::Expr(e) => self.generate_expression(e)?,
             }
         }
 
-        self.output.push_str("; ");
+        self.output.push_str(";");
 
         if let Some(ref test) = f.test {
+            self.output.push_str(" ");
             self.generate_expression(test)?;
         }
 
-        self.output.push_str("; ");
-
-        if let Some(ref update) = f.update {
-            self.generate_expression(update)?;
+        if f.update.is_some() {
+            self.output.push_str("; ");
+            self.generate_expression(f.update.as_ref().unwrap())?;
         }
 
-        self.output.push_str(") {\n");
+        self.output.push_str(") ");
 
-        self.indent += 1;
-        self.generate_statement(&f.body)?;
-        self.indent -= 1;
-
-        self.output.push_str("}\n");
+        // Generate body
+        match &*f.body {
+            Stmt::Block(b) => {
+                self.output.push_str("{\n");
+                self.indent += 1;
+                for stmt in &b.statements {
+                    self.generate_statement(stmt)?;
+                }
+                self.indent -= 1;
+                self.output.push_str("}\n");
+            }
+            _ => {
+                self.output.push_str("{\n");
+                self.indent += 1;
+                self.generate_statement(&f.body)?;
+                self.indent -= 1;
+                self.output.push_str("}\n");
+            }
+        }
         Ok(())
     }
 

@@ -1468,6 +1468,10 @@ impl Parser {
                     span: 0..10,
                 });
             } else if self.match_one(&[TokenKind::OpenBrace]) {
+                // Check if this is a struct literal (Identifier { key: value }) vs object literal
+                let is_struct_literal = matches!(expr, Expr::Identifier(_));
+
+                // Parse the object properties (key: value pairs)
                 let span_start = self.previous().span.start;
                 let mut properties = Vec::new();
 
@@ -1503,7 +1507,21 @@ impl Parser {
                 let span = span_start..self.previous().span.end;
                 self.expect(TokenKind::CloseBrace)?;
 
-                expr = Expr::Object(ObjectExpression { properties, span });
+                if is_struct_literal {
+                    // Struct literal: Person { x: 10, y: 20 } -> new Person({ x: 10, y: 20 })
+                    let obj_expr = Expr::Object(ObjectExpression {
+                        properties,
+                        span: span.clone(),
+                    });
+                    expr = Expr::New(NewExpr {
+                        callee: Box::new(expr),
+                        arguments: vec![ExprOrSpread::Expr(obj_expr)],
+                        span,
+                    });
+                } else {
+                    // Regular object literal
+                    expr = Expr::Object(ObjectExpression { properties, span });
+                }
             } else {
                 break;
             }
