@@ -113,7 +113,7 @@ mod type_checking {
     #[test]
     fn validates_function_call() {
         // Assign
-        let source = "function foo() { console.log('test'); }";
+        let source = "function foo(): void { console.log('test'); }";
         let ast = parse(source).unwrap();
         let mut checker = TypeChecker::new();
 
@@ -303,7 +303,7 @@ mod function_type_checking {
     #[test]
     fn validates_function_body_statements() {
         // Assign
-        let source = "function foo() { const x = 1; const y = 2; return x + y; }";
+        let source = "function foo(): number { const x = 1; const y = 2; return x + y; }";
         let ast = parse(source).unwrap();
         let mut checker = TypeChecker::new();
 

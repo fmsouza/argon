@@ -79,7 +79,7 @@ mod function_parsing {
     #[test]
     fn parses_function_declaration() {
         // Assign
-        let source = "function add(a, b) { return a + b; }";
+        let source = "function add(a: number, b: number): number { return a + b; }";
 
         // Act
         let result = parse(source);
@@ -124,7 +124,7 @@ mod function_parsing {
     #[test]
     fn parses_empty_function_body() {
         // Assign
-        let source = "function empty() { }";
+        let source = "function empty(): void { }";
 
         // Act
         let result = parse(source);
@@ -136,7 +136,7 @@ mod function_parsing {
     #[test]
     fn parses_function_with_multiple_statements() {
         // Assign
-        let source = "function foo() { const x = 1; const y = 2; return x + y; }";
+        let source = "function foo(): number { const x = 1; const y = 2; return x + y; }";
 
         // Act
         let result = parse(source);
@@ -376,7 +376,7 @@ mod return_statement_parsing {
     #[test]
     fn parses_return_with_value() {
         // Assign
-        let source = "function foo() { return 42; }";
+        let source = "function foo(): number { return 42; }";
 
         // Act
         let result = parse(source);
@@ -388,7 +388,7 @@ mod return_statement_parsing {
     #[test]
     fn parses_return_without_value() {
         // Assign
-        let source = "function foo() { return; }";
+        let source = "function foo(): void { return; }";
 
         // Act
         let result = parse(source);
@@ -566,7 +566,7 @@ mod multiple_statements_parsing {
     #[test]
     fn parses_mixed_declarations() {
         // Assign
-        let source = "const x = 1; function foo() { } const y = 2;";
+        let source = "const x = 1; function foo(): void { } const y = 2;";
 
         // Act
         let result = parse(source);

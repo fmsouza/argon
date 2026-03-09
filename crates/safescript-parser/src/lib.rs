@@ -14,6 +14,13 @@ pub enum ParseError {
     Parser(String),
     UnexpectedToken(String),
     ExpectedToken(String, usize),
+    MissingParameterType {
+        param_name: String,
+        func_name: String,
+    },
+    MissingReturnType {
+        func_name: String,
+    },
 }
 
 impl std::fmt::Display for ParseError {
@@ -24,6 +31,23 @@ impl std::fmt::Display for ParseError {
             ParseError::UnexpectedToken(msg) => write!(f, "Unexpected token: {}", msg),
             ParseError::ExpectedToken(msg, pos) => {
                 write!(f, "Expected {} at position {}", msg, pos)
+            }
+            ParseError::MissingParameterType {
+                param_name,
+                func_name,
+            } => {
+                write!(
+                    f,
+                    "Parameter '{}' in function '{}' is missing type annotation. Example: {}: number",
+                    param_name, func_name, param_name
+                )
+            }
+            ParseError::MissingReturnType { func_name } => {
+                write!(
+                    f,
+                    "Function '{}' is missing return type annotation. Example: function {}(): number {{ ... }}",
+                    func_name, func_name
+                )
             }
         }
     }
@@ -52,6 +76,24 @@ impl ParseError {
             .with_label(
                 DiagnosticLabel::new(*pos..*pos + 1).with_message(format!("expected {}", msg)),
             ),
+            ParseError::MissingParameterType { param_name, func_name } => Diagnostic::new(
+                source_id.to_string(),
+                0..10,
+                format!(
+                    "Parameter '{}' in function '{}' is missing type annotation. Example: {}: number",
+                    param_name, func_name, param_name
+                ),
+            )
+            .with_code("P003".to_string()),
+            ParseError::MissingReturnType { func_name } => Diagnostic::new(
+                source_id.to_string(),
+                0..10,
+                format!(
+                    "Function '{}' is missing return type annotation. Example: function {}(): number {{ ... }}",
+                    func_name, func_name
+                ),
+            )
+            .with_code("P004".to_string()),
         }
     }
 
@@ -218,6 +260,33 @@ impl Parser {
         }))
     }
 
+    fn validate_function_types(
+        &self,
+        params: &[safescript_ast::Param],
+        return_type: &Option<Box<safescript_ast::Type>>,
+        func_name: &str,
+        is_constructor: bool,
+    ) -> Result<(), ParseError> {
+        for param in params {
+            if let safescript_ast::Pattern::Identifier(id) = &param.pat {
+                if id.type_annotation.is_none() {
+                    return Err(ParseError::MissingParameterType {
+                        param_name: id.name.sym.clone(),
+                        func_name: func_name.to_string(),
+                    });
+                }
+            }
+        }
+
+        if !is_constructor && return_type.is_none() {
+            return Err(ParseError::MissingReturnType {
+                func_name: func_name.to_string(),
+            });
+        }
+
+        Ok(())
+    }
+
     fn parse_function(&mut self) -> Result<safescript_ast::Stmt, ParseError> {
         use safescript_ast::*;
 
@@ -258,6 +327,9 @@ impl Parser {
         } else {
             None
         };
+
+        let func_name = id.sym.clone();
+        self.validate_function_types(&params, &return_type, &func_name, false)?;
 
         let borrow_annotation = self.parse_borrow_annotation()?;
 
@@ -327,6 +399,8 @@ impl Parser {
         } else {
             None
         };
+
+        self.validate_function_types(&params, &return_type, "anonymous", false)?;
 
         let body = if self.match_one(&[TokenKind::OpenBrace]) {
             self.current -= 1;
@@ -878,6 +952,9 @@ impl Parser {
         }
 
         self.expect(TokenKind::CloseParen)?;
+
+        self.validate_function_types(&params, &None, "constructor", true)?;
+
         let body = match self.parse_statement()? {
             Stmt::Block(b) => b,
             _ => {
@@ -935,6 +1012,12 @@ impl Parser {
         } else {
             None
         };
+
+        let method_name = match &key {
+            safescript_ast::Expr::Identifier(id) => id.sym.clone(),
+            _ => "method".to_string(),
+        };
+        self.validate_function_types(&params, &return_type, &method_name, false)?;
 
         // Parse borrow annotation (e.g., "with &mut this")
         let borrow_annotation = self.parse_borrow_annotation()?;

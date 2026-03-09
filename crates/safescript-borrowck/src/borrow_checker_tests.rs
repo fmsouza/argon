@@ -39,7 +39,7 @@ mod ownership_tracking {
     #[test]
     fn tracks_function_parameters_as_owned() {
         // Assign
-        let source = "function foo(x: i32) { const y = x; }";
+        let source = "function foo(x: i32): number { const y = x; }";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
 
@@ -177,7 +177,7 @@ mod function_checking {
     #[test]
     fn checks_function_with_local_variables() {
         // Assign
-        let source = "function foo() { const x = 1; const y = 2; return x + y; }";
+        let source = "function foo(): number { const x = 1; const y = 2; return x + y; }";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
 
@@ -632,7 +632,7 @@ mod return_statement_checking {
     #[test]
     fn checks_return_with_value() {
         // Assign
-        let source = "function foo() { return 42; }";
+        let source = "function foo(): number { return 42; }";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
 
@@ -646,7 +646,7 @@ mod return_statement_checking {
     #[test]
     fn checks_return_without_value() {
         // Assign
-        let source = "function foo() { return; }";
+        let source = "function foo(): void { return; }";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
 
