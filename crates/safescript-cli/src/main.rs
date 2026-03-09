@@ -2,6 +2,7 @@
 
 use safescript_borrowck::BorrowChecker;
 use safescript_codegen_js::{generate_type_declarations, JsCodegen};
+use safescript_codegen_wasm::WasmCodegen;
 use safescript_parser::parse;
 use safescript_runtime::execute_ast;
 use safescript_types::TypeChecker;
@@ -127,7 +128,33 @@ fn compile(
             println!("Wrote {}", dts_path.display());
         }
     } else if target == "wasm" {
-        println!("WASM generation not yet implemented");
+        println!("Generating WebAssembly...");
+        let mut codegen = WasmCodegen::new();
+        match codegen.generate_from_ast(&ast) {
+            Ok(wasm_bytes) => {
+                let output_path = output
+                    .map(|p| p.clone())
+                    .unwrap_or_else(|| PathBuf::from("output.wasm"));
+                fs::write(&output_path, &wasm_bytes)?;
+                println!("Wrote {}", output_path.display());
+
+                match wasmprinter::print_bytes(&wasm_bytes) {
+                    Ok(wat) => {
+                        let wat_path = output_path.with_extension("wat");
+                        fs::write(&wat_path, &wat)?;
+                        println!("Wrote {}", wat_path.display());
+                        println!("\nWAT output:\n{}", wat);
+                    }
+                    Err(e) => {
+                        println!("Note: Could not generate .wat file: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("WASM generation error: {}", e);
+                return Err(format!("WASM generation error: {}", e).into());
+            }
+        }
     } else {
         println!("Unknown target: {}", target);
     }

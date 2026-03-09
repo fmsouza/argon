@@ -25,6 +25,7 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 directories.workspace = true
+wasmprinter.workspace = true
 
 [[bin]]
 name = "safescript"

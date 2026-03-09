@@ -8,6 +8,8 @@ repository.workspace = true
 
 [dependencies]
 safescript-ir = { path = "../safescript-ir" }
+safescript-ast = { path = "../safescript-ast" }
+safescript-parser = { path = "../safescript-parser" }
 safescript-interop = { path = "../safescript-interop" }
 safescript-stdlib = { path = "../safescript-stdlib" }
 safescript-diagnostics = { path = "../safescript-diagnostics" }
