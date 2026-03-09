@@ -11,22 +11,26 @@
 > **Note:** This file reflects the current implementation state. Items marked [x] are implemented unless otherwise noted in comments.
 
 **Phase 1 (Foundation):** ~75% complete
+
 - Project setup, CLI, diagnostics: Complete
 - Lexer: 70% (missing JSX tokenization, template interpolation)
 - Parser: 50% (missing advanced expressions)
 - Error reporting: Complete
 
 **Phase 2 (Type System):** ~55% complete
+
 - Type definitions, primitives, references: Complete
 - Type inference: Basic (40%)
 - Generics: Defined but not instantiated
 
 **Phase 3 (Borrow Checker):** ~50% complete
+
 - Ownership tracking, moves, copies: Complete
 - Borrow validation: Complete
 - Lifetime inference: Basic scope-based only
 
 **Phase 4 (IR & Optimization):** ~40% complete
+
 - IR definitions: Complete
 - AST → IR lowering: Basic
 - Optimizations: Not started
@@ -126,16 +130,16 @@ struct Point {
 // Classes: heap-allocated, moved by default
 class Canvas {
     private pixels: Vec<u8>;
-    
+
     constructor(width: u32, height: u32) {
         this.pixels = new Vec(width * height * 4);
     }
-    
+
     // &mut this = exclusive mutable borrow
     drawPixel(x: u32, y: u32, color: Color): void with &mut this {
         // ...
     }
-    
+
     // &this = shared immutable borrow
     getPixel(x: u32, y: u32): Color with &this {
         // ...
@@ -190,12 +194,12 @@ function renderAll<T extends Drawable>(items: &[T], canvas: &mut Canvas): void {
 
 ### 2. Ownership Model
 
-| Concept | Syntax | Description |
-|---------|--------|-------------|
-| Owned | `T` | Unique owner, dropped at end of scope |
-| Shared borrow | `&T` | Immutable, many can coexist |
-| Mutable borrow | `&mut T` | Exclusive, only one at a time |
-| Shared ownership | `Shared<T>` | Reference counted (Arc-like) |
+| Concept          | Syntax      | Description                           |
+| ---------------- | ----------- | ------------------------------------- |
+| Owned            | `T`         | Unique owner, dropped at end of scope |
+| Shared borrow    | `&T`        | Immutable, many can coexist           |
+| Mutable borrow   | `&mut T`    | Exclusive, only one at a time         |
+| Shared ownership | `Shared<T>` | Reference counted (Arc-like)          |
 
 ### 3. Memory Safety Guarantees
 
@@ -237,6 +241,7 @@ Source → Lexer → Tokens
 ```
 
 Key responsibilities:
+
 - Unicode-aware tokenization
 - JSX parsing
 - Template literals
@@ -252,6 +257,7 @@ Tokens → Parser → AST
 ```
 
 Key responsibilities:
+
 - Recursive descent parsing
 - Error recovery
 - Incremental parsing support
@@ -266,6 +272,7 @@ AST → TypeChecker → Annotated AST
 ```
 
 Key responsibilities:
+
 - Structural typing
 - Type inference
 - Generic constraints
@@ -281,6 +288,7 @@ Annotated AST → BorrowChecker → Validated AST
 ```
 
 Key responsibilities:
+
 - Move/copy analysis
 - Borrow validation
 - Lifetime inference
@@ -296,6 +304,7 @@ Validated AST → IRBuilder → IR
 ```
 
 Key responsibilities:
+
 - SSA construction
 - Control flow graph
 - Ownership-aware instructions
@@ -317,24 +326,28 @@ IR → Codegen → WebAssembly
 ### Phase 1: Foundation (Weeks 1-4)
 
 #### Week 1: Project Setup
+
 - [x] Create workspace structure
 - [x] Set up CI/CD
 - [x] Configure logging and error handling
 - [x] Basic CLI skeleton
 
 #### Week 2: Lexer
+
 - [x] Token kinds definition
 - [x] Unicode handling
 - [ ] JSX tokenization
 - [x] Template literals
 
 #### Week 3: Parser
+
 - [x] AST node definitions
 - [x] Recursive descent parser
 - [x] Expression parsing
 - [x] Statement parsing
 
 #### Week 4: Error Reporting
+
 - [x] Diagnostic definitions
 - [x] Span tracking
 - [x] Error message formatting
@@ -342,21 +355,25 @@ IR → Codegen → WebAssembly
 ### Phase 2: Type System (Weeks 5-8)
 
 #### Week 5: Type Representation
+
 - [x] Primitive types
 - [x] Compound types (struct, class, array)
 - [x] Reference types
 
 #### Week 6: Type Inference
+
 - [x] Unification algorithm
 - [ ] Bidirectional checking
 - [ ] Constraint generation
 
 #### Week 7: Advanced Types
+
 - [ ] Generics with constraints
 - [x] Union/intersection types
 - [x] Option/Result types
 
 #### Week 8: Ownership Types
+
 - [x] Owned vs borrowed distinction
 - [x] Shared<T> type
 - [ ] Type interop with JS
@@ -364,21 +381,25 @@ IR → Codegen → WebAssembly
 ### Phase 3: Borrow Checker (Weeks 9-12)
 
 #### Week 9: Ownership Tracking
+
 - [x] Move detection
 - [x] Copy inference
 - [x] Drop analysis
 
 #### Week 10: Borrow Validation
+
 - [x] Shared borrow rules
 - [x] Mutable borrow rules
 - [x] Borrow conflicts
 
 #### Week 11: Lifetime Inference
+
 - [x] Elision rules
 - [ ] Lifetime bounds
 - [ ] Return lifetime analysis
 
 #### Week 12: Advanced Checking
+
 - [x] Data race detection
 - [ ] Async safety
 - [ ] Thread safety (Send + Sync)
@@ -386,16 +407,19 @@ IR → Codegen → WebAssembly
 ### Phase 4: IR & Optimization (Weeks 13-15)
 
 #### Week 13: IR Definition
+
 - [x] Instruction set
 - [x] Basic blocks
 - [x] Control flow graph
 
 #### Week 14: IR Generation
+
 - [x] AST → IR lowering
 - [ ] Function inlining
 - [ ] Constant folding
 
 #### Week 15: Optimizations
+
 - [ ] Common subexpression elimination
 - [ ] Dead code elimination
 - [ ] Copy propagation
@@ -403,16 +427,19 @@ IR → Codegen → WebAssembly
 ### Phase 5: JavaScript Backend (Weeks 16-18)
 
 #### Week 16: JS Codegen
+
 - [ ] IR → JavaScript
 - [x] ES2022 output
 - [ ] Module generation
 
 #### Week 17: Source Maps & Types
+
 - [ ] Source map generation
 - [x] .d.ts output
 - [ ] TypeScript interop
 
 #### Week 18: JSX & Interop
+
 - [ ] JSX transformation
 - [ ] React support
 - [ ] JS library integration
@@ -420,21 +447,25 @@ IR → Codegen → WebAssembly
 ### Phase 6: WASM Backend (Weeks 19-22)
 
 #### Week 19: WASM Setup
+
 - [ ] Linear memory layout
 - [ ] Type mapping (Argon → WASM)
 - [ ] Cranelift integration
 
 #### Week 20: WASM Codegen
+
 - [ ] IR → WASM
 - [ ] Function calls
 - [ ] Memory management
 
 #### Week 21: WASM/JS Interop
+
 - [ ] Import/export handling
 - [ ] Typed array marshalling
 - [ ] Promise integration
 
 #### Week 22: Optimization
+
 - [ ] SIMD support
 - [ ] Loop optimizations
 - [ ] Performance tuning
@@ -442,16 +473,19 @@ IR → Codegen → WebAssembly
 ### Phase 7: Async & Threading (Weeks 23-25)
 
 #### Week 23: Async Runtime
+
 - [ ] Promise integration
 - [ ] Async/await lowering
 - [ ] Future implementation
 
 #### Week 24: Multi-threading
+
 - [ ] Web Workers support
 - [ ] SharedArrayBuffer
 - [ ] Thread spawning
 
 #### Week 25: Concurrency Safety
+
 - [ ] Channel implementation
 - [ ] Mutex/RwLock
 - [ ] Data race prevention
@@ -459,12 +493,14 @@ IR → Codegen → WebAssembly
 ### Phase 8: Standard Library (Weeks 26-27)
 
 #### Week 26: Core Types
+
 - [ ] Vec<T>
 - [ ] Option<T>
 - [ ] Result<T, E>
 - [ ] String, &str
 
 #### Week 27: Collections & Async
+
 - [ ] Map<K, V>
 - [ ] Set<T>
 - [ ] Iterator traits
@@ -472,16 +508,19 @@ IR → Codegen → WebAssembly
 ### Phase 9: Tooling (Weeks 28-30)
 
 #### Week 28: Incremental Compilation
+
 - [ ] Parse caching
 - [ ] Type cache
 - [ ] Sub-second rebuilds
 
 #### Week 29: CLI & Debugging
+
 - [ ] Complete CLI
 - [ ] Debug symbols
 - [ ] Error improvements
 
 #### Week 30: Polish
+
 - [ ] Documentation
 - [ ] Examples
 - [ ] Performance finalization
@@ -501,12 +540,12 @@ IR → Codegen → WebAssembly
 
 ### Coverage Targets
 
-| Metric | Target |
-|--------|--------|
-| Line Coverage | ≥90% |
-| Branch Coverage | ≥85% |
-| Fuzz Iterations | 1M+ |
-| Property Tests | 10k+ |
+| Metric          | Target |
+| --------------- | ------ |
+| Line Coverage   | ≥90%   |
+| Branch Coverage | ≥85%   |
+| Fuzz Iterations | 1M+    |
+| Property Tests  | 10k+   |
 
 ---
 
@@ -570,13 +609,13 @@ cargo bench
 
 ```bash
 # Compile to JavaScript
-argon compile input.ss --target js -o output.js
+argon compile input.arg --target js -o output.js
 
 # Compile to WASM
-argon compile input.ss --target wasm -o output.wasm
+argon compile input.arg --target wasm -o output.wasm
 
 # Type check only
-argon check input.ss
+argon check input.arg
 
 # Start REPL
 argon repl
@@ -585,10 +624,10 @@ argon repl
 ### Example: Hello World
 
 ```typescript
-// hello.ss
+// hello.arg
 struct Greeter {
     name: string;
-    
+
     greet(): string with &this {
         return `Hello, ${this.name}!`;
     }
@@ -600,7 +639,7 @@ console.log(greeter.greet());
 
 ```bash
 # Compile and run
-argon compile hello.ss --target js -o hello.js
+argon compile hello.arg --target js -o hello.js
 node hello.js
 # Output: Hello, World!
 ```
@@ -608,7 +647,7 @@ node hello.js
 ### Example: JS Interop
 
 ```typescript
-// app.ss
+// app.arg
 import { useState } from "react";
 
 @export
@@ -620,7 +659,7 @@ function counter(): number {
 
 ```typescript
 // React component using Argon
-import { counter } from "./app.ss";
+import { counter } from "./app.arg";
 
 function App() {
     return <div>Count: {counter()}</div>;
@@ -642,6 +681,7 @@ function App() {
 ### Incremental Compilation
 
 The compiler supports incremental compilation:
+
 - Parsed ASTs are cached
 - Type information is cached
 - Only affected functions are recompiled
@@ -650,6 +690,7 @@ The compiler supports incremental compilation:
 ### Debugging
 
 The compiler includes debugging features:
+
 - Source locations for all errors
 - Type inference debug output
 - Borrow checking debug output
@@ -706,11 +747,11 @@ argon-cli
 
 ## Appendix B: File Extensions
 
-| Extension | Description |
-|-----------|-------------|
-| `.ss` | Argon source file |
-| `.ssd.ts` | Argon declaration file (TypeScript) |
-| `.wat` | WebAssembly text format |
+| Extension   | Description                         |
+| ----------- | ----------------------------------- |
+| `.arg`      | Argon source file                   |
+| `.arg.d.ts` | Argon declaration file (TypeScript) |
+| `.wat`      | WebAssembly text format             |
 
 ## Appendix C: CLI Commands
 
