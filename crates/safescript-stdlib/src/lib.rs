@@ -118,7 +118,7 @@ impl StdLib {
 
         SafeScript.Option.Some.prototype.isSome = function() { return true; };
         SafeScript.Option.Some.prototype.isNone = function() { return false; };
-        SafeScript.Option.Some.prototype.unwrap return this.value; = function() { };
+        SafeScript.Option.Some.prototype.unwrap = function() { return this.value; };
         SafeScript.Option.Some.prototype.unwrapOr = function(default_) { return this.value; };
         SafeScript.Option.Some.prototype.map = function(fn) { return new SafeScript.Option.Some(fn(this.value)); };
 
