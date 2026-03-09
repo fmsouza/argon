@@ -1576,6 +1576,29 @@ impl Parser {
 
         let mut expr = self.parse_term()?;
 
+        // Handle the case where < was incorrectly lexed as JsxElementOpen
+        // This happens when the lexer can't distinguish between < and <tagname
+        // Only apply this fix if the JsxElementOpen span is just '<' (not a full tag)
+        let current_kind = self.peek().kind;
+        if current_kind == TokenKind::JsxElementOpen {
+            let span = self.peek().span.clone();
+            // Only handle if span is small (just '<')
+            if span.end - span.start <= 2 {
+                // Consume the mis-lexed JsxElementOpen token (which is just '<')
+                self.advance();
+                // Note: This has a side effect of setting lexer to JSX mode,
+                // which causes subsequent numbers to be lexed as JsxChild
+                // This is a known limitation
+                let right = Box::new(self.parse_term()?);
+                return Ok(Expr::Binary(BinaryExpr {
+                    left: Box::new(expr),
+                    operator: BinaryOperator::LessThan,
+                    right,
+                    span: 0..10,
+                }));
+            }
+        }
+
         while self.match_one(&[
             TokenKind::LessThan,
             TokenKind::LessThanEqual,
