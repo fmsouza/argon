@@ -34,6 +34,9 @@ pub enum Type {
     Generic(String),
     TypeParam(TypeParam),
     Error,
+    Option(TypeId),
+    Result(TypeId, TypeId),
+    Promise(TypeId),
 }
 
 impl Type {
@@ -46,6 +49,25 @@ impl Type {
 
     pub fn is_subtype_of(&self, _other: &Type) -> bool {
         true
+    }
+
+    pub fn is_copyable(&self) -> bool {
+        matches!(
+            self,
+            Type::Never
+                | Type::Boolean
+                | Type::Number
+                | Type::BigInt
+                | Type::String
+                | Type::Symbol
+                | Type::Null
+                | Type::Undefined
+                | Type::Void
+        )
+    }
+
+    pub fn is_moveable(&self) -> bool {
+        !self.is_copyable()
     }
 }
 
@@ -103,6 +125,9 @@ impl fmt::Display for Type {
             Type::Shared(id) => write!(f, "Shared<{}>", id),
             Type::Generic(name) => write!(f, "{}", name),
             Type::TypeParam(param) => write!(f, "{}", param.name),
+            Type::Option(inner) => write!(f, "{}?", inner),
+            Type::Result(ok, err) => write!(f, "Result<{}, {}>", ok, err),
+            Type::Promise(inner) => write!(f, "Promise<{}>", inner),
             Type::Error => write!(f, "error"),
         }
     }
@@ -288,5 +313,65 @@ impl TypeTable {
 
     pub fn object(&mut self) -> TypeId {
         self.get_or_add(Type::Object)
+    }
+
+    pub fn option(&mut self, inner: TypeId) -> TypeId {
+        self.get_or_add(Type::Option(inner))
+    }
+
+    pub fn result(&mut self, ok: TypeId, err: TypeId) -> TypeId {
+        self.get_or_add(Type::Result(ok, err))
+    }
+
+    pub fn promise(&mut self, inner: TypeId) -> TypeId {
+        self.get_or_add(Type::Promise(inner))
+    }
+
+    pub fn array(&mut self, inner: TypeId) -> TypeId {
+        self.get_or_add(Type::Array(inner))
+    }
+
+    pub fn tuple(&mut self, types: Vec<TypeId>) -> TypeId {
+        self.get_or_add(Type::Tuple(types))
+    }
+
+    pub fn union(&mut self, types: Vec<TypeId>) -> TypeId {
+        self.get_or_add(Type::Union(types))
+    }
+
+    pub fn intersection(&mut self, types: Vec<TypeId>) -> TypeId {
+        self.get_or_add(Type::Intersection(types))
+    }
+
+    pub fn ref_type(&mut self, inner: TypeId) -> TypeId {
+        self.get_or_add(Type::Ref(inner))
+    }
+
+    pub fn mut_ref(&mut self, inner: TypeId) -> TypeId {
+        self.get_or_add(Type::MutRef(inner))
+    }
+
+    pub fn shared(&mut self, inner: TypeId) -> TypeId {
+        self.get_or_add(Type::Shared(inner))
+    }
+
+    pub fn function(&mut self, sig: FunctionSig) -> TypeId {
+        self.get_or_add(Type::Function(sig))
+    }
+
+    pub fn struct_def(&mut self, def: StructDef) -> TypeId {
+        self.get_or_add(Type::Struct(def))
+    }
+
+    pub fn class_def(&mut self, def: ClassDef) -> TypeId {
+        self.get_or_add(Type::Class(def))
+    }
+
+    pub fn type_param(&mut self, param: TypeParam) -> TypeId {
+        self.get_or_add(Type::TypeParam(param))
+    }
+
+    pub fn generic(&mut self, name: String) -> TypeId {
+        self.get_or_add(Type::Generic(name))
     }
 }

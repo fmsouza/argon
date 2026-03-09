@@ -419,6 +419,8 @@ impl TypeChecker {
             Literal::String(_) => self.type_table.string(),
             Literal::Boolean(_) => self.type_table.boolean(),
             Literal::Null(_) => self.type_table.null(),
+            Literal::Undefined(_) => self.type_table.undefined(),
+            Literal::BigInt(_) => self.type_table.add(CompType::BigInt),
             Literal::RegExp(_) => self.type_table.object(),
         }
     }

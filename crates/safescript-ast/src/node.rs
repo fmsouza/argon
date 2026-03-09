@@ -23,6 +23,7 @@ pub enum Stmt {
     Debugger(DebuggerStmt),
     Variable(VariableStmt),
     Function(FunctionDecl),
+    AsyncFunction(FunctionDecl),
     Class(ClassDecl),
     Struct(StructDecl),
     Trait(TraitDecl),
@@ -34,6 +35,7 @@ pub enum Stmt {
     Import(ImportStmt),
     Export(ExportStmt),
     Match(MatchStmt),
+    Loop(LoopStmt),
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +129,11 @@ pub struct BreakStmt {
 #[derive(Debug, Clone)]
 pub struct ContinueStmt {
     pub label: Option<Ident>,
+    pub span: Span,
+}
+#[derive(Debug, Clone)]
+pub struct LoopStmt {
+    pub body: Box<Stmt>,
     pub span: Span,
 }
 #[derive(Debug, Clone)]
@@ -467,6 +474,7 @@ pub enum Expr {
     ArrowFunction(Box<ArrowFunctionExpr>),
     Yield(YieldExpr),
     Await(AwaitExpr),
+    AwaitPromised(AwaitExpr),
     Spread(SpreadElement),
     Array(ArrayExpression),
     Object(ObjectExpression),
@@ -483,6 +491,11 @@ pub enum Expr {
     OptionalMember(OptionalMemberExpr),
     Ref(RefExpr),
     MutRef(MutRefExpr),
+    Import(ImportExpr),
+    TaggedTemplate(TaggedTemplateExpr),
+    Regex(RegExpLiteral),
+    Parenthesized(ParenthesizedExpr),
+    AssignmentTargetPattern(AssignmentTargetPattern),
 }
 
 #[derive(Debug, Clone)]
@@ -505,6 +518,8 @@ pub enum Literal {
     String(StringLiteral),
     Boolean(BooleanLiteral),
     Null(NullLiteral),
+    Undefined(UndefinedLiteral),
+    BigInt(BigIntLiteral),
     RegExp(RegExpLiteral),
 }
 #[derive(Debug, Clone)]
@@ -525,6 +540,15 @@ pub struct BooleanLiteral {
 }
 #[derive(Debug, Clone)]
 pub struct NullLiteral {
+    pub span: Span,
+}
+#[derive(Debug, Clone)]
+pub struct UndefinedLiteral {
+    pub span: Span,
+}
+#[derive(Debug, Clone)]
+pub struct BigIntLiteral {
+    pub value: String,
     pub span: Span,
 }
 #[derive(Debug, Clone)]
@@ -897,6 +921,9 @@ pub enum Type {
     Ref(RefType),
     MutRef(MutRefType),
     Shared(SharedType),
+    Optional(OptionalType),
+    Predicate(PredicateType),
+    TypeQuery(TypeQueryType),
 }
 
 #[derive(Debug, Clone)]
@@ -1130,6 +1157,22 @@ pub struct SharedType {
     pub ty: Box<Type>,
     pub span: Span,
 }
+#[derive(Debug, Clone)]
+pub struct OptionalType {
+    pub ty: Box<Type>,
+    pub span: Span,
+}
+#[derive(Debug, Clone)]
+pub struct PredicateType {
+    pub param_name: Option<Ident>,
+    pub type_annotation: Box<Type>,
+    pub span: Span,
+}
+#[derive(Debug, Clone)]
+pub struct TypeQueryType {
+    pub type_name: TypeName,
+    pub span: Span,
+}
 
 #[derive(Debug, Clone)]
 pub struct TypeParam {
@@ -1197,6 +1240,58 @@ pub struct RefExpr {
 pub struct MutRefExpr {
     pub expr: Box<Expr>,
     pub ty: Box<Type>,
+    pub span: Span,
+}
+#[derive(Debug, Clone)]
+pub struct ParenthesizedExpr {
+    pub expression: Box<Expr>,
+    pub span: Span,
+}
+#[derive(Debug, Clone)]
+pub struct ImportExpr {
+    pub source: Box<Expr>,
+    pub span: Span,
+}
+#[derive(Debug, Clone)]
+pub struct TaggedTemplateExpr {
+    pub tag: Box<Expr>,
+    pub template: TemplateLiteral,
+    pub span: Span,
+}
+#[derive(Debug, Clone)]
+pub enum AssignmentTargetPattern {
+    Identifier(Ident),
+    Member(MemberExpr),
+    Array(ArrayAssignmentPattern),
+    Object(ObjectAssignmentPattern),
+    Rest(RestAssignmentTarget),
+    Parenthesized(Box<AssignmentTargetPattern>),
+}
+#[derive(Debug, Clone)]
+pub struct ArrayAssignmentPattern {
+    pub elements: Vec<Option<AssignmentTargetPattern>>,
+    pub rest: Option<RestAssignmentTarget>,
+    pub span: Span,
+}
+#[derive(Debug, Clone)]
+pub struct ObjectAssignmentPattern {
+    pub properties: Vec<AssignmentTargetProperty>,
+    pub rest: Option<RestAssignmentTarget>,
+    pub span: Span,
+}
+#[derive(Debug, Clone)]
+pub enum AssignmentTargetProperty {
+    Shorthand(Ident),
+    KeyValue(AssignmentTargetPropertyKeyValue),
+}
+#[derive(Debug, Clone)]
+pub struct AssignmentTargetPropertyKeyValue {
+    pub key: Ident,
+    pub target: AssignmentTargetPattern,
+}
+#[derive(Debug, Clone)]
+pub struct RestAssignmentTarget {
+    pub target: Option<Box<AssignmentTargetPattern>>,
     pub span: Span,
 }
 
@@ -1284,6 +1379,8 @@ impl Spanned for Expr {
                 Literal::String(s) => &s.span,
                 Literal::Boolean(b) => &b.span,
                 Literal::Null(n) => &n.span,
+                Literal::Undefined(u) => &u.span,
+                Literal::BigInt(b) => &b.span,
                 Literal::RegExp(r) => &r.span,
             },
             Expr::Template(t) => &t.span,
@@ -1299,6 +1396,7 @@ impl Spanned for Expr {
             Expr::ArrowFunction(a) => &a.span,
             Expr::Yield(y) => &y.span,
             Expr::Await(a) => &a.span,
+            Expr::AwaitPromised(a) => &a.span,
             Expr::Spread(s) => &s.span,
             Expr::Array(a) => &a.span,
             Expr::Object(o) => &o.span,
@@ -1315,6 +1413,25 @@ impl Spanned for Expr {
             Expr::OptionalMember(m) => &m.span,
             Expr::Ref(r) => &r.span,
             Expr::MutRef(r) => &r.span,
+            Expr::Import(i) => &i.span,
+            Expr::TaggedTemplate(t) => &t.span,
+            Expr::Regex(r) => &r.span,
+            Expr::Parenthesized(p) => &p.span,
+            Expr::AssignmentTargetPattern(a) => match a {
+                AssignmentTargetPattern::Identifier(i) => &i.span,
+                AssignmentTargetPattern::Member(m) => &m.span,
+                AssignmentTargetPattern::Array(a) => &a.span,
+                AssignmentTargetPattern::Object(o) => &o.span,
+                AssignmentTargetPattern::Rest(r) => &r.span,
+                AssignmentTargetPattern::Parenthesized(p) => match &**p {
+                    AssignmentTargetPattern::Identifier(i) => &i.span,
+                    AssignmentTargetPattern::Member(m) => &m.span,
+                    AssignmentTargetPattern::Array(a) => &a.span,
+                    AssignmentTargetPattern::Object(o) => &o.span,
+                    AssignmentTargetPattern::Rest(r) => &r.span,
+                    AssignmentTargetPattern::Parenthesized(_) => &EMPTY_SPAN,
+                },
+            },
         }
     }
 }
@@ -1455,6 +1572,9 @@ impl Spanned for Type {
             Type::Ref(r) => &r.span,
             Type::MutRef(r) => &r.span,
             Type::Shared(s) => &s.span,
+            Type::Optional(o) => &o.span,
+            Type::Predicate(p) => &p.span,
+            Type::TypeQuery(t) => &t.span,
             _ => &EMPTY_SPAN,
         }
     }
