@@ -9,16 +9,17 @@ pub struct TypeEnvironment {
     vars: HashMap<String, TypeId>,
     structs: HashMap<String, StructDef>,
     functions: HashMap<String, FunctionSig>,
+    this_ty: Option<TypeId>,
 }
 
 impl TypeEnvironment {
     pub fn new() -> Self {
-        let mut env = Self {
+        Self {
             vars: HashMap::new(),
             structs: HashMap::new(),
             functions: HashMap::new(),
-        };
-        env
+            this_ty: None,
+        }
     }
 
     pub fn get_var(&self, name: &str) -> Option<TypeId> {
@@ -44,18 +45,51 @@ impl TypeEnvironment {
     pub fn add_function(&mut self, name: String, sig: FunctionSig) {
         self.functions.insert(name, sig);
     }
+
+    pub fn set_this(&mut self, ty: Option<TypeId>) {
+        self.this_ty = ty;
+    }
+
+    pub fn get_this(&self) -> Option<TypeId> {
+        self.this_ty
+    }
+
+    pub fn child(&self) -> Self {
+        Self {
+            vars: self.vars.clone(),
+            structs: self.structs.clone(),
+            functions: self.functions.clone(),
+            this_ty: self.this_ty,
+        }
+    }
 }
 
 pub struct TypeChecker {
     type_table: TypeTable,
     env: TypeEnvironment,
+    errors: Vec<TypeError>,
+    warnings: Vec<String>,
 }
 
 impl TypeChecker {
     pub fn new() -> Self {
+        let mut type_table = TypeTable::new_with_builtins();
+        let mut env = TypeEnvironment::new();
+
+        env.add_function(
+            "console.log".to_string(),
+            FunctionSig {
+                params: vec![type_table.any()],
+                return_type: type_table.void(),
+                is_async: false,
+            },
+        );
+
         Self {
-            type_table: TypeTable::new(),
-            env: TypeEnvironment::new(),
+            type_table,
+            env,
+            errors: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
@@ -63,6 +97,11 @@ impl TypeChecker {
         for stmt in &source.statements {
             self.check_statement(stmt)?;
         }
+
+        if !self.errors.is_empty() {
+            return Err(self.errors.remove(0));
+        }
+
         Ok(())
     }
 
@@ -91,29 +130,106 @@ impl TypeChecker {
             Stmt::DoWhile(d) => self.check_do_while(d),
             Stmt::Match(m) => self.check_match(m),
             Stmt::Import(_) | Stmt::Export(_) => Ok(()),
+            Stmt::Interface(_) => Ok(()),
+            Stmt::Enum(_) => Ok(()),
+            Stmt::TypeAlias(_) => Ok(()),
+            Stmt::Labeled(l) => self.check_statement(&l.body),
+            Stmt::With(w) => {
+                self.infer_expression(&w.object);
+                self.check_statement(&w.body)
+            }
+            Stmt::Debugger(_) => Ok(()),
             _ => Ok(()),
         }
     }
 
     fn check_variable(&mut self, stmt: &VariableStmt) -> Result<(), TypeError> {
         for decl in &stmt.declarations {
-            let type_id = self.type_table.add(CompType::Unknown);
-
             if let Pattern::Identifier(id) = &decl.id {
-                self.env.add_var(id.name.sym.clone(), type_id);
-            }
+                let ty = if let Some(ref ann) = id.type_annotation {
+                    self.resolve_type(ann)
+                } else {
+                    self.type_table.unknown()
+                };
 
-            if let Some(init) = &decl.init {
-                self.infer_expression(init);
+                if let Some(init) = &decl.init {
+                    let init_ty = self.infer_expression(init);
+                    if ty != self.type_table.unknown() && ty != self.type_table.any() {
+                        self.unify(init_ty, ty);
+                    }
+                    self.env.add_var(id.name.sym.clone(), ty);
+                } else {
+                    self.env.add_var(id.name.sym.clone(), ty);
+                }
             }
         }
         Ok(())
     }
 
     fn check_function(&mut self, f: &FunctionDecl) -> Result<(), TypeError> {
+        let func_name =
+            f.id.as_ref()
+                .map(|i| i.sym.clone())
+                .unwrap_or_else(|| "anonymous".to_string());
+
+        let mut local_env = self.env.child();
+
+        let param_tys: Vec<TypeId> = f
+            .params
+            .iter()
+            .map(|p| {
+                let ty = match &p.ty {
+                    Some(t) => self.resolve_type(t),
+                    None => self.type_table.unknown(),
+                };
+                if let Pattern::Identifier(id) = &p.pat {
+                    local_env.add_var(id.name.sym.clone(), ty);
+                }
+                ty
+            })
+            .collect();
+
+        let return_ty = match &f.return_type {
+            Some(t) => self.resolve_type(t),
+            None => self.type_table.void(),
+        };
+
+        let func_sig = FunctionSig {
+            params: param_tys.clone(),
+            return_type: return_ty,
+            is_async: f.is_async,
+        };
+
+        self.env.add_function(func_name.clone(), func_sig);
+
+        if let Some(ref borrow) = f.borrow_annotation {
+            if let Some(target) = &borrow.target {
+                if target.sym == "this" {
+                    local_env.set_this(Some(self.type_table.object()));
+                }
+            }
+        }
+
+        let old_env = std::mem::replace(&mut self.env, local_env);
         for stmt in &f.body.statements {
             self.check_statement(stmt)?;
         }
+        self.env = old_env;
+
+        if return_ty != self.type_table.void() {
+            let has_return = f
+                .body
+                .statements
+                .iter()
+                .any(|s| matches!(s, Stmt::Return(_)));
+            if !has_return {
+                self.errors.push(TypeError::MissingReturn {
+                    func: func_name,
+                    expected: return_ty,
+                });
+            }
+        }
+
         Ok(())
     }
 
@@ -123,7 +239,7 @@ impl TypeChecker {
             .iter()
             .map(|f| crate::types::FieldDef {
                 name: f.id.sym.clone(),
-                ty: self.type_table.add(CompType::Unknown),
+                ty: self.resolve_type(&f.type_annotation),
             })
             .collect();
 
@@ -138,8 +254,32 @@ impl TypeChecker {
 
     fn check_class(&mut self, c: &ClassDecl) -> Result<(), TypeError> {
         for member in &c.body.body {
-            if let ClassMember::Method(m) = member {
-                self.check_function(&m.value)?;
+            match member {
+                ClassMember::Method(m) => {
+                    self.check_function(&m.value)?;
+                }
+                ClassMember::Constructor(constr) => {
+                    let mut local_env = self.env.child();
+                    local_env.set_this(Some(self.type_table.object()));
+
+                    for param in &constr.params {
+                        if let Pattern::Identifier(id) = &param.pat {
+                            let ty = param
+                                .ty
+                                .as_ref()
+                                .map(|t| self.resolve_type(t))
+                                .unwrap_or_else(|| self.type_table.unknown());
+                            local_env.add_var(id.name.sym.clone(), ty);
+                        }
+                    }
+
+                    let old_env = std::mem::replace(&mut self.env, local_env);
+                    for stmt in &constr.body.statements {
+                        self.check_statement(stmt)?;
+                    }
+                    self.env = old_env;
+                }
+                _ => {}
             }
         }
         Ok(())
@@ -153,7 +293,10 @@ impl TypeChecker {
     }
 
     fn check_if(&mut self, i: &IfStmt) -> Result<(), TypeError> {
-        self.infer_expression(&i.condition);
+        let cond_ty = self.infer_expression(&i.condition);
+        let bool_ty = self.type_table.boolean();
+        self.unify(cond_ty, bool_ty);
+
         self.check_statement(&i.consequent)?;
         if let Some(ref alt) = i.alternate {
             self.check_statement(alt)?;
@@ -162,7 +305,9 @@ impl TypeChecker {
     }
 
     fn check_while(&mut self, w: &WhileStmt) -> Result<(), TypeError> {
-        self.infer_expression(&w.condition);
+        let cond_ty = self.infer_expression(&w.condition);
+        let bool_ty = self.type_table.boolean();
+        self.unify(cond_ty, bool_ty);
         self.check_statement(&w.body)?;
         Ok(())
     }
@@ -171,7 +316,9 @@ impl TypeChecker {
         if let Some(ref init) = f.init {
             match init {
                 ForInit::Variable(v) => self.check_variable(v)?,
-                ForInit::Expr(e) => self.infer_expression(e),
+                ForInit::Expr(e) => {
+                    self.infer_expression(e);
+                }
             }
         }
         if let Some(ref test) = f.test {
@@ -214,7 +361,9 @@ impl TypeChecker {
 
     fn check_do_while(&mut self, d: &DoWhileStmt) -> Result<(), TypeError> {
         self.check_statement(&d.body)?;
-        self.infer_expression(&d.condition);
+        let cond_ty = self.infer_expression(&d.condition);
+        let bool_ty = self.type_table.boolean();
+        self.unify(cond_ty, bool_ty);
         Ok(())
     }
 
@@ -227,18 +376,50 @@ impl TypeChecker {
         Ok(())
     }
 
-    fn infer_expression(&mut self, _expr: &Expr) {
-        // Type inference - simplified for now
-        // The actual implementation would traverse the AST and build type information
+    fn infer_expression(&mut self, expr: &Expr) -> TypeId {
+        match expr {
+            Expr::Literal(lit) => self.infer_literal(lit),
+            Expr::Identifier(id) => self.infer_identifier(id),
+            Expr::Binary(b) => self.infer_binary(b),
+            Expr::Unary(u) => self.infer_unary(u),
+            Expr::Call(c) => self.infer_call(c),
+            Expr::Member(m) => self.infer_member(m),
+            Expr::Assignment(a) => self.infer_assignment(a),
+            Expr::This(_) => self.env.get_this().unwrap_or_else(|| self.type_table.any()),
+            Expr::New(n) => self.infer_new(n),
+            Expr::Conditional(c) => self.infer_conditional(c),
+            Expr::Logical(l) => self.infer_logical(l),
+            Expr::Object(o) => self.infer_object(o),
+            Expr::Array(a) => self.infer_array(a),
+            Expr::Function(f) => self.infer_function_expr(f),
+            Expr::ArrowFunction(a) => self.infer_arrow_function(a),
+            Expr::Await(a) => self.infer_await(a),
+            Expr::Yield(y) => self.infer_yield(y),
+            Expr::Update(u) => self.infer_update(u),
+            Expr::TypeAssertion(t) => self.infer_type_assertion(t),
+            Expr::AsType(a) => self.resolve_type(&a.type_annotation),
+            Expr::Ref(r) => {
+                let inner = self.infer_expression(&r.expr);
+                self.type_table.add(CompType::Ref(inner))
+            }
+            Expr::MutRef(r) => {
+                let inner = self.infer_expression(&r.expr);
+                self.type_table.add(CompType::MutRef(inner))
+            }
+            Expr::Chain(c) => self.infer_chain(c),
+            Expr::OptionalCall(c) => self.infer_optional_call(c),
+            Expr::OptionalMember(m) => self.infer_optional_member(m),
+            _ => self.type_table.unknown(),
+        }
     }
 
     fn infer_literal(&mut self, lit: &Literal) -> TypeId {
         match lit {
-            Literal::Number(_) => self.type_table.add(CompType::Number),
-            Literal::String(_) => self.type_table.add(CompType::String),
-            Literal::Boolean(_) => self.type_table.add(CompType::Boolean),
-            Literal::Null(_) => self.type_table.add(CompType::Null),
-            Literal::RegExp(_) => self.type_table.add(CompType::Object),
+            Literal::Number(_) => self.type_table.number(),
+            Literal::String(_) => self.type_table.string(),
+            Literal::Boolean(_) => self.type_table.boolean(),
+            Literal::Null(_) => self.type_table.null(),
+            Literal::RegExp(_) => self.type_table.object(),
         }
     }
 
@@ -246,23 +427,413 @@ impl TypeChecker {
         if let Some(ty) = self.env.get_var(&id.sym) {
             return ty;
         }
-        self.type_table.add(CompType::Unknown)
+        if let Some(func) = self.env.get_function(&id.sym) {
+            return self.type_table.add(CompType::Function(func.clone()));
+        }
+        self.type_table.unknown()
+    }
+
+    fn infer_binary(&mut self, b: &BinaryExpr) -> TypeId {
+        let _left_ty = self.infer_expression(&b.left);
+        let _right_ty = self.infer_expression(&b.right);
+
+        match b.operator {
+            BinaryOperator::Plus => {
+                if _left_ty == self.type_table.string() || _right_ty == self.type_table.string() {
+                    self.type_table.string()
+                } else if _left_ty == self.type_table.number()
+                    && _right_ty == self.type_table.number()
+                {
+                    self.type_table.number()
+                } else {
+                    self.type_table.any()
+                }
+            }
+            BinaryOperator::Minus
+            | BinaryOperator::Multiply
+            | BinaryOperator::Divide
+            | BinaryOperator::Modulo
+            | BinaryOperator::LeftShift
+            | BinaryOperator::RightShift
+            | BinaryOperator::UnsignedRightShift => self.type_table.number(),
+            BinaryOperator::Equal
+            | BinaryOperator::NotEqual
+            | BinaryOperator::StrictEqual
+            | BinaryOperator::StrictNotEqual
+            | BinaryOperator::LessThan
+            | BinaryOperator::LessThanOrEqual
+            | BinaryOperator::GreaterThan
+            | BinaryOperator::GreaterThanOrEqual
+            | BinaryOperator::Instanceof
+            | BinaryOperator::In => self.type_table.boolean(),
+            BinaryOperator::BitwiseAnd | BinaryOperator::BitwiseOr | BinaryOperator::BitwiseXor => {
+                self.type_table.number()
+            }
+            _ => self.type_table.unknown(),
+        }
+    }
+
+    fn infer_unary(&mut self, u: &UnaryExpr) -> TypeId {
+        let _arg_ty = self.infer_expression(&u.argument);
+
+        match u.operator {
+            UnaryOperator::Minus | UnaryOperator::Plus => self.type_table.number(),
+            UnaryOperator::LogicalNot => self.type_table.boolean(),
+            UnaryOperator::BitwiseNot => self.type_table.number(),
+            UnaryOperator::Typeof => self.type_table.string(),
+            UnaryOperator::Void | UnaryOperator::Delete => self.type_table.undefined(),
+        }
+    }
+
+    fn infer_call(&mut self, c: &CallExpr) -> TypeId {
+        let callee_ty = self.infer_expression(&c.callee);
+
+        for arg in &c.arguments {
+            if let ExprOrSpread::Expr(e) = arg {
+                self.infer_expression(e);
+            }
+        }
+
+        if let Some(CompType::Function(sig)) = self.type_table.get(callee_ty) {
+            return sig.return_type;
+        }
+        if let Expr::Identifier(id) = &*c.callee {
+            if id.sym == "console" {
+                return self.type_table.void();
+            }
+        }
+
+        self.type_table.unknown()
+    }
+
+    fn infer_member(&mut self, m: &MemberExpr) -> TypeId {
+        let _obj_ty = self.infer_expression(&m.object);
+
+        if m.computed {
+            self.infer_expression(&m.property);
+        }
+
+        self.type_table.unknown()
+    }
+
+    fn infer_assignment(&mut self, a: &AssignmentExpr) -> TypeId {
+        let right_ty = self.infer_expression(&a.right);
+
+        match &*a.left {
+            AssignmentTarget::Simple(expr) => {
+                if let Expr::Identifier(id) = &**expr {
+                    if let Some(existing_ty) = self.env.get_var(&id.sym) {
+                        self.unify(right_ty, existing_ty);
+                    } else {
+                        self.env.add_var(id.sym.clone(), right_ty);
+                    }
+                }
+            }
+            AssignmentTarget::Member(_) => {}
+            AssignmentTarget::Pattern(_) => {}
+        }
+
+        right_ty
+    }
+
+    fn infer_new(&mut self, n: &NewExpr) -> TypeId {
+        for arg in &n.arguments {
+            if let ExprOrSpread::Expr(e) = arg {
+                self.infer_expression(e);
+            }
+        }
+
+        self.type_table.object()
+    }
+
+    fn infer_conditional(&mut self, c: &ConditionalExpr) -> TypeId {
+        let test_ty = self.infer_expression(&c.test);
+        let bool_ty = self.type_table.boolean();
+        self.unify(test_ty, bool_ty);
+
+        let consequent_ty = self.infer_expression(&c.consequent);
+        let alternate_ty = self.infer_expression(&c.alternate);
+
+        if consequent_ty == alternate_ty {
+            consequent_ty
+        } else {
+            self.type_table
+                .add(CompType::Union(vec![consequent_ty, alternate_ty]))
+        }
+    }
+
+    fn infer_logical(&mut self, l: &LogicalExpr) -> TypeId {
+        let left_ty = self.infer_expression(&l.left);
+        let right_ty = self.infer_expression(&l.right);
+
+        match l.operator {
+            LogicalOperator::And | LogicalOperator::Or => {
+                if left_ty == right_ty {
+                    left_ty
+                } else {
+                    self.type_table
+                        .add(CompType::Union(vec![left_ty, right_ty]))
+                }
+            }
+            LogicalOperator::NullishCoalescing => self
+                .type_table
+                .add(CompType::Union(vec![left_ty, right_ty])),
+        }
+    }
+
+    fn infer_object(&mut self, o: &ObjectExpression) -> TypeId {
+        for prop in &o.properties {
+            match prop {
+                ObjectProperty::Property(p) => {
+                    if let ExprOrSpread::Expr(e) = &p.value {
+                        self.infer_expression(e);
+                    }
+                }
+                ObjectProperty::Shorthand(id) => {
+                    self.infer_identifier(id);
+                }
+                ObjectProperty::Spread(s) => {
+                    self.infer_expression(&s.argument);
+                }
+                ObjectProperty::Method(m) => {
+                    self.check_function(&m.value).ok();
+                }
+                ObjectProperty::Getter(_) | ObjectProperty::Setter(_) => {}
+            }
+        }
+
+        self.type_table.object()
+    }
+
+    fn infer_array(&mut self, a: &ArrayExpression) -> TypeId {
+        let mut element_ty = self.type_table.unknown();
+
+        for elem in &a.elements {
+            if let Some(ExprOrSpread::Expr(e)) = elem {
+                let ty = self.infer_expression(e);
+                if element_ty == self.type_table.unknown() {
+                    element_ty = ty;
+                } else if ty != element_ty {
+                    element_ty = self.type_table.any();
+                }
+            }
+        }
+
+        self.type_table.add(CompType::Array(element_ty))
+    }
+
+    fn infer_function_expr(&mut self, _f: &FunctionExpr) -> TypeId {
+        self.type_table.any()
+    }
+
+    fn infer_arrow_function(&mut self, a: &ArrowFunctionExpr) -> TypeId {
+        let mut local_env = self.env.child();
+
+        for param in &a.params {
+            let ty = param
+                .ty
+                .as_ref()
+                .map(|t| self.resolve_type(t))
+                .unwrap_or_else(|| self.type_table.unknown());
+            if let Pattern::Identifier(id) = &param.pat {
+                local_env.add_var(id.name.sym.clone(), ty);
+            }
+        }
+
+        let return_ty = a
+            .return_type
+            .as_ref()
+            .map(|t| self.resolve_type(t))
+            .unwrap_or_else(|| self.type_table.unknown());
+
+        let func_sig = FunctionSig {
+            params: a
+                .params
+                .iter()
+                .map(|p| {
+                    p.ty.as_ref()
+                        .map(|t| self.resolve_type(t))
+                        .unwrap_or_else(|| self.type_table.unknown())
+                })
+                .collect(),
+            return_type: return_ty,
+            is_async: false,
+        };
+
+        self.type_table.add(CompType::Function(func_sig))
+    }
+
+    fn infer_await(&mut self, a: &AwaitExpr) -> TypeId {
+        self.infer_expression(&a.argument)
+    }
+
+    fn infer_yield(&mut self, y: &YieldExpr) -> TypeId {
+        if let Some(ref arg) = y.argument {
+            self.infer_expression(arg);
+        }
+        self.type_table.unknown()
+    }
+
+    fn infer_update(&mut self, u: &UpdateExpr) -> TypeId {
+        self.infer_expression(&u.argument);
+        self.type_table.number()
+    }
+
+    fn infer_type_assertion(&mut self, t: &TypeAssertionExpr) -> TypeId {
+        self.infer_expression(&t.expression);
+        self.resolve_type(&t.type_annotation)
+    }
+
+    fn infer_chain(&mut self, c: &ChainExpr) -> TypeId {
+        for elem in &c.expressions {
+            match elem {
+                ChainElement::Call(call) => {
+                    self.infer_call(call);
+                }
+                ChainElement::Member(m) => {
+                    self.infer_member(m);
+                }
+                ChainElement::OptionalCall(c) => {
+                    self.infer_optional_call(c);
+                }
+                ChainElement::OptionalMember(m) => {
+                    self.infer_optional_member(m);
+                }
+            }
+        }
+        self.type_table.unknown()
+    }
+
+    fn infer_optional_call(&mut self, c: &OptionalCallExpr) -> TypeId {
+        self.infer_call(&CallExpr {
+            callee: c.callee.clone(),
+            arguments: c.arguments.clone(),
+            span: c.span.clone(),
+        })
+    }
+
+    fn infer_optional_member(&mut self, m: &OptionalMemberExpr) -> TypeId {
+        self.infer_member(&MemberExpr {
+            object: m.object.clone(),
+            property: m.property.clone(),
+            computed: m.computed,
+            span: m.span.clone(),
+        })
+    }
+
+    fn resolve_type(&mut self, ty: &safescript_ast::Type) -> TypeId {
+        match ty {
+            safescript_ast::Type::Primitive(p) => match p {
+                PrimitiveType::Number => self.type_table.number(),
+                PrimitiveType::String => self.type_table.string(),
+                PrimitiveType::Boolean => self.type_table.boolean(),
+                PrimitiveType::Void => self.type_table.void(),
+                PrimitiveType::Null => self.type_table.null(),
+                PrimitiveType::Undefined => self.type_table.undefined(),
+                PrimitiveType::Any => self.type_table.any(),
+                PrimitiveType::Unknown => self.type_table.unknown(),
+                PrimitiveType::Never => self.type_table.never(),
+                PrimitiveType::Symbol => self.type_table.add(CompType::Symbol),
+                PrimitiveType::BigInt => self.type_table.add(CompType::BigInt),
+                PrimitiveType::Object => self.type_table.object(),
+            },
+            safescript_ast::Type::Reference(r) => {
+                if let TypeName::Ident(id) = &r.name {
+                    if let Some(ty) = self.type_table.get_by_name(&id.sym) {
+                        return ty;
+                    }
+                    if let Some(struct_def) = self.env.get_struct(&id.sym) {
+                        return self.type_table.add(CompType::Struct(struct_def.clone()));
+                    }
+                }
+                self.type_table.unknown()
+            }
+            safescript_ast::Type::Array(arr) => {
+                let elem_ty = self.resolve_type(&arr.elem_type);
+                self.type_table.add(CompType::Array(elem_ty))
+            }
+            safescript_ast::Type::Ref(r) => {
+                let inner = self.resolve_type(&r.ty);
+                self.type_table.add(CompType::Ref(inner))
+            }
+            safescript_ast::Type::MutRef(r) => {
+                let inner = self.resolve_type(&r.ty);
+                self.type_table.add(CompType::MutRef(inner))
+            }
+            safescript_ast::Type::Shared(s) => {
+                let inner = self.resolve_type(&s.ty);
+                self.type_table.add(CompType::Shared(inner))
+            }
+            safescript_ast::Type::Function(f) => {
+                let params = f.params.iter().map(|p| self.resolve_type(&p.ty)).collect();
+                let return_type = self.resolve_type(&f.return_type);
+                self.type_table.add(CompType::Function(FunctionSig {
+                    params,
+                    return_type,
+                    is_async: false,
+                }))
+            }
+            safescript_ast::Type::Union(u) => {
+                let types = u.types.iter().map(|t| self.resolve_type(t)).collect();
+                self.type_table.add(CompType::Union(types))
+            }
+            safescript_ast::Type::Intersection(i) => {
+                let types = i.types.iter().map(|t| self.resolve_type(t)).collect();
+                self.type_table.add(CompType::Intersection(types))
+            }
+            safescript_ast::Type::Tuple(t) => {
+                let types = t.types.iter().map(|t| self.resolve_type(t)).collect();
+                self.type_table.add(CompType::Tuple(types))
+            }
+            safescript_ast::Type::Object(_) => self.type_table.object(),
+            safescript_ast::Type::Any(_) => self.type_table.any(),
+            safescript_ast::Type::Unknown(_) => self.type_table.unknown(),
+            safescript_ast::Type::Never(_) => self.type_table.never(),
+            safescript_ast::Type::Void(_) => self.type_table.void(),
+            safescript_ast::Type::Null(_) => self.type_table.null(),
+            safescript_ast::Type::Undefined(_) => self.type_table.undefined(),
+            _ => self.type_table.unknown(),
+        }
+    }
+
+    fn unify(&mut self, found: TypeId, expected: TypeId) {
+        if found == expected {
+            return;
+        }
+
+        if found == self.type_table.any() || expected == self.type_table.any() {
+            return;
+        }
+
+        if found == self.type_table.unknown() || expected == self.type_table.unknown() {
+            return;
+        }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TypeError {
-    Mismatch(String),
-    NotFound(String),
-    Invalid(String),
+    Mismatch { found: TypeId, expected: TypeId },
+    NotFound { name: String },
+    Invalid { message: String },
+    MissingReturn { func: String, expected: TypeId },
 }
 
 impl std::fmt::Display for TypeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TypeError::Mismatch(msg) => write!(f, "Type mismatch: {}", msg),
-            TypeError::NotFound(msg) => write!(f, "Type not found: {}", msg),
-            TypeError::Invalid(msg) => write!(f, "Invalid type: {}", msg),
+            TypeError::Mismatch { found, expected } => {
+                write!(f, "Type mismatch: found {}, expected {}", found, expected)
+            }
+            TypeError::NotFound { name } => write!(f, "Type not found '{}'", name),
+            TypeError::Invalid { message } => write!(f, "Invalid type: {}", message),
+            TypeError::MissingReturn { func, expected } => {
+                write!(
+                    f,
+                    "Function '{}' missing return, expected {}",
+                    func, expected
+                )
+            }
         }
     }
 }

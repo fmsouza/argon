@@ -1,9 +1,11 @@
 //! SafeScript - Type definitions
 
+use std::collections::HashMap;
+use std::fmt;
 
 pub type TypeId = u32;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Never,
     Any,
@@ -31,60 +33,146 @@ pub enum Type {
     Shared(TypeId),
     Generic(String),
     TypeParam(TypeParam),
+    Error,
 }
 
-#[derive(Debug, Clone)]
+impl Type {
+    pub fn is_truthy(&self) -> bool {
+        matches!(
+            self,
+            Type::Boolean | Type::Number | Type::String | Type::Object
+        )
+    }
+
+    pub fn is_subtype_of(&self, _other: &Type) -> bool {
+        true
+    }
+}
+
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Type::Never => write!(f, "never"),
+            Type::Any => write!(f, "any"),
+            Type::Unknown => write!(f, "unknown"),
+            Type::Void => write!(f, "void"),
+            Type::Null => write!(f, "null"),
+            Type::Undefined => write!(f, "undefined"),
+            Type::Boolean => write!(f, "boolean"),
+            Type::Number => write!(f, "number"),
+            Type::BigInt => write!(f, "bigint"),
+            Type::String => write!(f, "string"),
+            Type::Symbol => write!(f, "symbol"),
+            Type::Object => write!(f, "object"),
+            Type::Array(id) => write!(f, "{}[]", id),
+            Type::Tuple(types) => {
+                write!(f, "[")?;
+                for (i, t) in types.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", t)?;
+                }
+                write!(f, "]")
+            }
+            Type::Function(sig) => write!(f, "{}", sig),
+            Type::Union(types) => {
+                for (i, t) in types.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " | ")?;
+                    }
+                    write!(f, "{}", t)?;
+                }
+                Ok(())
+            }
+            Type::Intersection(types) => {
+                for (i, t) in types.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " & ")?;
+                    }
+                    write!(f, "{}", t)?;
+                }
+                Ok(())
+            }
+            Type::Struct(def) => write!(f, "struct {}", def.name),
+            Type::Class(def) => write!(f, "class {}", def.name),
+            Type::Interface(def) => write!(f, "interface {}", def.name),
+            Type::Enum(def) => write!(f, "enum {}", def.name),
+            Type::Ref(id) => write!(f, "&{}", id),
+            Type::MutRef(id) => write!(f, "&mut {}", id),
+            Type::Shared(id) => write!(f, "Shared<{}>", id),
+            Type::Generic(name) => write!(f, "{}", name),
+            Type::TypeParam(param) => write!(f, "{}", param.name),
+            Type::Error => write!(f, "error"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FunctionSig {
     pub params: Vec<TypeId>,
     pub return_type: TypeId,
     pub is_async: bool,
 }
 
-#[derive(Debug, Clone)]
+impl fmt::Display for FunctionSig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "(")?;
+        for (i, param) in self.params.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", param)?;
+        }
+        write!(f, ") => {}", self.return_type)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StructDef {
     pub name: String,
     pub fields: Vec<FieldDef>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FieldDef {
     pub name: String,
     pub ty: TypeId,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ClassDef {
     pub name: String,
     pub fields: Vec<FieldDef>,
     pub methods: Vec<MethodDef>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MethodDef {
     pub name: String,
     pub sig: FunctionSig,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct InterfaceDef {
     pub name: String,
     pub extends: Vec<TypeId>,
     pub members: Vec<InterfaceMember>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum InterfaceMember {
     Property { name: String, ty: TypeId },
     Method { name: String, sig: FunctionSig },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EnumDef {
     pub name: String,
     pub variants: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TypeParam {
     pub name: String,
     pub constraint: Option<TypeId>,
@@ -94,11 +182,47 @@ pub struct TypeParam {
 #[derive(Debug, Clone)]
 pub struct TypeTable {
     types: Vec<Type>,
+    names: HashMap<String, TypeId>,
+}
+
+impl Default for TypeTable {
+    fn default() -> Self {
+        Self {
+            types: Vec::new(),
+            names: HashMap::new(),
+        }
+    }
 }
 
 impl TypeTable {
-    pub fn new() -> Self {
-        Self { types: Vec::new() }
+    pub fn new_with_builtins() -> Self {
+        let mut table = Self {
+            types: Vec::new(),
+            names: HashMap::new(),
+        };
+        table.init_builtins();
+        table
+    }
+
+    fn init_builtins(&mut self) {
+        self.add_named("never", Type::Never);
+        self.add_named("any", Type::Any);
+        self.add_named("unknown", Type::Unknown);
+        self.add_named("void", Type::Void);
+        self.add_named("null", Type::Null);
+        self.add_named("undefined", Type::Undefined);
+        self.add_named("boolean", Type::Boolean);
+        self.add_named("number", Type::Number);
+        self.add_named("bigint", Type::BigInt);
+        self.add_named("string", Type::String);
+        self.add_named("symbol", Type::Symbol);
+        self.add_named("object", Type::Object);
+    }
+
+    fn add_named(&mut self, name: &str, ty: Type) {
+        let id = self.types.len() as TypeId;
+        self.names.insert(name.to_string(), id);
+        self.types.push(ty);
     }
 
     pub fn add(&mut self, ty: Type) -> TypeId {
@@ -109,5 +233,60 @@ impl TypeTable {
 
     pub fn get(&self, id: TypeId) -> Option<&Type> {
         self.types.get(id as usize)
+    }
+
+    pub fn get_by_name(&self, name: &str) -> Option<TypeId> {
+        self.names.get(name).copied()
+    }
+
+    pub fn get_or_add(&mut self, ty: Type) -> TypeId {
+        if let Some(id) = self.types.iter().position(|t| t == &ty) {
+            return id as TypeId;
+        }
+        self.add(ty)
+    }
+
+    pub fn error(&mut self) -> TypeId {
+        self.get_or_add(Type::Error)
+    }
+
+    pub fn unknown(&mut self) -> TypeId {
+        self.get_or_add(Type::Unknown)
+    }
+
+    pub fn any(&mut self) -> TypeId {
+        self.get_or_add(Type::Any)
+    }
+
+    pub fn number(&mut self) -> TypeId {
+        self.get_or_add(Type::Number)
+    }
+
+    pub fn string(&mut self) -> TypeId {
+        self.get_or_add(Type::String)
+    }
+
+    pub fn boolean(&mut self) -> TypeId {
+        self.get_or_add(Type::Boolean)
+    }
+
+    pub fn void(&mut self) -> TypeId {
+        self.get_or_add(Type::Void)
+    }
+
+    pub fn null(&mut self) -> TypeId {
+        self.get_or_add(Type::Null)
+    }
+
+    pub fn undefined(&mut self) -> TypeId {
+        self.get_or_add(Type::Undefined)
+    }
+
+    pub fn never(&mut self) -> TypeId {
+        self.get_or_add(Type::Never)
+    }
+
+    pub fn object(&mut self) -> TypeId {
+        self.get_or_add(Type::Object)
     }
 }
