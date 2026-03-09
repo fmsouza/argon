@@ -287,6 +287,82 @@ impl Parser {
         }))
     }
 
+    fn parse_function_expression(&mut self) -> Result<safescript_ast::Expr, ParseError> {
+        use safescript_ast::*;
+
+        let span_start = self.previous().span.start;
+
+        self.expect(TokenKind::OpenParen)?;
+
+        let mut params = Vec::new();
+        while !self.check(&TokenKind::CloseParen) && !self.is_at_end() {
+            let name = self.expect_identifier()?;
+            let ty = if self.match_one(&[TokenKind::Colon]) {
+                Some(Box::new(self.parse_type()?))
+            } else {
+                None
+            };
+
+            params.push(Param {
+                pat: Pattern::Identifier(IdentPattern {
+                    name: name.clone(),
+                    type_annotation: ty,
+                    default: None,
+                }),
+                ty: None,
+                default: None,
+                is_optional: false,
+                span: 0..5,
+            });
+
+            if !self.check(&TokenKind::CloseParen) {
+                self.expect_comma()?;
+            }
+        }
+
+        self.expect(TokenKind::CloseParen)?;
+
+        let return_type = if self.match_one(&[TokenKind::Colon]) {
+            Some(Box::new(self.parse_type()?))
+        } else {
+            None
+        };
+
+        let body = if self.match_one(&[TokenKind::OpenBrace]) {
+            self.current -= 1;
+            match self.parse_statement()? {
+                Stmt::Block(b) => ArrowFunctionBody::Block(b),
+                _ => {
+                    return Err(ParseError::Parser(
+                        "Function expression body must be a block".to_string(),
+                    ))
+                }
+            }
+        } else if self.match_one(&[TokenKind::FatArrow]) {
+            let expr = self.parse_expression()?;
+            let block = BlockStmt {
+                statements: vec![Stmt::Return(ReturnStmt {
+                    argument: Some(expr),
+                    span: 0..10,
+                })],
+                span: 0..10,
+            };
+            ArrowFunctionBody::Block(block)
+        } else {
+            return Err(ParseError::Parser("Expected function body".to_string()));
+        };
+
+        let span = span_start..self.previous().span.end;
+
+        Ok(Expr::ArrowFunction(Box::new(ArrowFunctionExpr {
+            params,
+            body,
+            type_params: vec![],
+            return_type,
+            span,
+        })))
+    }
+
     fn parse_borrow_annotation(
         &mut self,
     ) -> Result<Option<safescript_ast::BorrowAnnotation>, ParseError> {
@@ -1429,6 +1505,10 @@ impl Parser {
 
         if self.match_one(&[TokenKind::This]) {
             return Ok(Expr::This(ThisExpr { span: 0..4 }));
+        }
+
+        if self.match_one(&[TokenKind::Function]) {
+            return self.parse_function_expression();
         }
 
         Err(ParseError::UnexpectedToken(format!(

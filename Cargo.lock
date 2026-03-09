@@ -1042,8 +1042,10 @@ dependencies = [
  "safescript-ir",
  "safescript-lexer",
  "safescript-parser",
+ "safescript-runtime",
  "safescript-stdlib",
  "safescript-types",
+ "tempfile",
  "thiserror",
  "tracing",
  "tracing-subscriber",
@@ -1152,6 +1154,16 @@ dependencies = [
  "safescript-lexer",
  "smallvec",
  "thiserror",
+]
+
+[[package]]
+name = "safescript-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "safescript-ast",
+ "safescript-borrowck",
+ "safescript-types",
 ]
 
 [[package]]

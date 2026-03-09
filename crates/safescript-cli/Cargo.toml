@@ -18,6 +18,7 @@ safescript-codegen-wasm = { path = "../safescript-codegen-wasm" }
 safescript-interop = { path = "../safescript-interop" }
 safescript-stdlib = { path = "../safescript-stdlib" }
 safescript-diagnostics = { path = "../safescript-diagnostics" }
+safescript-runtime = { path = "../safescript-runtime" }
 clap.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true

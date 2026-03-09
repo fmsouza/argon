@@ -12,6 +12,7 @@ members = [
     "crates/safescript-types",
     "crates/safescript-borrowck",
     "crates/safescript-ir",
+    "crates/safescript-runtime",
 ]
 resolver = "2"
 

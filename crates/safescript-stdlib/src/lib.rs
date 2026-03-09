@@ -314,6 +314,170 @@ impl StdLib {
         return Array.from(this.data.values());
     };
 
+    // Test utilities
+    const TestRunner = {
+        passed: 0,
+        failed: 0,
+        skipped: 0,
+        currentTest: null,
+        
+        assert: function(condition, message) {
+            if (!condition) {
+                throw new Error(message || 'Assertion failed');
+            }
+        },
+        
+        assertEq: function(actual, expected, message) {
+            if (actual !== expected) {
+                throw new Error(message || ('Expected ' + expected + ' but got ' + actual));
+            }
+        },
+        
+        assertNe: function(actual, expected, message) {
+            if (actual === expected) {
+                throw new Error(message || ('Expected ' + actual + ' to not equal ' + expected));
+            }
+        },
+        
+        assertTrue: function(actual, message) {
+            if (actual !== true) {
+                throw new Error(message || ('Expected true but got ' + actual));
+            }
+        },
+        
+        assertFalse: function(actual, message) {
+            if (actual !== false) {
+                throw new Error(message || ('Expected false but got ' + actual));
+            }
+        },
+        
+        assertNull: function(actual, message) {
+            if (actual !== null) {
+                throw new Error(message || ('Expected null but got ' + actual));
+            }
+        },
+        
+        assertNotNull: function(actual, message) {
+            if (actual === null || actual === undefined) {
+                throw new Error(message || ('Expected not null but got ' + actual));
+            }
+        },
+        
+        assertThrows: function(fn, message) {
+            try {
+                fn();
+                throw new Error(message || 'Expected function to throw');
+            } catch (e) {
+                if (e.message === message) {
+                    throw e;
+                }
+            }
+        },
+        
+        describe: function(name, fn) {
+            console.log('  ' + name);
+            try {
+                fn();
+            } catch (e) {
+                console.log('    ERROR: ' + e.message);
+                this.failed++;
+            }
+        },
+        
+        it: function(name, fn) {
+            console.log('    - ' + name);
+            this.currentTest = name;
+            try {
+                fn();
+                this.passed++;
+            } catch (e) {
+                console.log('      FAILED: ' + e.message);
+                this.failed++;
+            }
+        },
+        
+        skip: function(name, fn) {
+            console.log('    - ' + name + ' (SKIPPED)');
+            this.skipped++;
+        },
+        
+        test: function(name, fn) {
+            this.it(name, fn);
+        },
+        
+        expect: function(value) {
+            const self = this;
+            return {
+                toBe: function(expected) {
+                    self.assertEq(value, expected);
+                },
+                toEqual: function(expected) {
+                    self.assertEq(JSON.stringify(value), JSON.stringify(expected));
+                },
+                toBeTruthy: function() {
+                    self.assert(!!value, 'Expected truthy value');
+                },
+                toBeFalsy: function() {
+                    self.assert(!value, 'Expected falsy value');
+                },
+                toBeNull: function() {
+                    self.assertNull(value);
+                },
+                toBeDefined: function() {
+                    self.assert(value !== undefined, 'Expected defined value');
+                },
+                toBeUndefined: function() {
+                    self.assert(value === undefined, 'Expected undefined');
+                },
+                toContain: function(item) {
+                    self.assert(value.includes(item), 'Expected to contain ' + item);
+                },
+                toThrow: function() {
+                    self.assertThrows(function() { value(); });
+                },
+                not: {
+                    toBe: function(expected) {
+                        self.assertNe(value, expected);
+                    },
+                    toBeTruthy: function() {
+                        self.assert(!value, 'Expected falsy value');
+                    },
+                    toBeNull: function() {
+                        self.assert(value !== null, 'Expected not null');
+                    }
+                }
+            };
+        },
+        
+        summary: function() {
+            console.log('\nTest Summary:');
+            console.log('  Passed: ' + this.passed);
+            console.log('  Failed: ' + this.failed);
+            console.log('  Skipped: ' + this.skipped);
+            return { passed: this.passed, failed: this.failed, skipped: this.skipped };
+        },
+        
+        reset: function() {
+            this.passed = 0;
+            this.failed = 0;
+            this.skipped = 0;
+            this.currentTest = null;
+        }
+    };
+    
+    global.test = TestRunner.test.bind(TestRunner);
+    global.it = TestRunner.it.bind(TestRunner);
+    global.describe = TestRunner.describe.bind(TestRunner);
+    global.expect = TestRunner.expect.bind(TestRunner);
+    global.assert = TestRunner.assert;
+    global.assertEq = TestRunner.assertEq;
+    global.assertNe = TestRunner.assertNe;
+    global.assertTrue = TestRunner.assertTrue;
+    global.assertFalse = TestRunner.assertFalse;
+    global.assertNull = TestRunner.assertNull;
+    global.assertNotNull = TestRunner.assertNotNull;
+    global.assertThrows = TestRunner.assertThrows;
+    
     // Export
     global.SafeScript = {
         Vec: Vec,
@@ -322,7 +486,8 @@ impl StdLib {
         Shared: Shared,
         String: String,
         Map: Map,
-        Set: Set
+        Set: Set,
+        Test: TestRunner
     };
 })(typeof globalThis !== 'undefined' ? globalThis : typeof window !== 'undefined' ? window : this);
 "#
