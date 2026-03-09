@@ -349,9 +349,9 @@ declare module "axios" {
 |---------|--------|-------|
 | JSX Parsing | Partial | Basic elements work, nested needs fixing |
 | JSX Codegen | Partial | Simple React.createElement output |
-| Async/Await | Not started | Promise integration |
-| Source Maps | Stub | Debug production builds |
-| Full ES Modules | In progress | Import/export support |
+| Async/Await | Working | Basic async functions and await work |
+| Source Maps | Basic | Stub structure, needs full token tracking |
+| ES Modules | Partial | Codegen added, parser has issues |
 
 ### Priority 2: Type System Completion
 

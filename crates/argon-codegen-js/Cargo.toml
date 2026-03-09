@@ -15,7 +15,6 @@ argon-diagnostics = { path = "../argon-diagnostics" }
 indexmap.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
-sourcemap.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

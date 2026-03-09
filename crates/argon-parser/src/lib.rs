@@ -1651,6 +1651,14 @@ impl Parser {
     fn parse_unary(&mut self) -> Result<argon_ast::Expr, ParseError> {
         use argon_ast::*;
 
+        if self.match_one(&[TokenKind::Await]) {
+            let argument = Box::new(self.parse_unary()?);
+            return Ok(Expr::Await(AwaitExpr {
+                argument,
+                span: 0..10,
+            }));
+        }
+
         if self.match_one(&[TokenKind::PlusPlus, TokenKind::MinusMinus]) {
             let operator = match self.previous().kind {
                 TokenKind::PlusPlus => UpdateOperator::Increment,
