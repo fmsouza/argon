@@ -1,0 +1,21 @@
+[package]
+name = "safescript-borrowck"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+safescript-ast = { path = "../safescript-ast" }
+safescript-types = { path = "../safescript-types" }
+safescript-diagnostics = { path = "../safescript-diagnostics" }
+bumpalo.workspace = true
+indexmap.workspace = true
+smallvec.workspace = true
+hashbrown.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+insta.workspace = true

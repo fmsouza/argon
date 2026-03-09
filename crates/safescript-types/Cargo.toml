@@ -1,0 +1,22 @@
+[package]
+name = "safescript-types"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+safescript-ast = { path = "../safescript-ast" }
+safescript-diagnostics = { path = "../safescript-diagnostics" }
+bumpalo.workspace = true
+indexmap.workspace = true
+smallvec.workspace = true
+hashbrown.workspace = true
+lasso.workspace = true
+thiserror.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+insta.workspace = true

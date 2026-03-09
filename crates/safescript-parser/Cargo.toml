@@ -1,0 +1,20 @@
+[package]
+name = "safescript-parser"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+safescript-lexer = { path = "../safescript-lexer" }
+safescript-ast = { path = "../safescript-ast" }
+safescript-diagnostics = { path = "../safescript-diagnostics" }
+bumpalo.workspace = true
+indexmap.workspace = true
+smallvec.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+insta.workspace = true

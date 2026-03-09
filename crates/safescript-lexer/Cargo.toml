@@ -1,0 +1,18 @@
+[package]
+name = "safescript-lexer"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ariadne.workspace = true
+bumpalo.workspace = true
+smallvec.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+insta.workspace = true

@@ -1,0 +1,34 @@
+[package]
+name = "safescript-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+safescript-lexer = { path = "../safescript-lexer" }
+safescript-parser = { path = "../safescript-parser" }
+safescript-ast = { path = "../safescript-ast" }
+safescript-types = { path = "../safescript-types" }
+safescript-borrowck = { path = "../safescript-borrowck" }
+safescript-ir = { path = "../safescript-ir" }
+safescript-codegen-js = { path = "../safescript-codegen-js" }
+safescript-codegen-wasm = { path = "../safescript-codegen-wasm" }
+safescript-interop = { path = "../safescript-interop" }
+safescript-stdlib = { path = "../safescript-stdlib" }
+safescript-diagnostics = { path = "../safescript-diagnostics" }
+clap.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+directories.workspace = true
+
+[[bin]]
+name = "safescript"
+path = "src/main.rs"
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.0"

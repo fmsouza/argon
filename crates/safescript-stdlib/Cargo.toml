@@ -1,0 +1,16 @@
+[package]
+name = "safescript-stdlib"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+safescript-ast = { path = "../safescript-ast" }
+safescript-types = { path = "../safescript-types" }
+indexmap.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

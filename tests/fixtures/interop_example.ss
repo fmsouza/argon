@@ -1,0 +1,48 @@
+// SafeScript JS Interop example
+
+// Import existing JS libraries
+import { useState, useEffect } from "react";
+import axios from "axios";
+
+// Declare JS interop module
+@js-interop
+declare module "axios" {
+    function get<T>(url: string): Promise<AxiosResponse<T>>;
+}
+
+interface AxiosResponse<T> {
+    data: T;
+    status: number;
+}
+
+// Export SafeScript function to JS
+@export
+function processUserData(userId: u32): UserData? {
+    // This would be called from JS/TS
+    return null;
+}
+
+// JS interop: using Shared for React state
+function Counter(): number {
+    // Shared<T> for values that need reference semantics
+    const [count, setCount] = useState(0);
+    
+    return count;
+}
+
+// Using callback from JS library
+function fetchUser(userId: u32): Promise<User> {
+    const result = axios.get<User>(`/api/users/${userId}`);
+    return result.then((res) => res.data);
+}
+
+interface User {
+    id: u32;
+    name: string;
+    email: string;
+}
+
+interface UserData {
+    user: User;
+    createdAt: string;
+}
