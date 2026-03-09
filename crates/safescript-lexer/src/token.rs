@@ -176,6 +176,19 @@ pub enum TokenKind {
     Copy,   // copy trait
     Mut,    // mutable borrow
     Constructor,
+    // Numeric types
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    F32,
+    F64,
+    Isize,
+    Usize,
 
     // JSX
     JsxElementOpen,
@@ -206,6 +219,20 @@ impl TokenKind {
             "copy" => TokenKind::Copy,
             "mut" => TokenKind::Mut,
             "constructor" => TokenKind::Constructor,
+
+            // Numeric types
+            "i8" => TokenKind::I8,
+            "i16" => TokenKind::I16,
+            "i32" => TokenKind::I32,
+            "i64" => TokenKind::I64,
+            "u8" => TokenKind::U8,
+            "u16" => TokenKind::U16,
+            "u32" => TokenKind::U32,
+            "u64" => TokenKind::U64,
+            "f32" => TokenKind::F32,
+            "f64" => TokenKind::F64,
+            "isize" => TokenKind::Isize,
+            "usize" => TokenKind::Usize,
 
             // Standard TypeScript keywords
             "abstract" => TokenKind::Abstract,

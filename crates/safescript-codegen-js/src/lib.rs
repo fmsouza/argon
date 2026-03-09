@@ -37,6 +37,7 @@ impl JsCodegen {
             Stmt::Variable(v) => self.generate_variable(v),
             Stmt::Function(f) => self.generate_function(f),
             Stmt::Struct(s) => self.generate_struct(s),
+            Stmt::Class(c) => self.generate_class(c),
             Stmt::Expr(e) => {
                 self.generate_expression(&e.expr)?;
                 self.output.push_str(";\n");
@@ -124,9 +125,115 @@ impl JsCodegen {
     }
 
     fn generate_struct(&mut self, s: &StructDecl) -> Result<(), CodegenError> {
-        self.output.push_str("// struct ");
+        // Generate a constructor function for the struct
+        self.output.push_str("function ");
         self.output.push_str(&s.id.sym);
-        self.output.push_str("\n");
+        self.output.push_str("(");
+
+        // Parameters are the field names
+        let params: Vec<_> = s.fields.iter().map(|f| f.id.sym.as_str()).collect();
+        self.output.push_str(&params.join(", "));
+        self.output.push_str(") {\n");
+
+        // Assign fields to this
+        for field in &s.fields {
+            self.output.push_str("    this.");
+            self.output.push_str(&field.id.sym);
+            self.output.push_str(" = ");
+            self.output.push_str(&field.id.sym);
+            self.output.push_str(";\n");
+        }
+
+        self.output.push_str("}\n\n");
+        Ok(())
+    }
+
+    fn generate_class(&mut self, c: &ClassDecl) -> Result<(), CodegenError> {
+        // Generate a constructor function for the class
+        self.output.push_str("function ");
+        self.output.push_str(&c.id.sym);
+        self.output.push_str("(");
+
+        // Find constructor and get its params
+        let mut has_constructor = false;
+        for member in &c.body.body {
+            if let ClassMember::Constructor(constr) = member {
+                has_constructor = true;
+                let params: Vec<_> = constr
+                    .params
+                    .iter()
+                    .map(|p| {
+                        if let Pattern::Identifier(id) = &p.pat {
+                            id.name.sym.as_str()
+                        } else {
+                            ""
+                        }
+                    })
+                    .collect();
+                self.output.push_str(&params.join(", "));
+            }
+        }
+
+        if !has_constructor {
+            self.output.push_str(")");
+        }
+
+        self.output.push_str(") {\n");
+
+        // Generate constructor body
+        for member in &c.body.body {
+            match member {
+                ClassMember::Constructor(constr) => {
+                    for stmt in &constr.body.statements {
+                        self.generate_statement(stmt)?;
+                    }
+                }
+                ClassMember::Field(field) => {
+                    // Generate field initialization if there's a value
+                    if let Some(value) = &field.value {
+                        self.output.push_str("this.");
+                        self.generate_expression(&field.key)?;
+                        self.output.push_str(" = ");
+                        self.generate_expression(value)?;
+                        self.output.push_str(";\n");
+                    }
+                }
+                ClassMember::Method(method) => {
+                    // Generate method
+                    self.output.push_str("this.");
+                    self.generate_expression(&method.key)?;
+                    self.output.push_str(" = function(");
+
+                    // Method params
+                    let params: Vec<_> = method
+                        .value
+                        .params
+                        .iter()
+                        .map(|p| {
+                            if let Pattern::Identifier(id) = &p.pat {
+                                id.name.sym.as_str()
+                            } else {
+                                ""
+                            }
+                        })
+                        .collect();
+                    self.output.push_str(&params.join(", "));
+                    self.output.push_str(") {\n");
+
+                    // Method body
+                    for stmt in &method.value.body.statements {
+                        self.generate_statement(stmt)?;
+                    }
+
+                    self.output.push_str("};\n");
+                }
+                _ => {
+                    // Other class members not supported yet
+                }
+            }
+        }
+
+        self.output.push_str("}\n\n");
         Ok(())
     }
 
@@ -324,9 +431,21 @@ impl JsCodegen {
 
     fn generate_assignment_target(
         &mut self,
-        _target: &AssignmentTarget,
+        target: &AssignmentTarget,
     ) -> Result<(), CodegenError> {
-        self.output.push_str("/* target */");
+        match target {
+            AssignmentTarget::Simple(expr) => {
+                self.generate_expression(expr)?;
+            }
+            AssignmentTarget::Member(member) => {
+                self.generate_expression(&member.object)?;
+                self.output.push_str(".");
+                self.generate_expression(&member.property)?;
+            }
+            _ => {
+                self.output.push_str("/* target */");
+            }
+        }
         Ok(())
     }
 

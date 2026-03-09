@@ -251,17 +251,26 @@ impl Parser {
 
         let span_start = self.previous().span.start;
 
-        if !self.match_one(&[TokenKind::Ampersand]) {
+        // Handle both & and &mut
+        let is_mut = self.match_one(&[TokenKind::AmpersandMut]);
+        if !is_mut && !self.match_one(&[TokenKind::Ampersand]) {
             return Err(ParseError::Parser("Expected '&' after 'with'".to_string()));
         }
 
-        let kind = if self.match_one(&[TokenKind::Mut]) {
+        let kind = if is_mut {
+            safescript_ast::BorrowKind::Mutable
+        } else if self.match_one(&[TokenKind::Mut]) {
             safescript_ast::BorrowKind::Mutable
         } else {
             safescript_ast::BorrowKind::Shared
         };
 
-        let target = if self.check(&TokenKind::Identifier) {
+        let target = if self.match_one(&[TokenKind::This]) {
+            Some(safescript_ast::Ident {
+                sym: "this".to_string(),
+                span: self.previous().span.clone(),
+            })
+        } else if self.check(&TokenKind::Identifier) {
             Some(self.expect_identifier()?)
         } else {
             None
@@ -626,29 +635,74 @@ impl Parser {
         while !self.check(&TokenKind::CloseBrace) && !self.is_at_end() {
             if self.match_one(&[TokenKind::Constructor]) {
                 body_items.push(ClassMember::Constructor(self.parse_constructor()?));
-            } else if self.check(&TokenKind::Identifier) || self.check(&TokenKind::String) {
-                let key = self.parse_expression()?;
-                if self.match_one(&[TokenKind::OpenParen]) {
-                    self.current -= 1;
+            } else if self.check(&TokenKind::Identifier) {
+                // Check if this is a method (identifier followed by parenthesis)
+                let saved_pos = self.current;
+                let _ = self.expect_identifier()?;
+                let is_method_call = self.check(&TokenKind::OpenParen);
+                self.current = saved_pos;
+
+                if is_method_call {
+                    // It's a method - parse identifier then call parse_method
+                    let key_ident = self.expect_identifier()?;
+                    let key = safescript_ast::Expr::Identifier(key_ident);
                     let method = self.parse_method(key)?;
                     body_items.push(ClassMember::Method(method));
                 } else {
-                    self.expect(TokenKind::Colon)?;
-                    let type_annotation = Some(Box::new(self.parse_type()?));
-                    let value = if self.match_one(&[TokenKind::Equal]) {
-                        Some(self.parse_expression()?)
+                    // It's a field - parse the full expression
+                    let key = self.parse_expression()?;
+                    if self.match_one(&[TokenKind::OpenParen]) {
+                        // Actually it's a method after all
+                        self.current -= 1;
+                        let method = self.parse_method(key)?;
+                        body_items.push(ClassMember::Method(method));
+                    } else if self.match_one(&[TokenKind::Colon]) {
+                        // It's a typed field
+                        let type_annotation = Some(Box::new(self.parse_type()?));
+                        let value = if self.match_one(&[TokenKind::Equal]) {
+                            Some(self.parse_expression()?)
+                        } else {
+                            None
+                        };
+                        body_items.push(ClassMember::Field(ClassField {
+                            key,
+                            value,
+                            type_annotation,
+                            is_optional: false,
+                            is_readonly: false,
+                            span: self.previous().span.clone(),
+                        }));
                     } else {
-                        None
-                    };
-                    body_items.push(ClassMember::Field(ClassField {
-                        key,
-                        value,
-                        type_annotation,
-                        is_optional: false,
-                        is_readonly: false,
-                        span: self.previous().span.clone(),
-                    }));
+                        // Just an expression statement
+                        body_items.push(ClassMember::Field(ClassField {
+                            key,
+                            value: None,
+                            type_annotation: None,
+                            is_optional: false,
+                            is_readonly: false,
+                            span: self.previous().span.clone(),
+                        }));
+                    }
                 }
+                self.match_one(&[TokenKind::Semi]);
+            } else if self.check(&TokenKind::String) {
+                // String key for computed property - treat as field
+                let key = self.parse_expression()?;
+                self.expect(TokenKind::Colon)?;
+                let type_annotation = Some(Box::new(self.parse_type()?));
+                let value = if self.match_one(&[TokenKind::Equal]) {
+                    Some(self.parse_expression()?)
+                } else {
+                    None
+                };
+                body_items.push(ClassMember::Field(ClassField {
+                    key,
+                    value,
+                    type_annotation,
+                    is_optional: false,
+                    is_readonly: false,
+                    span: self.previous().span.clone(),
+                }));
                 self.match_one(&[TokenKind::Semi]);
             } else {
                 self.advance();
@@ -761,6 +815,9 @@ impl Parser {
             None
         };
 
+        // Parse borrow annotation (e.g., "with &mut this")
+        let borrow_annotation = self.parse_borrow_annotation()?;
+
         let body_stmt = match self.parse_statement()? {
             Stmt::Block(b) => b,
             _ => {
@@ -784,7 +841,7 @@ impl Parser {
                 type_params: vec![],
                 return_type,
                 is_async: false,
-                borrow_annotation: None,
+                borrow_annotation,
                 span: self.previous().span.clone(),
             },
             kind: MethodKind::Method,
@@ -1297,6 +1354,28 @@ impl Parser {
             return Ok(Expr::Identifier(Ident { sym, span }));
         }
 
+        if self.match_one(&[TokenKind::New]) {
+            // Parse new expression - just parse the class name as identifier
+            let ident = self.expect_identifier()?;
+            let callee = safescript_ast::Expr::Identifier(ident);
+
+            let mut arguments = Vec::new();
+            if self.match_one(&[TokenKind::OpenParen]) {
+                while !self.check(&TokenKind::CloseParen) && !self.is_at_end() {
+                    arguments.push(ExprOrSpread::Expr(self.parse_expression()?));
+                    if !self.check(&TokenKind::CloseParen) {
+                        self.expect_comma()?;
+                    }
+                }
+                self.expect(TokenKind::CloseParen)?;
+            }
+            return Ok(Expr::New(safescript_ast::NewExpr {
+                callee: Box::new(callee),
+                arguments,
+                span: 0..10,
+            }));
+        }
+
         if self.match_one(&[TokenKind::OpenParen]) {
             let expr = self.parse_expression()?;
             self.expect(TokenKind::CloseParen)?;
@@ -1335,6 +1414,24 @@ impl Parser {
         }
 
         if self.match_one(&[TokenKind::Number]) {
+            return Ok(Type::Primitive(PrimitiveType::Number));
+        }
+
+        // Numeric types
+        if self.match_one(&[
+            TokenKind::I8,
+            TokenKind::I16,
+            TokenKind::I32,
+            TokenKind::I64,
+            TokenKind::U8,
+            TokenKind::U16,
+            TokenKind::U32,
+            TokenKind::U64,
+            TokenKind::F32,
+            TokenKind::F64,
+            TokenKind::Isize,
+            TokenKind::Usize,
+        ]) {
             return Ok(Type::Primitive(PrimitiveType::Number));
         }
 
