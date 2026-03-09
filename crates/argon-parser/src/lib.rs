@@ -220,6 +220,95 @@ impl Parser {
         }))
     }
 
+    fn parse_pattern(&mut self) -> Result<argon_ast::Pattern, ParseError> {
+        use argon_ast::*;
+
+        if self.match_one(&[TokenKind::OpenBracket]) {
+            let mut elements: Vec<Option<argon_ast::Pattern>> = Vec::new();
+
+            while !self.check(&TokenKind::CloseBracket) && !self.is_at_end() {
+                if self.match_one(&[TokenKind::DotDotDot]) {
+                    let pat = self.parse_pattern()?;
+                    elements.push(Some(pat));
+                } else if !self.check(&TokenKind::Comma) {
+                    elements.push(Some(self.parse_pattern()?));
+                } else {
+                    elements.push(None);
+                }
+
+                if !self.check(&TokenKind::CloseBracket) {
+                    self.expect_comma()?;
+                }
+            }
+
+            self.expect(TokenKind::CloseBracket)?;
+            return Ok(Pattern::Array(Box::new(ArrayPattern {
+                elements,
+                rest: None,
+            })));
+        }
+
+        if self.match_one(&[TokenKind::OpenBrace]) {
+            let mut properties = Vec::new();
+
+            while !self.check(&TokenKind::CloseBrace) && !self.is_at_end() {
+                if self.match_one(&[TokenKind::DotDotDot]) {
+                    let pat = self.parse_pattern()?;
+                    properties.push(ObjectPatternProperty::Rest(RestElement {
+                        argument: Box::new(pat),
+                        span: 0..10,
+                    }));
+                    if !self.check(&TokenKind::CloseBrace) {
+                        self.expect_comma()?;
+                    }
+                    continue;
+                }
+
+                let key = self.parse_expression()?;
+
+                let value = if self.match_one(&[TokenKind::Colon]) {
+                    self.parse_pattern()?
+                } else {
+                    match key.clone() {
+                        Expr::Identifier(id) => Pattern::Identifier(IdentPattern {
+                            name: id,
+                            type_annotation: None,
+                            default: None,
+                        }),
+                        _ => {
+                            return Err(ParseError::Parser(
+                                "Expected identifier in pattern".to_string(),
+                            ))
+                        }
+                    }
+                };
+
+                properties.push(ObjectPatternProperty::Property(KeyValuePattern {
+                    key,
+                    value,
+                    computed: false,
+                }));
+
+                if !self.check(&TokenKind::CloseBrace) {
+                    self.expect_comma()?;
+                }
+            }
+
+            self.expect(TokenKind::CloseBrace)?;
+            return Ok(Pattern::Object(Box::new(ObjectPattern {
+                properties,
+                rest: None,
+            })));
+        }
+
+        let name = self.expect_identifier()?;
+        Ok(Pattern::Identifier(IdentPattern {
+            name,
+            type_annotation: None,
+            default: None,
+        }))
+    }
+
     fn parse_variable(&mut self) -> Result<argon_ast::Stmt, ParseError> {
         use argon_ast::*;
 
@@ -229,13 +318,13 @@ impl Parser {
             VariableKind::Let
         };
 
-        let name = self.expect_identifier()?;
+        let mut id = self.parse_pattern()?;
 
-        let ty = if self.match_one(&[TokenKind::Colon]) {
-            Some(Box::new(self.parse_type()?))
-        } else {
-            None
-        };
+        if let Pattern::Identifier(ref mut ident) = id {
+            if self.match_one(&[TokenKind::Colon]) {
+                ident.type_annotation = Some(Box::new(self.parse_type()?));
+            }
+        }
 
         let init = if self.match_one(&[TokenKind::Equal]) {
             Some(self.parse_expression()?)
@@ -248,11 +337,7 @@ impl Parser {
         Ok(Stmt::Variable(VariableStmt {
             kind,
             declarations: vec![VariableDeclarator {
-                id: Pattern::Identifier(IdentPattern {
-                    name: name.clone(),
-                    type_annotation: ty,
-                    default: init.clone(),
-                }),
+                id,
                 init,
                 span: 0..10,
             }],
@@ -1194,22 +1279,6 @@ impl Parser {
             Ok(argon_ast::StringLiteral { value, span })
         } else {
             Err(ParseError::Parser("Expected string".to_string()))
-        }
-    }
-
-    fn parse_pattern(&mut self) -> Result<argon_ast::Pattern, ParseError> {
-        use argon_ast::*;
-
-        if self.match_one(&[TokenKind::Identifier]) {
-            let span = self.previous().span.clone();
-            let name = self.source[span.clone()].to_string();
-            Ok(Pattern::Identifier(IdentPattern {
-                name: Ident { sym: name, span },
-                type_annotation: None,
-                default: None,
-            }))
-        } else {
-            Err(ParseError::Parser("Expected pattern".to_string()))
         }
     }
 
