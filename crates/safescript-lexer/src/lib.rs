@@ -3,6 +3,9 @@
 mod error;
 mod token;
 
+#[cfg(test)]
+mod lexer_tests;
+
 pub use error::*;
 pub use token::*;
 

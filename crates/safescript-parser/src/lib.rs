@@ -1,5 +1,8 @@
 //! SafeScript - Parser
 
+#[cfg(test)]
+mod parser_tests;
+
 use safescript_ast::{PropertyKind, SourceFile};
 use safescript_lexer::Token as LexerToken;
 use safescript_lexer::{tokenize, LexerError, TokenKind};

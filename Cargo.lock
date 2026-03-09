@@ -998,6 +998,7 @@ dependencies = [
  "proptest",
  "safescript-ast",
  "safescript-diagnostics",
+ "safescript-parser",
  "safescript-types",
  "smallvec",
  "thiserror",
@@ -1153,6 +1154,7 @@ dependencies = [
  "proptest",
  "safescript-ast",
  "safescript-diagnostics",
+ "safescript-parser",
  "smallvec",
  "thiserror",
 ]

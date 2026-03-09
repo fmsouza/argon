@@ -1,6 +1,9 @@
 //! SafeScript - Borrow checker
 //! Implements Rust-style ownership and borrowing
 
+#[cfg(test)]
+mod borrow_checker_tests;
+
 use safescript_ast::*;
 use std::collections::{HashMap, HashSet};
 

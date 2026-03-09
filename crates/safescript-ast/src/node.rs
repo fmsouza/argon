@@ -175,7 +175,7 @@ pub struct VariableStmt {
     pub declarations: Vec<VariableDeclarator>,
     pub span: Span,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum VariableKind {
     Var,
     Let,
