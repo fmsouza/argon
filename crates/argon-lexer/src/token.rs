@@ -36,6 +36,7 @@ pub enum TokenKind {
     QuestionDot,
     QuestionQuestion,
     QuestionQuestionDot,
+    QuestionQuestionEqual,
     Colon,
     Tilde,
 

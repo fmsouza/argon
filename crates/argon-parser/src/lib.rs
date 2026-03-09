@@ -1253,6 +1253,7 @@ impl Parser {
             TokenKind::AmpersandEqual,
             TokenKind::PipeEqual,
             TokenKind::CaretEqual,
+            TokenKind::QuestionQuestionEqual,
         ]) {
             let operator = match self.previous().kind {
                 TokenKind::PlusEqual => AssignmentOperator::PlusAssign,
@@ -1268,6 +1269,7 @@ impl Parser {
                 TokenKind::AmpersandEqual => AssignmentOperator::BitwiseAndAssign,
                 TokenKind::PipeEqual => AssignmentOperator::BitwiseOrAssign,
                 TokenKind::CaretEqual => AssignmentOperator::BitwiseXorAssign,
+                TokenKind::QuestionQuestionEqual => AssignmentOperator::NullishCoalescingAssign,
                 _ => AssignmentOperator::Assign,
             };
             let right = Box::new(self.parse_assignment()?);
@@ -1341,18 +1343,79 @@ impl Parser {
     fn parse_equality(&mut self) -> Result<argon_ast::Expr, ParseError> {
         use argon_ast::*;
 
-        let mut expr = self.parse_comparison()?;
+        let mut expr = self.parse_bitwise_and()?;
 
-        while self.match_one(&[TokenKind::BangEqual, TokenKind::EqualEqual]) {
-            let operator = if self.previous().kind == TokenKind::BangEqual {
-                BinaryOperator::NotEqual
-            } else {
-                BinaryOperator::Equal
+        while self.match_one(&[
+            TokenKind::BangEqual,
+            TokenKind::EqualEqual,
+            TokenKind::BangEqualEqual,
+            TokenKind::EqualEqualEqual,
+        ]) {
+            let operator = match self.previous().kind {
+                TokenKind::BangEqual => BinaryOperator::NotEqual,
+                TokenKind::EqualEqual => BinaryOperator::Equal,
+                TokenKind::BangEqualEqual => BinaryOperator::StrictNotEqual,
+                TokenKind::EqualEqualEqual => BinaryOperator::StrictEqual,
+                _ => BinaryOperator::Equal,
             };
-            let right = Box::new(self.parse_comparison()?);
+            let right = Box::new(self.parse_bitwise_and()?);
             expr = Expr::Binary(BinaryExpr {
                 left: Box::new(expr),
                 operator,
+                right,
+                span: 0..10,
+            });
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_bitwise_and(&mut self) -> Result<argon_ast::Expr, ParseError> {
+        use argon_ast::*;
+
+        let mut expr = self.parse_bitwise_xor()?;
+
+        while self.match_one(&[TokenKind::Ampersand]) {
+            let right = Box::new(self.parse_bitwise_xor()?);
+            expr = Expr::Binary(BinaryExpr {
+                left: Box::new(expr),
+                operator: BinaryOperator::BitwiseAnd,
+                right,
+                span: 0..10,
+            });
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_bitwise_xor(&mut self) -> Result<argon_ast::Expr, ParseError> {
+        use argon_ast::*;
+
+        let mut expr = self.parse_bitwise_or()?;
+
+        while self.match_one(&[TokenKind::Caret]) {
+            let right = Box::new(self.parse_bitwise_or()?);
+            expr = Expr::Binary(BinaryExpr {
+                left: Box::new(expr),
+                operator: BinaryOperator::BitwiseXor,
+                right,
+                span: 0..10,
+            });
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_bitwise_or(&mut self) -> Result<argon_ast::Expr, ParseError> {
+        use argon_ast::*;
+
+        let mut expr = self.parse_comparison()?;
+
+        while self.match_one(&[TokenKind::Pipe]) {
+            let right = Box::new(self.parse_comparison()?);
+            expr = Expr::Binary(BinaryExpr {
+                left: Box::new(expr),
+                operator: BinaryOperator::BitwiseOr,
                 right,
                 span: 0..10,
             });
@@ -1441,6 +1504,21 @@ impl Parser {
     fn parse_unary(&mut self) -> Result<argon_ast::Expr, ParseError> {
         use argon_ast::*;
 
+        if self.match_one(&[TokenKind::PlusPlus, TokenKind::MinusMinus]) {
+            let operator = match self.previous().kind {
+                TokenKind::PlusPlus => UpdateOperator::Increment,
+                TokenKind::MinusMinus => UpdateOperator::Decrement,
+                _ => UpdateOperator::Increment,
+            };
+            let argument = Box::new(self.parse_unary()?);
+            return Ok(Expr::Update(UpdateExpr {
+                argument,
+                operator,
+                prefix: true,
+                span: 0..10,
+            }));
+        }
+
         if self.match_one(&[TokenKind::Bang, TokenKind::Minus, TokenKind::Plus]) {
             let operator = match self.previous().kind {
                 TokenKind::Bang => UnaryOperator::LogicalNot,
@@ -1491,6 +1569,18 @@ impl Parser {
                     object: Box::new(expr),
                     property,
                     computed: false,
+                    span: 0..10,
+                });
+            } else if self.match_one(&[TokenKind::PlusPlus, TokenKind::MinusMinus]) {
+                let operator = match self.previous().kind {
+                    TokenKind::PlusPlus => UpdateOperator::Increment,
+                    TokenKind::MinusMinus => UpdateOperator::Decrement,
+                    _ => UpdateOperator::Increment,
+                };
+                expr = Expr::Update(UpdateExpr {
+                    argument: Box::new(expr),
+                    operator,
+                    prefix: false,
                     span: 0..10,
                 });
             } else if self.match_one(&[TokenKind::OpenBracket]) {
@@ -1656,6 +1746,32 @@ impl Parser {
             let expr = self.parse_expression()?;
             self.expect(TokenKind::CloseParen)?;
             return Ok(expr);
+        }
+
+        if self.match_one(&[TokenKind::OpenBracket]) {
+            let span_start = self.previous().span.start;
+            let mut elements: Vec<Option<argon_ast::ExprOrSpread>> = Vec::new();
+
+            while !self.check(&TokenKind::CloseBracket) && !self.is_at_end() {
+                if self.match_one(&[TokenKind::DotDotDot]) {
+                    let expr = self.parse_expression()?;
+                    let spread = SpreadElement {
+                        argument: Box::new(expr),
+                        span: 0..10,
+                    };
+                    elements.push(Some(ExprOrSpread::Spread(spread)));
+                } else {
+                    elements.push(Some(ExprOrSpread::Expr(self.parse_expression()?)));
+                }
+
+                if !self.check(&TokenKind::CloseBracket) {
+                    self.expect_comma()?;
+                }
+            }
+
+            self.expect(TokenKind::CloseBracket)?;
+            let span = span_start..self.previous().span.end;
+            return Ok(Expr::Array(ArrayExpression { elements, span }));
         }
 
         if self.match_one(&[TokenKind::This]) {

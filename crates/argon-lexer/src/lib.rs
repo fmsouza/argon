@@ -225,6 +225,13 @@ impl<'a> Lexer<'a> {
                             self.start..self.position + 1,
                         )
                     }
+                    Some(&'=') => {
+                        self.advance();
+                        Token::new(
+                            TokenKind::QuestionQuestionEqual,
+                            self.start..self.position + 1,
+                        )
+                    }
                     _ => Token::new(TokenKind::QuestionQuestion, self.start..self.position + 1),
                 }
             }
