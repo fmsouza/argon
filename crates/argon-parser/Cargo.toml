@@ -1,0 +1,20 @@
+[package]
+name = "argon-parser"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+argon-lexer = { path = "../argon-lexer" }
+argon-ast = { path = "../argon-ast" }
+argon-diagnostics = { path = "../argon-diagnostics" }
+bumpalo.workspace = true
+indexmap.workspace = true
+smallvec.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+insta.workspace = true

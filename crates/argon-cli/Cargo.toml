@@ -1,0 +1,37 @@
+[package]
+name = "argon-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+argon-lexer = { path = "../argon-lexer" }
+argon-parser = { path = "../argon-parser" }
+argon-ast = { path = "../argon-ast" }
+argon-types = { path = "../argon-types" }
+argon-borrowck = { path = "../argon-borrowck" }
+argon-ir = { path = "../argon-ir" }
+argon-codegen-js = { path = "../argon-codegen-js" }
+argon-codegen-wasm = { path = "../argon-codegen-wasm" }
+argon-interop = { path = "../argon-interop" }
+argon-stdlib = { path = "../argon-stdlib" }
+argon-diagnostics = { path = "../argon-diagnostics" }
+argon-runtime = { path = "../argon-runtime" }
+clap.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+directories.workspace = true
+wasmprinter.workspace = true
+
+[[bin]]
+name = "argon"
+path = "src/main.rs"
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.0"
+tempfile = "3.8"

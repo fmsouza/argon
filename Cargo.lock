@@ -86,6 +86,211 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "argon-ast"
+version = "0.1.0"
+dependencies = [
+ "ariadne",
+ "bumpalo",
+ "indexmap",
+ "parking_lot",
+ "proptest",
+ "serde",
+ "smallvec",
+ "thiserror",
+]
+
+[[package]]
+name = "argon-borrowck"
+version = "0.1.0"
+dependencies = [
+ "argon-ast",
+ "argon-diagnostics",
+ "argon-parser",
+ "argon-types",
+ "bumpalo",
+ "hashbrown 0.14.5",
+ "indexmap",
+ "insta",
+ "proptest",
+ "smallvec",
+ "thiserror",
+]
+
+[[package]]
+name = "argon-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon-ast",
+ "argon-borrowck",
+ "argon-codegen-js",
+ "argon-codegen-wasm",
+ "argon-diagnostics",
+ "argon-interop",
+ "argon-ir",
+ "argon-lexer",
+ "argon-parser",
+ "argon-runtime",
+ "argon-stdlib",
+ "argon-types",
+ "assert_cmd",
+ "clap",
+ "directories",
+ "predicates",
+ "tempfile",
+ "thiserror",
+ "tracing",
+ "tracing-subscriber",
+ "wasmprinter",
+]
+
+[[package]]
+name = "argon-codegen-js"
+version = "0.1.0"
+dependencies = [
+ "argon-ast",
+ "argon-diagnostics",
+ "argon-interop",
+ "argon-ir",
+ "argon-parser",
+ "argon-stdlib",
+ "indexmap",
+ "insta",
+ "proptest",
+ "smallvec",
+ "sourcemap",
+ "thiserror",
+]
+
+[[package]]
+name = "argon-codegen-wasm"
+version = "0.1.0"
+dependencies = [
+ "argon-ast",
+ "argon-diagnostics",
+ "argon-interop",
+ "argon-ir",
+ "argon-parser",
+ "argon-stdlib",
+ "indexmap",
+ "insta",
+ "proptest",
+ "smallvec",
+ "thiserror",
+ "wasm-encoder 0.41.2",
+]
+
+[[package]]
+name = "argon-diagnostics"
+version = "0.1.0"
+dependencies = [
+ "ariadne",
+ "atty",
+ "indexmap",
+ "insta",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "argon-interop"
+version = "0.1.0"
+dependencies = [
+ "argon-ast",
+ "argon-types",
+ "indexmap",
+ "proptest",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
+name = "argon-ir"
+version = "0.1.0"
+dependencies = [
+ "argon-ast",
+ "argon-diagnostics",
+ "argon-parser",
+ "argon-types",
+ "bumpalo",
+ "hashbrown 0.14.5",
+ "indexmap",
+ "insta",
+ "parking_lot",
+ "proptest",
+ "smallvec",
+ "thiserror",
+]
+
+[[package]]
+name = "argon-lexer"
+version = "0.1.0"
+dependencies = [
+ "argon-diagnostics",
+ "ariadne",
+ "bumpalo",
+ "insta",
+ "proptest",
+ "serde",
+ "smallvec",
+ "thiserror",
+]
+
+[[package]]
+name = "argon-parser"
+version = "0.1.0"
+dependencies = [
+ "argon-ast",
+ "argon-diagnostics",
+ "argon-lexer",
+ "bumpalo",
+ "indexmap",
+ "insta",
+ "proptest",
+ "smallvec",
+ "thiserror",
+]
+
+[[package]]
+name = "argon-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon-ast",
+ "argon-borrowck",
+ "argon-types",
+]
+
+[[package]]
+name = "argon-stdlib"
+version = "0.1.0"
+dependencies = [
+ "argon-ast",
+ "argon-types",
+ "indexmap",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
+name = "argon-types"
+version = "0.1.0"
+dependencies = [
+ "argon-ast",
+ "argon-diagnostics",
+ "argon-parser",
+ "bumpalo",
+ "hashbrown 0.14.5",
+ "indexmap",
+ "insta",
+ "lasso",
+ "parking_lot",
+ "proptest",
+ "smallvec",
+ "thiserror",
+]
+
+[[package]]
 name = "ariadne"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -994,211 +1199,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "safescript-ast"
-version = "0.1.0"
-dependencies = [
- "ariadne",
- "bumpalo",
- "indexmap",
- "parking_lot",
- "proptest",
- "serde",
- "smallvec",
- "thiserror",
-]
-
-[[package]]
-name = "safescript-borrowck"
-version = "0.1.0"
-dependencies = [
- "bumpalo",
- "hashbrown 0.14.5",
- "indexmap",
- "insta",
- "proptest",
- "safescript-ast",
- "safescript-diagnostics",
- "safescript-parser",
- "safescript-types",
- "smallvec",
- "thiserror",
-]
-
-[[package]]
-name = "safescript-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "clap",
- "directories",
- "predicates",
- "safescript-ast",
- "safescript-borrowck",
- "safescript-codegen-js",
- "safescript-codegen-wasm",
- "safescript-diagnostics",
- "safescript-interop",
- "safescript-ir",
- "safescript-lexer",
- "safescript-parser",
- "safescript-runtime",
- "safescript-stdlib",
- "safescript-types",
- "tempfile",
- "thiserror",
- "tracing",
- "tracing-subscriber",
- "wasmprinter",
-]
-
-[[package]]
-name = "safescript-codegen-js"
-version = "0.1.0"
-dependencies = [
- "indexmap",
- "insta",
- "proptest",
- "safescript-ast",
- "safescript-diagnostics",
- "safescript-interop",
- "safescript-ir",
- "safescript-parser",
- "safescript-stdlib",
- "smallvec",
- "sourcemap",
- "thiserror",
-]
-
-[[package]]
-name = "safescript-codegen-wasm"
-version = "0.1.0"
-dependencies = [
- "indexmap",
- "insta",
- "proptest",
- "safescript-ast",
- "safescript-diagnostics",
- "safescript-interop",
- "safescript-ir",
- "safescript-parser",
- "safescript-stdlib",
- "smallvec",
- "thiserror",
- "wasm-encoder 0.41.2",
-]
-
-[[package]]
-name = "safescript-diagnostics"
-version = "0.1.0"
-dependencies = [
- "ariadne",
- "atty",
- "indexmap",
- "insta",
- "serde",
- "thiserror",
-]
-
-[[package]]
-name = "safescript-interop"
-version = "0.1.0"
-dependencies = [
- "indexmap",
- "proptest",
- "safescript-ast",
- "safescript-types",
- "serde",
- "thiserror",
-]
-
-[[package]]
-name = "safescript-ir"
-version = "0.1.0"
-dependencies = [
- "bumpalo",
- "hashbrown 0.14.5",
- "indexmap",
- "insta",
- "parking_lot",
- "proptest",
- "safescript-ast",
- "safescript-diagnostics",
- "safescript-parser",
- "safescript-types",
- "smallvec",
- "thiserror",
-]
-
-[[package]]
-name = "safescript-lexer"
-version = "0.1.0"
-dependencies = [
- "ariadne",
- "bumpalo",
- "insta",
- "proptest",
- "safescript-diagnostics",
- "serde",
- "smallvec",
- "thiserror",
-]
-
-[[package]]
-name = "safescript-parser"
-version = "0.1.0"
-dependencies = [
- "bumpalo",
- "indexmap",
- "insta",
- "proptest",
- "safescript-ast",
- "safescript-diagnostics",
- "safescript-lexer",
- "smallvec",
- "thiserror",
-]
-
-[[package]]
-name = "safescript-runtime"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "safescript-ast",
- "safescript-borrowck",
- "safescript-types",
-]
-
-[[package]]
-name = "safescript-stdlib"
-version = "0.1.0"
-dependencies = [
- "indexmap",
- "proptest",
- "safescript-ast",
- "safescript-types",
- "thiserror",
-]
-
-[[package]]
-name = "safescript-types"
-version = "0.1.0"
-dependencies = [
- "bumpalo",
- "hashbrown 0.14.5",
- "indexmap",
- "insta",
- "lasso",
- "parking_lot",
- "proptest",
- "safescript-ast",
- "safescript-diagnostics",
- "safescript-parser",
- "smallvec",
- "thiserror",
-]
-
-[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2006,18 +2006,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.40"
+version = "0.8.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a789c6e490b576db9f7e6b6d661bcc9799f7c0ac8352f56ea20193b2681532e5"
+checksum = "f2578b716f8a7a858b7f02d5bd870c14bf4ddbbcf3a4c05414ba6503640505e3"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.40"
+version = "0.8.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f65c489a7071a749c849713807783f70672b28094011623e200cb86dcb835953"
+checksum = "7e6cc098ea4d3bd6246687de65af3f920c430e236bee1e3bf2e441463f08a02f"
 dependencies = [
  "proc-macro2",
  "quote",

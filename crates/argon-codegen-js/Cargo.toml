@@ -1,0 +1,23 @@
+[package]
+name = "argon-codegen-js"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+argon-ir = { path = "../argon-ir" }
+argon-ast = { path = "../argon-ast" }
+argon-interop = { path = "../argon-interop" }
+argon-stdlib = { path = "../argon-stdlib" }
+argon-diagnostics = { path = "../argon-diagnostics" }
+indexmap.workspace = true
+smallvec.workspace = true
+thiserror.workspace = true
+sourcemap.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+insta.workspace = true
+argon-parser = { path = "../argon-parser" }

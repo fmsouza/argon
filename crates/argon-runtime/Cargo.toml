@@ -1,0 +1,12 @@
+[package]
+name = "argon-runtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+argon-ast = { path = "../argon-ast" }
+argon-types = { path = "../argon-types" }
+argon-borrowck = { path = "../argon-borrowck" }
+anyhow = "1.0"

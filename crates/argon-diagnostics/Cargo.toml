@@ -1,0 +1,17 @@
+[package]
+name = "argon-diagnostics"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ariadne.workspace = true
+atty.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+indexmap.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

@@ -1,27 +1,27 @@
 [workspace]
 members = [
-    "crates/safescript-cli",
-    "crates/safescript-codegen-js",
-    "crates/safescript-codegen-wasm",
-    "crates/safescript-interop",
-    "crates/safescript-stdlib",
-    "crates/safescript-diagnostics",
-    "crates/safescript-lexer",
-    "crates/safescript-ast",
-    "crates/safescript-parser",
-    "crates/safescript-types",
-    "crates/safescript-borrowck",
-    "crates/safescript-ir",
-    "crates/safescript-runtime",
+    "crates/argon-cli",
+    "crates/argon-codegen-js",
+    "crates/argon-codegen-wasm",
+    "crates/argon-interop",
+    "crates/argon-stdlib",
+    "crates/argon-diagnostics",
+    "crates/argon-lexer",
+    "crates/argon-ast",
+    "crates/argon-parser",
+    "crates/argon-types",
+    "crates/argon-borrowck",
+    "crates/argon-ir",
+    "crates/argon-runtime",
 ]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["SafeScript Team"]
+authors = ["Argon Team"]
 license = "MIT"
-repository = "https://github.com/safescript/safescript"
+repository = "https://github.com/argon/argon"
 
 [workspace.dependencies]
 # Error reporting
