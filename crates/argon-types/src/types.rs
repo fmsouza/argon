@@ -375,3 +375,91 @@ impl TypeTable {
         self.get_or_add(Type::Generic(name))
     }
 }
+
+pub struct TypeInstantiator {
+    substitutions: HashMap<String, TypeId>,
+}
+
+impl TypeInstantiator {
+    pub fn new() -> Self {
+        Self {
+            substitutions: HashMap::new(),
+        }
+    }
+
+    pub fn add_substitution(&mut self, param_name: String, concrete_type: TypeId) {
+        self.substitutions.insert(param_name, concrete_type);
+    }
+
+    pub fn instantiate(&self, type_table: &mut TypeTable, type_id: TypeId) -> TypeId {
+        let ty = type_table.get(type_id).cloned().unwrap_or(Type::Never);
+
+        match ty {
+            Type::TypeParam(param) => self
+                .substitutions
+                .get(&param.name)
+                .copied()
+                .unwrap_or(type_id),
+            Type::Generic(name) => self.substitutions.get(&name).copied().unwrap_or(type_id),
+            Type::Function(sig) => {
+                let new_params: Vec<_> = sig
+                    .params
+                    .iter()
+                    .map(|&p| self.instantiate(type_table, p))
+                    .collect();
+                let new_return = self.instantiate(type_table, sig.return_type);
+                type_table.function(FunctionSig {
+                    params: new_params,
+                    return_type: new_return,
+                    is_async: sig.is_async,
+                })
+            }
+            Type::Array(elem) => {
+                let new_elem = self.instantiate(type_table, elem);
+                type_table.array(new_elem)
+            }
+            Type::Tuple(types) => {
+                let new_types: Vec<_> = types
+                    .iter()
+                    .map(|&t| self.instantiate(type_table, t))
+                    .collect();
+                type_table.tuple(new_types)
+            }
+            Type::Option(inner) => {
+                let new_inner = self.instantiate(type_table, inner);
+                type_table.option(new_inner)
+            }
+            Type::Result(ok, err) => {
+                let new_ok = self.instantiate(type_table, ok);
+                let new_err = self.instantiate(type_table, err);
+                type_table.result(new_ok, new_err)
+            }
+            Type::Ref(inner) => {
+                let new_inner = self.instantiate(type_table, inner);
+                type_table.ref_type(new_inner)
+            }
+            Type::MutRef(inner) => {
+                let new_inner = self.instantiate(type_table, inner);
+                type_table.mut_ref(new_inner)
+            }
+            Type::Shared(inner) => {
+                let new_inner = self.instantiate(type_table, inner);
+                type_table.shared(new_inner)
+            }
+            Type::Union(types) => {
+                let new_types: Vec<_> = types
+                    .iter()
+                    .map(|&t| self.instantiate(type_table, t))
+                    .collect();
+                type_table.union(new_types)
+            }
+            _ => type_id,
+        }
+    }
+}
+
+impl Default for TypeInstantiator {
+    fn default() -> Self {
+        Self::new()
+    }
+}

@@ -3,6 +3,7 @@
 use argon_ast::*;
 use argon_ir::*;
 use argon_stdlib::StdLib;
+use sourcemap::SourceMapBuilder;
 
 pub struct JsCodegen {
     output: String,
@@ -10,6 +11,10 @@ pub struct JsCodegen {
     #[allow(dead_code)]
     variables: Vec<String>,
     include_runtime: bool,
+    #[allow(dead_code)]
+    source_map: Option<SourceMapBuilder>,
+    current_source_line: usize,
+    current_generated_line: usize,
 }
 
 impl JsCodegen {
@@ -19,7 +24,17 @@ impl JsCodegen {
             indent: 0,
             variables: Vec::new(),
             include_runtime: true,
+            source_map: None,
+            current_source_line: 0,
+            current_generated_line: 0,
         }
+    }
+
+    pub fn with_source_map(mut self, source_name: &str) -> Self {
+        let mut builder = SourceMapBuilder::new(Some(source_name));
+        builder.add_source(source_name);
+        self.source_map = Some(builder);
+        self
     }
 
     pub fn with_runtime(mut self, include: bool) -> Self {
@@ -44,6 +59,25 @@ impl JsCodegen {
         }
 
         Ok(self.output.clone())
+    }
+
+    pub fn get_source_map(&self) -> Option<String> {
+        self.source_map.as_ref().map(|_sm| "{}".to_string())
+    }
+
+    fn add_mapping(
+        &mut self,
+        source_line: usize,
+        generated_line: usize,
+        source_col_start: usize,
+        generated_col_start: usize,
+    ) {
+        let _ = (
+            source_line,
+            generated_line,
+            source_col_start,
+            generated_col_start,
+        );
     }
 
     fn generate_statement(&mut self, stmt: &Stmt) -> Result<(), CodegenError> {
