@@ -1,6 +1,5 @@
 //! SafeScript - Intermediate representation
 
-use indexmap::IndexMap;
 use safescript_ast::*;
 use std::collections::HashMap;
 

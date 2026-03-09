@@ -1,6 +1,6 @@
 //! SafeScript - Lexer errors with diagnostic support
 
-use safescript_diagnostics::{Diagnostic, DiagnosticEngine, DiagnosticLabel, Severity};
+use safescript_diagnostics::{Diagnostic, DiagnosticEngine, DiagnosticLabel};
 use thiserror::Error;
 
 #[derive(Error, Debug, Clone)]

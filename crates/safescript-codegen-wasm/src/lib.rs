@@ -115,7 +115,6 @@ impl WasmCodegen {
                     BinOp::Shl => 0x74,
                     BinOp::Shr => 0x75,
                     BinOp::Sar => 0x76,
-                    _ => 0x6a,
                 };
                 wasm.push(code);
             }

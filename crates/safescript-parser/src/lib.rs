@@ -3,8 +3,8 @@
 #[cfg(test)]
 mod parser_tests;
 
-use safescript_ast::{PropertyKind, SourceFile};
-use safescript_diagnostics::{Diagnostic, DiagnosticEngine, DiagnosticLabel, Severity};
+use safescript_ast::SourceFile;
+use safescript_diagnostics::{Diagnostic, DiagnosticEngine, DiagnosticLabel};
 use safescript_lexer::Token as LexerToken;
 use safescript_lexer::{tokenize, LexerError, TokenKind};
 

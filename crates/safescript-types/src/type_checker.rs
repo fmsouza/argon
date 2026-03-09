@@ -68,6 +68,7 @@ pub struct TypeChecker {
     type_table: TypeTable,
     env: TypeEnvironment,
     errors: Vec<TypeError>,
+    #[allow(dead_code)]
     warnings: Vec<String>,
 }
 

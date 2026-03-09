@@ -144,7 +144,7 @@ impl DiagnosticEngine {
                         .map(|p| diagnostic.span.start - p - 1)
                         .unwrap_or(diagnostic.span.start);
 
-                let pointer = " ".repeat(5 + col) + "^";
+                let _pointer = " ".repeat(5 + col) + "^";
                 let span_len = diagnostic.span.len().max(1);
                 let underline = " ".repeat(5 + col) + &"~".repeat(span_len);
 

@@ -23,6 +23,7 @@ pub enum BorrowKind {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct VariableState {
     name: String,
     ownership: Ownership,
@@ -33,6 +34,7 @@ struct VariableState {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct Borrow {
     kind: BorrowKind,
     location: Span,
@@ -48,6 +50,7 @@ pub struct Lifetime {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct LifetimeScope {
     id: usize,
     parent: Option<usize>,
@@ -55,6 +58,7 @@ struct LifetimeScope {
     children: Vec<usize>,
 }
 
+#[allow(dead_code)]
 pub struct BorrowChecker {
     locals: HashMap<String, VariableState>,
     active_borrows: HashMap<String, Vec<Borrow>>,
@@ -110,6 +114,7 @@ impl BorrowChecker {
         }
     }
 
+    #[allow(dead_code)]
     fn extend_lifetime(&mut self, lifetime: &mut Lifetime) {
         lifetime.end = self.scope_depth;
     }
@@ -747,6 +752,7 @@ impl BorrowChecker {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn check_data_race(&mut self) -> Result<(), BorrowError> {
         let mutable_borrowed: HashSet<_> = self
             .active_borrows

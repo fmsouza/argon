@@ -305,7 +305,6 @@ impl TokenKind {
             "var" => TokenKind::Var,
             "void" => TokenKind::Void,
             "while" => TokenKind::While,
-            "with" => TokenKind::With,
             "yield" => TokenKind::Yield,
 
             _ => TokenKind::Identifier,

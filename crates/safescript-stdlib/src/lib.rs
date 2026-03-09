@@ -31,289 +31,300 @@ impl StdLib {
 (function(global) {
     'use strict';
 
-    const SafeScript = {
-        Vec: function Vec(capacity = 0) {
-            this.data = new Array(capacity);
-            this.len = 0;
-        };
+    // Vec<T> - Dynamic array with ownership semantics
+    function Vec(capacity) {
+        this.data = new Array(capacity || 0);
+        this.len = 0;
+    }
 
-        Vec.prototype.push = function(...items) {
-            for (const item of items) {
-                this.data[this.len++] = item;
+    Vec.prototype.push = function() {
+        for (let i = 0; i < arguments.length; i++) {
+            this.data[this.len++] = arguments[i];
+        }
+        return this.len;
+    };
+
+    Vec.prototype.pop = function() {
+        if (this.len === 0) return undefined;
+        return this.data[--this.len];
+    };
+
+    Vec.prototype.get = function(index) {
+        if (index < 0 || index >= this.len) {
+            throw new Error('Vec index out of bounds');
+        }
+        return this.data[index];
+    };
+
+    Vec.prototype.set = function(index, value) {
+        if (index < 0 || index >= this.len) {
+            throw new Error('Vec index out of bounds');
+        }
+        this.data[index] = value;
+    };
+
+    Object.defineProperty(Vec.prototype, 'len', {
+        get: function() { return this.len; },
+        configurable: false
+    });
+
+    Vec.prototype.isEmpty = function() {
+        return this.len === 0;
+    };
+
+    Vec.prototype.clear = function() {
+        this.len = 0;
+        this.data = [];
+    };
+
+    Vec.prototype[Symbol.iterator] = function*() {
+        for (let i = 0; i < this.len; i++) {
+            yield this.data[i];
+        }
+    };
+
+    Vec.prototype.map = function(fn) {
+        const result = new Vec();
+        for (let i = 0; i < this.len; i++) {
+            result.push(fn(this.data[i], i));
+        }
+        return result;
+    };
+
+    Vec.prototype.filter = function(fn) {
+        const result = new Vec();
+        for (let i = 0; i < this.len; i++) {
+            if (fn(this.data[i], i)) {
+                result.push(this.data[i]);
             }
-            return this.len;
-        };
+        }
+        return result;
+    };
 
-        Vec.prototype.pop = function() {
-            if (this.len === 0) return undefined;
-            return this.data[--this.len];
-        };
+    Vec.prototype.reduce = function(fn, initial) {
+        let acc = initial;
+        for (let i = 0; i < this.len; i++) {
+            acc = fn(acc, this.data[i], i);
+        }
+        return acc;
+    };
 
-        Vec.prototype.get = function(index) {
-            if (index < 0 || index >= this.len) {
-                throw new Error('Vec index out of bounds');
-            }
-            return this.data[index];
-        };
+    // Option<T> - Optional value type
+    function Some(value) {
+        this.value = value;
+    }
 
-        Vec.prototype.set = function(index, value) {
-            if (index < 0 || index >= this.len) {
-                throw new Error('Vec index out of bounds');
-            }
-            this.data[index] = value;
-        };
+    Some.prototype.isSome = function() { return true; };
+    Some.prototype.isNone = function() { return false; };
+    Some.prototype.unwrap = function() { return this.value; };
+    Some.prototype.unwrapOr = function() { return this.value; };
+    Some.prototype.map = function(fn) { return new Some(fn(this.value)); };
 
-        Vec.prototype.len = function() {
-            return this.len;
-        };
+    function None() {}
 
-        Vec.prototype.isEmpty = function() {
-            return this.len === 0;
-        };
+    None.prototype.isSome = function() { return false; };
+    None.prototype.isNone = function() { return true; };
+    None.prototype.unwrap = function() { throw new Error('Called unwrap on None'); };
+    None.prototype.unwrapOr = function(default_) { return default_; };
+    None.prototype.map = function() { return new None(); };
 
-        Vec.prototype.clear = function() {
-            this.len = 0;
-            this.data = [];
-        };
+    // Result<T, E> - Result type for error handling
+    function Ok(value) {
+        this.value = value;
+    }
 
-        Vec.prototype.iter = function*() {
-            for (let i = 0; i < this.len; i++) {
-                yield this.data[i];
-            }
-        };
+    Ok.prototype.isOk = function() { return true; };
+    Ok.prototype.isErr = function() { return false; };
+    Ok.prototype.unwrap = function() { return this.value; };
+    Ok.prototype.unwrapErr = function() { throw new Error('Called unwrapErr on Ok'); };
+    Ok.prototype.map = function(fn) { return new Ok(fn(this.value)); };
+    Ok.prototype.mapErr = function() { return this; };
 
-        Vec.prototype.map = function(fn) {
-            const result = new SafeScript.Vec();
-            for (let i = 0; i < this.len; i++) {
-                result.push(fn(this.data[i], i));
-            }
-            return result;
-        };
+    function Err(error) {
+        this.error = error;
+    }
 
-        Vec.prototype.filter = function(fn) {
-            const result = new SafeScript.Vec();
-            for (let i = 0; i < this.len; i++) {
-                if (fn(this.data[i], i)) {
-                    result.push(this.data[i]);
-                }
-            }
-            return result;
-        };
+    Err.prototype.isOk = function() { return false; };
+    Err.prototype.isErr = function() { return true; };
+    Err.prototype.unwrap = function() { throw this.error; };
+    Err.prototype.unwrapErr = function() { return this.error; };
+    Err.prototype.map = function() { return this; };
+    Err.prototype.mapErr = function(fn) { return new Err(fn(this.error)); };
 
-        Vec.prototype.reduce = function(fn, initial) {
-            let acc = initial;
-            for (let i = 0; i < this.len; i++) {
-                acc = fn(acc, this.data[i], i);
-            }
-            return acc;
-        };
+    // Shared<T> - Shared ownership (Arc-like)
+    function Shared(value) {
+        this.value = value;
+        this.refs = 1;
+    }
 
-        SafeScript.Option = {
-            Some: function Some(value) {
-                this.value = value;
-            },
+    Shared.prototype.clone = function() {
+        this.refs++;
+        return this;
+    };
 
-            None: function None() {}
-        };
+    Shared.prototype.drop = function() {
+        this.refs--;
+        return this.refs <= 0;
+    };
 
-        SafeScript.Option.Some.prototype.isSome = function() { return true; };
-        SafeScript.Option.Some.prototype.isNone = function() { return false; };
-        SafeScript.Option.Some.prototype.unwrap = function() { return this.value; };
-        SafeScript.Option.Some.prototype.unwrapOr = function(default_) { return this.value; };
-        SafeScript.Option.Some.prototype.map = function(fn) { return new SafeScript.Option.Some(fn(this.value)); };
+    Shared.prototype.get = function() {
+        return this.value;
+    };
 
-        SafeScript.Option.None.prototype.isSome = function() { return false; };
-        SafeScript.Option.None.prototype.isNone = function() { return true; };
-        SafeScript.Option.None.prototype.unwrap = function() { throw new Error('Called unwrap on None'); };
-        SafeScript.Option.None.prototype.unwrapOr = function(default_) { return default_; };
-        SafeScript.Option.None.prototype.map = function(fn) { return new SafeScript.Option.None(); };
+    Shared.prototype.set = function(value) {
+        this.value = value;
+    };
 
-        SafeScript.Result = {
-            Ok: function Ok(value) {
-                this.value = value;
-            },
+    Shared.wrap = function(value) {
+        return new Shared(value);
+    };
 
-            Err: function Err(error) {
-                this.error = error;
-            }
-        };
+    Shared.unwrap = function(shared) {
+        if (shared instanceof Shared) {
+            return shared.get();
+        }
+        return shared;
+    };
 
-        SafeScript.Result.Ok.prototype.isOk = function() { return true; };
-        SafeScript.Result.Ok.prototype.isErr = function() { return false; };
-        SafeScript.Result.Ok.prototype.unwrap = function() { return this.value; };
-        SafeScript.Result.Ok.prototype.unwrapErr = function() { throw new Error('Called unwrapErr on Ok'); };
-        SafeScript.Result.Ok.prototype.map = function(fn) { return new SafeScript.Result.Ok(fn(this.value)); };
-        SafeScript.Result.Ok.prototype.mapErr = function(fn) { return new SafeScript.Result.Ok(this.value); };
+    // String - Owned string type
+    function String(str) {
+        this.data = String(str);
+    }
 
-        SafeScript.Result.Err.prototype.isOk = function() { return false; };
-        SafeScript.Result.Err.prototype.isErr = function() { return true; };
-        SafeScript.Result.Err.prototype.unwrap = function() { throw this.error; };
-        SafeScript.Result.Err.prototype.unwrapErr = function() { return this.error; };
-        SafeScript.Result.Err.prototype.map = function(fn) { return new SafeScript.Result.Err(this.error); };
-        SafeScript.Result.Err.prototype.mapErr = function(fn) { return new SafeScript.Result.Err(fn(this.error)); };
+    Object.defineProperty(String.prototype, 'len', {
+        get: function() { return this.data.length; },
+        configurable: false
+    });
 
-        SafeScript.Shared = function Shared(value) {
-            this.value = value;
-            this.refs = 1;
-        };
+    String.prototype.isEmpty = function() {
+        return this.data.length === 0;
+    };
 
-        SafeScript.Shared.prototype.clone = function() {
-            this.refs++;
-            return this;
-        };
+    String.prototype.charAt = function(index) {
+        return this.data.charAt(index);
+    };
 
-        SafeScript.Shared.prototype.drop = function() {
-            this.refs--;
-            if (this.refs <= 0) {
-                return true;
-            }
-            return false;
-        };
+    String.prototype.concat = function() {
+        return new String(this.data.concat(...arguments));
+    };
 
-        SafeScript.Shared.prototype.get = function() {
-            return this.value;
-        };
+    String.prototype.contains = function(substr) {
+        return this.data.includes(String(substr));
+    };
 
-        SafeScript.Shared.prototype.set = function(value) {
-            this.value = value;
-        };
+    String.prototype.endsWith = function(suffix) {
+        return this.data.endsWith(String(suffix));
+    };
 
-        SafeScript.Shared.wrap = function(value) {
-            return new SafeScript.Shared(value);
-        };
+    String.prototype.startsWith = function(prefix) {
+        return this.data.startsWith(String(prefix));
+    };
 
-        SafeScript.Shared.unwrap = function(shared) {
-            if (shared instanceof SafeScript.Shared) {
-                return shared.get();
-            }
-            return shared;
-        };
+    String.prototype.indexOf = function(substr) {
+        return this.data.indexOf(String(substr));
+    };
 
-        SafeScript.String = function String(str) {
-            this.data = str;
-        };
+    String.prototype.slice = function(start, end) {
+        return new String(this.data.slice(start, end));
+    };
 
-        SafeScript.String.prototype.len = function() {
-            return this.data.length;
-        };
+    String.prototype.split = function(separator) {
+        return this.data.split(String(separator)).map(s => new String(s));
+    };
 
-        SafeScript.String.prototype.isEmpty = function() {
-            return this.data.length === 0;
-        };
+    String.prototype.toUpperCase = function() {
+        return new String(this.data.toUpperCase());
+    };
 
-        SafeScript.String.prototype.charAt = function(index) {
-            return this.data.charAt(index);
-        };
+    String.prototype.toLowerCase = function() {
+        return new String(this.data.toLowerCase());
+    };
 
-        SafeScript.String.prototype.concat = function(...strings) {
-            return new SafeScript.String(this.data.concat(...strings.map(s => s.data || s)));
-        };
+    String.prototype.trim = function() {
+        return new String(this.data.trim());
+    };
 
-        SafeScript.String.prototype.contains = function(substr) {
-            return this.data.includes(substr.data || substr);
-        };
+    String.prototype.replace = function(search, replace) {
+        return new String(this.data.replace(String(search), String(replace)));
+    };
 
-        SafeScript.String.prototype.endsWith = function(suffix) {
-            return this.data.endsWith(suffix.data || suffix);
-        };
+    // Map<K, V> - Key-value store
+    function Map() {
+        this.data = new Map();
+    }
 
-        SafeScript.String.prototype.startsWith = function(prefix) {
-            return this.data.startsWith(prefix.data || prefix);
-        };
+    Map.prototype.set = function(key, value) {
+        this.data.set(key, value);
+        return this;
+    };
 
-        SafeScript.String.prototype.indexOf = function(substr) {
-            return this.data.indexOf(substr.data || substr);
-        };
+    Map.prototype.get = function(key) {
+        return this.data.get(key);
+    };
 
-        SafeScript.String.prototype.slice = function(start, end) {
-            return new SafeScript.String(this.data.slice(start, end));
-        };
+    Map.prototype.has = function(key) {
+        return this.data.has(key);
+    };
 
-        SafeScript.String.prototype.split = function(separator) {
-            const parts = this.data.split(separator.data || separator);
-            return parts.map(p => new SafeScript.String(p));
-        };
+    Map.prototype.delete = function(key) {
+        return this.data.delete(key);
+    };
 
-        SafeScript.String.prototype.toUpperCase = function() {
-            return new SafeScript.String(this.data.toUpperCase());
-        };
+    Object.defineProperty(Map.prototype, 'len', {
+        get: function() { return this.data.size; },
+        configurable: false
+    });
 
-        SafeScript.String.prototype.toLowerCase = function() {
-            return new SafeScript.String(this.data.toLowerCase());
-        };
+    Map.prototype.keys = function() {
+        return Array.from(this.data.keys());
+    };
 
-        SafeScript.String.prototype.trim = function() {
-            return new SafeScript.String(this.data.trim());
-        };
+    Map.prototype.values = function() {
+        return Array.from(this.data.values());
+    };
 
-        SafeScript.String.prototype.replace = function(search, replace) {
-            return new SafeScript.String(this.data.replace(search.data || search, replace.data || replace));
-        };
+    Map.prototype.entries = function() {
+        return Array.from(this.data.entries());
+    };
 
-        SafeScript.Map = function Map() {
-            this.data = new Map();
-        };
+    // Set<T> - Unique values collection
+    function Set() {
+        this.data = new Set();
+    }
 
-        SafeScript.Map.prototype.set = function(key, value) {
-            this.data.set(key, value);
-            return this;
-        };
+    Set.prototype.add = function(value) {
+        this.data.add(value);
+        return this;
+    };
 
-        SafeScript.Map.prototype.get = function(key) {
-            return this.data.get(key);
-        };
+    Set.prototype.has = function(value) {
+        return this.data.has(value);
+    };
 
-        SafeScript.Map.prototype.has = function(key) {
-            return this.data.has(key);
-        };
+    Set.prototype.delete = function(value) {
+        return this.data.delete(value);
+    };
 
-        SafeScript.Map.prototype.delete = function(key) {
-            return this.data.delete(key);
-        };
+    Object.defineProperty(Set.prototype, 'len', {
+        get: function() { return this.data.size; },
+        configurable: false
+    });
 
-        SafeScript.Map.prototype.len = function() {
-            return this.data.size;
-        };
+    Set.prototype.values = function() {
+        return Array.from(this.data.values());
+    };
 
-        SafeScript.Map.prototype.keys = function() {
-            return Array.from(this.data.keys());
-        };
-
-        SafeScript.Map.prototype.values = function() {
-            return Array.from(this.data.values());
-        };
-
-        SafeScript.Map.prototype.entries = function() {
-            return Array.from(this.data.entries());
-        };
-
-        SafeScript.Set = function Set() {
-            this.data = new Set();
-        };
-
-        SafeScript.Set.prototype.add = function(value) {
-            this.data.add(value);
-            return this;
-        };
-
-        SafeScript.Set.prototype.has = function(value) {
-            return this.data.has(value);
-        };
-
-        SafeScript.Set.prototype.delete = function(value) {
-            return this.data.delete(value);
-        };
-
-        SafeScript.Set.prototype.len = function() {
-            return this.data.size;
-        };
-
-        SafeScript.Set.prototype.values = function() {
-            return Array.from(this.data.values());
-        };
-
-        global.SafeScript = SafeScript;
-    })(typeof globalThis !== 'undefined' ? globalThis : typeof window !== 'undefined' ? window : this);
+    // Export
+    global.SafeScript = {
+        Vec: Vec,
+        Option: { Some: Some, None: None },
+        Result: { Ok: Ok, Err: Err },
+        Shared: Shared,
+        String: String,
+        Map: Map,
+        Set: Set
+    };
+})(typeof globalThis !== 'undefined' ? globalThis : typeof window !== 'undefined' ? window : this);
 "#
     }
 }

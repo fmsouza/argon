@@ -89,6 +89,10 @@ fn compile(
     let mut type_checker = TypeChecker::new();
     type_checker.check(&ast)?;
 
+    println!("Borrow checking...");
+    let mut borrow_checker = BorrowChecker::new();
+    borrow_checker.check(&ast)?;
+
     if target == "js" {
         println!("Generating JavaScript...");
         let mut codegen = JsCodegen::new();
@@ -268,3 +272,6 @@ main();
 
     Ok(())
 }
+
+#[cfg(test)]
+mod cli_tests;
