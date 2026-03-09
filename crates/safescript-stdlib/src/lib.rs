@@ -1,5 +1,7 @@
 //! SafeScript - Standard library
 
+use std::collections::HashMap;
+
 pub struct StdLib;
 
 impl StdLib {
@@ -26,65 +28,451 @@ impl StdLib {
 
     pub fn get_runtime() -> &'static str {
         r#"
-const __safescript = {
-    Vec: class Vec {
-        constructor() {
+(function(global) {
+    'use strict';
+
+    const SafeScript = {
+        Vec: function Vec(capacity = 0) {
+            this.data = new Array(capacity);
+            this.len = 0;
+        };
+
+        Vec.prototype.push = function(...items) {
+            for (const item of items) {
+                this.data[this.len++] = item;
+            }
+            return this.len;
+        };
+
+        Vec.prototype.pop = function() {
+            if (this.len === 0) return undefined;
+            return this.data[--this.len];
+        };
+
+        Vec.prototype.get = function(index) {
+            if (index < 0 || index >= this.len) {
+                throw new Error('Vec index out of bounds');
+            }
+            return this.data[index];
+        };
+
+        Vec.prototype.set = function(index, value) {
+            if (index < 0 || index >= this.len) {
+                throw new Error('Vec index out of bounds');
+            }
+            this.data[index] = value;
+        };
+
+        Vec.prototype.len = function() {
+            return this.len;
+        };
+
+        Vec.prototype.isEmpty = function() {
+            return this.len === 0;
+        };
+
+        Vec.prototype.clear = function() {
+            this.len = 0;
             this.data = [];
-        }
-        push(...items) {
-            this.data.push(...items);
-        }
-        get(i) {
-            return this.data[i];
-        }
-        length() {
-            return this.data.length;
-        }
-    },
-    Option: {
-        Some: class Some {
-            constructor(value) { this.value = value; }
-            isSome() { return true; }
-            isNone() { return false; }
-            unwrap() { return this.value; }
-        },
-        None: class None {
-            isSome() { return false; }
-            isNone() { return true; }
-            unwrap() { throw new Error("unwrap on None"); }
-        }
-    },
-    Shared: class Shared {
-        constructor(value) {
+        };
+
+        Vec.prototype.iter = function*() {
+            for (let i = 0; i < this.len; i++) {
+                yield this.data[i];
+            }
+        };
+
+        Vec.prototype.map = function(fn) {
+            const result = new SafeScript.Vec();
+            for (let i = 0; i < this.len; i++) {
+                result.push(fn(this.data[i], i));
+            }
+            return result;
+        };
+
+        Vec.prototype.filter = function(fn) {
+            const result = new SafeScript.Vec();
+            for (let i = 0; i < this.len; i++) {
+                if (fn(this.data[i], i)) {
+                    result.push(this.data[i]);
+                }
+            }
+            return result;
+        };
+
+        Vec.prototype.reduce = function(fn, initial) {
+            let acc = initial;
+            for (let i = 0; i < this.len; i++) {
+                acc = fn(acc, this.data[i], i);
+            }
+            return acc;
+        };
+
+        SafeScript.Option = {
+            Some: function Some(value) {
+                this.value = value;
+            },
+
+            None: function None() {}
+        };
+
+        SafeScript.Option.Some.prototype.isSome = function() { return true; };
+        SafeScript.Option.Some.prototype.isNone = function() { return false; };
+        SafeScript.Option.Some.prototype.unwrap return this.value; = function() { };
+        SafeScript.Option.Some.prototype.unwrapOr = function(default_) { return this.value; };
+        SafeScript.Option.Some.prototype.map = function(fn) { return new SafeScript.Option.Some(fn(this.value)); };
+
+        SafeScript.Option.None.prototype.isSome = function() { return false; };
+        SafeScript.Option.None.prototype.isNone = function() { return true; };
+        SafeScript.Option.None.prototype.unwrap = function() { throw new Error('Called unwrap on None'); };
+        SafeScript.Option.None.prototype.unwrapOr = function(default_) { return default_; };
+        SafeScript.Option.None.prototype.map = function(fn) { return new SafeScript.Option.None(); };
+
+        SafeScript.Result = {
+            Ok: function Ok(value) {
+                this.value = value;
+            },
+
+            Err: function Err(error) {
+                this.error = error;
+            }
+        };
+
+        SafeScript.Result.Ok.prototype.isOk = function() { return true; };
+        SafeScript.Result.Ok.prototype.isErr = function() { return false; };
+        SafeScript.Result.Ok.prototype.unwrap = function() { return this.value; };
+        SafeScript.Result.Ok.prototype.unwrapErr = function() { throw new Error('Called unwrapErr on Ok'); };
+        SafeScript.Result.Ok.prototype.map = function(fn) { return new SafeScript.Result.Ok(fn(this.value)); };
+        SafeScript.Result.Ok.prototype.mapErr = function(fn) { return new SafeScript.Result.Ok(this.value); };
+
+        SafeScript.Result.Err.prototype.isOk = function() { return false; };
+        SafeScript.Result.Err.prototype.isErr = function() { return true; };
+        SafeScript.Result.Err.prototype.unwrap = function() { throw this.error; };
+        SafeScript.Result.Err.prototype.unwrapErr = function() { return this.error; };
+        SafeScript.Result.Err.prototype.map = function(fn) { return new SafeScript.Result.Err(this.error); };
+        SafeScript.Result.Err.prototype.mapErr = function(fn) { return new SafeScript.Result.Err(fn(this.error)); };
+
+        SafeScript.Shared = function Shared(value) {
             this.value = value;
             this.refs = 1;
-        }
-        clone() {
+        };
+
+        SafeScript.Shared.prototype.clone = function() {
             this.refs++;
             return this;
-        }
-        drop() {
+        };
+
+        SafeScript.Shared.prototype.drop = function() {
             this.refs--;
             if (this.refs <= 0) {
-                // cleanup
+                return true;
             }
-        }
-    },
-    Result: {
-        Ok: class Ok {
-            constructor(value) { this.value = value; }
-            isOk() { return true; }
-            isErr() { return false; }
-            unwrap() { return this.value; }
-        },
-        Err: class Err {
-            constructor(error) { this.error = error; }
-            isOk() { return false; }
-            isErr() { return true; }
-            unwrap() { throw this.error; }
-        }
-    }
-};
+            return false;
+        };
+
+        SafeScript.Shared.prototype.get = function() {
+            return this.value;
+        };
+
+        SafeScript.Shared.prototype.set = function(value) {
+            this.value = value;
+        };
+
+        SafeScript.Shared.wrap = function(value) {
+            return new SafeScript.Shared(value);
+        };
+
+        SafeScript.Shared.unwrap = function(shared) {
+            if (shared instanceof SafeScript.Shared) {
+                return shared.get();
+            }
+            return shared;
+        };
+
+        SafeScript.String = function String(str) {
+            this.data = str;
+        };
+
+        SafeScript.String.prototype.len = function() {
+            return this.data.length;
+        };
+
+        SafeScript.String.prototype.isEmpty = function() {
+            return this.data.length === 0;
+        };
+
+        SafeScript.String.prototype.charAt = function(index) {
+            return this.data.charAt(index);
+        };
+
+        SafeScript.String.prototype.concat = function(...strings) {
+            return new SafeScript.String(this.data.concat(...strings.map(s => s.data || s)));
+        };
+
+        SafeScript.String.prototype.contains = function(substr) {
+            return this.data.includes(substr.data || substr);
+        };
+
+        SafeScript.String.prototype.endsWith = function(suffix) {
+            return this.data.endsWith(suffix.data || suffix);
+        };
+
+        SafeScript.String.prototype.startsWith = function(prefix) {
+            return this.data.startsWith(prefix.data || prefix);
+        };
+
+        SafeScript.String.prototype.indexOf = function(substr) {
+            return this.data.indexOf(substr.data || substr);
+        };
+
+        SafeScript.String.prototype.slice = function(start, end) {
+            return new SafeScript.String(this.data.slice(start, end));
+        };
+
+        SafeScript.String.prototype.split = function(separator) {
+            const parts = this.data.split(separator.data || separator);
+            return parts.map(p => new SafeScript.String(p));
+        };
+
+        SafeScript.String.prototype.toUpperCase = function() {
+            return new SafeScript.String(this.data.toUpperCase());
+        };
+
+        SafeScript.String.prototype.toLowerCase = function() {
+            return new SafeScript.String(this.data.toLowerCase());
+        };
+
+        SafeScript.String.prototype.trim = function() {
+            return new SafeScript.String(this.data.trim());
+        };
+
+        SafeScript.String.prototype.replace = function(search, replace) {
+            return new SafeScript.String(this.data.replace(search.data || search, replace.data || replace));
+        };
+
+        SafeScript.Map = function Map() {
+            this.data = new Map();
+        };
+
+        SafeScript.Map.prototype.set = function(key, value) {
+            this.data.set(key, value);
+            return this;
+        };
+
+        SafeScript.Map.prototype.get = function(key) {
+            return this.data.get(key);
+        };
+
+        SafeScript.Map.prototype.has = function(key) {
+            return this.data.has(key);
+        };
+
+        SafeScript.Map.prototype.delete = function(key) {
+            return this.data.delete(key);
+        };
+
+        SafeScript.Map.prototype.len = function() {
+            return this.data.size;
+        };
+
+        SafeScript.Map.prototype.keys = function() {
+            return Array.from(this.data.keys());
+        };
+
+        SafeScript.Map.prototype.values = function() {
+            return Array.from(this.data.values());
+        };
+
+        SafeScript.Map.prototype.entries = function() {
+            return Array.from(this.data.entries());
+        };
+
+        SafeScript.Set = function Set() {
+            this.data = new Set();
+        };
+
+        SafeScript.Set.prototype.add = function(value) {
+            this.data.add(value);
+            return this;
+        };
+
+        SafeScript.Set.prototype.has = function(value) {
+            return this.data.has(value);
+        };
+
+        SafeScript.Set.prototype.delete = function(value) {
+            return this.data.delete(value);
+        };
+
+        SafeScript.Set.prototype.len = function() {
+            return this.data.size;
+        };
+
+        SafeScript.Set.prototype.values = function() {
+            return Array.from(this.data.values());
+        };
+
+        global.SafeScript = SafeScript;
+    })(typeof globalThis !== 'undefined' ? globalThis : typeof window !== 'undefined' ? window : this);
 "#
     }
+}
+
+pub fn generate_stdlib_definitions() -> HashMap<String, String> {
+    let mut defs = HashMap::new();
+
+    defs.insert(
+        "Vec".to_string(),
+        r#"
+class Vec<T> {
+    private data: T[];
+    private length: usize;
+    
+    constructor(capacity?: usize);
+    push(...items: T[]): usize;
+    pop(): T | undefined;
+    get(index: usize): T;
+    set(index: usize, value: T): void;
+    len(): usize;
+    isEmpty(): boolean;
+    clear(): void;
+    iter(): Iterator<T>;
+    map<U>(fn: (item: T, index: usize) => U): Vec<U>;
+    filter(fn: (item: T, index: usize) => boolean): Vec<T>;
+    reduce<U>(fn: (acc: U, item: T, index: usize) => U, initial: U): U;
+}
+"#
+        .to_string(),
+    );
+
+    defs.insert(
+        "Option".to_string(),
+        r#"
+type Option<T> = Some<T> | None;
+
+class Some<T> {
+    constructor(value: T);
+    isSome(): boolean;
+    isNone(): boolean;
+    unwrap(): T;
+    unwrapOr(default: T): T;
+    map<U>(fn: (value: T) => U): Option<U>;
+}
+
+class None {
+    isSome(): boolean;
+    isNone(): boolean;
+    unwrap(): never;
+    unwrapOr<T>(default: T): T;
+    map<U>(fn: (value: never) => U): None;
+}
+"#
+        .to_string(),
+    );
+
+    defs.insert(
+        "Result".to_string(),
+        r#"
+type Result<T, E> = Ok<T, E> | Err<T, E>;
+
+class Ok<T, E> {
+    constructor(value: T);
+    isOk(): boolean;
+    isErr(): boolean;
+    unwrap(): T;
+    unwrapErr(): never;
+    map<U>(fn: (value: T) => U): Ok<U, E>;
+    mapErr<F>(fn: (error: E) => F): Ok<T, F>;
+}
+
+class Err<T, E> {
+    constructor(error: E);
+    isOk(): boolean;
+    isErr(): boolean;
+    unwrap(): never;
+    unwrapErr(): E;
+    map<U>(fn: (value: T) => U): Err<U, E>;
+    mapErr<F>(fn: (error: E) => F): Err<T, F>;
+}
+"#
+        .to_string(),
+    );
+
+    defs.insert(
+        "Shared".to_string(),
+        r#"
+class Shared<T> {
+    constructor(value: T);
+    clone(): Shared<T>;
+    drop(): boolean;
+    get(): T;
+    set(value: T): void;
+    
+    static wrap<T>(value: T): Shared<T>;
+    static unwrap<T>(shared: Shared<T>): T;
+}
+"#
+        .to_string(),
+    );
+
+    defs.insert(
+        "String".to_string(),
+        r#"
+class String {
+    private data: string;
+    
+    constructor(str: string);
+    len(): usize;
+    isEmpty(): boolean;
+    charAt(index: usize): string;
+    concat(...strings: String[]): String;
+    contains(substr: String): boolean;
+    endsWith(suffix: String): boolean;
+    startsWith(prefix: String): boolean;
+    indexOf(substr: String): isize;
+    slice(start: usize, end?: usize): String;
+    split(separator: String): String[];
+    toUpperCase(): String;
+    toLowerCase(): String;
+    trim(): String;
+    replace(search: String, replace: String): String;
+}
+"#
+        .to_string(),
+    );
+
+    defs.insert(
+        "Map".to_string(),
+        r#"
+class Map<K, V> {
+    constructor();
+    set(key: K, value: V): Map<K, V>;
+    get(key: K): V | undefined;
+    has(key: K): boolean;
+    delete(key: K): boolean;
+    len(): usize;
+    keys(): K[];
+    values(): V[];
+    entries(): [K, V][];
+}
+"#
+        .to_string(),
+    );
+
+    defs.insert(
+        "Set".to_string(),
+        r#"
+class Set<T> {
+    constructor();
+    add(value: T): Set<T>;
+    has(value: T): boolean;
+    delete(value: T): boolean;
+    len(): usize;
+    values(): T[];
+}
+"#
+        .to_string(),
+    );
+
+    defs
 }

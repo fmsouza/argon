@@ -808,6 +808,44 @@ impl TypeChecker {
         if found == self.type_table.unknown() || expected == self.type_table.unknown() {
             return;
         }
+
+        let found_type = {
+            let ft = self.type_table.get(found);
+            ft.cloned()
+        };
+        let expected_type = {
+            let et = self.type_table.get(expected);
+            et.cloned()
+        };
+
+        match (found_type, expected_type) {
+            (Some(CompType::Number), Some(CompType::Number)) => {}
+            (Some(CompType::String), Some(CompType::String)) => {}
+            (Some(CompType::Boolean), Some(CompType::Boolean)) => {}
+            (Some(CompType::Object), Some(CompType::Object)) => {}
+            (Some(CompType::Array(f)), Some(CompType::Array(e))) => {
+                self.unify(f, e);
+            }
+            (Some(CompType::Function(fs)), Some(CompType::Function(es))) => {
+                if fs.params.len() != es.params.len() {
+                    self.errors.push(TypeError::Mismatch { found, expected });
+                    return;
+                }
+                for (fp, ep) in fs.params.iter().zip(es.params.iter()) {
+                    self.unify(*fp, *ep);
+                }
+                self.unify(fs.return_type, es.return_type);
+            }
+            (Some(CompType::Union(types)), _) | (_, Some(CompType::Union(types))) => {
+                let types_copy = types.clone();
+                for ty in types_copy {
+                    self.unify(ty, if found == ty { expected } else { found });
+                }
+            }
+            _ => {
+                self.errors.push(TypeError::Mismatch { found, expected });
+            }
+        }
     }
 }
 
