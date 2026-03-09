@@ -17,6 +17,8 @@ pub struct Lexer<'a> {
     chars: Peekable<Chars<'a>>,
     position: usize,
     start: usize,
+    in_jsx: bool,
+    jsx_depth: usize,
 }
 
 impl<'a> Lexer<'a> {
@@ -26,6 +28,8 @@ impl<'a> Lexer<'a> {
             chars: source.chars().peekable(),
             position: 0,
             start: 0,
+            in_jsx: false,
+            jsx_depth: 0,
         }
     }
 
@@ -50,9 +54,26 @@ impl<'a> Lexer<'a> {
 
         if let Some(&ch) = self.chars.peek() {
             let token = match ch {
+                // JSX closing tag
+                '/' if self.in_jsx => self.make_jsx_closing_tag_token(),
+
                 // Punctuation
-                '{' => self.make_token(TokenKind::OpenBrace),
-                '}' => self.make_token(TokenKind::CloseBrace),
+                '{' => {
+                    if self.in_jsx {
+                        self.make_jsx_expr_token()
+                    } else {
+                        self.make_token(TokenKind::OpenBrace)
+                    }
+                }
+                '}' => {
+                    if self.in_jsx {
+                        self.in_jsx = false;
+                        self.jsx_depth = 0;
+                        self.make_token(TokenKind::CloseBrace)
+                    } else {
+                        self.make_token(TokenKind::CloseBrace)
+                    }
+                }
                 '(' => self.make_token(TokenKind::OpenParen),
                 ')' => self.make_token(TokenKind::CloseParen),
                 '[' => self.make_token(TokenKind::OpenBracket),
@@ -77,6 +98,15 @@ impl<'a> Lexer<'a> {
                 '=' => self.make_equals_token(),
                 '<' => self.make_less_than_token(),
                 '>' => self.make_greater_than_token(),
+
+                // JSX
+                '<' => {
+                    if !self.in_jsx {
+                        self.make_jsx_token()
+                    } else {
+                        self.make_jsx_child_token()
+                    }
+                }
 
                 // Literals
                 '"' | '\'' => self.make_string_token(ch),
@@ -458,6 +488,44 @@ impl<'a> Lexer<'a> {
 
             if escaped {
                 escaped = false;
+                match ch {
+                    'u' => {
+                        if self.chars.peek() == Some(&'{') {
+                            self.advance();
+                            while let Some(&c) = self.chars.peek() {
+                                self.advance();
+                                if c == '}' {
+                                    break;
+                                }
+                                if !c.is_ascii_hexdigit() {
+                                    break;
+                                }
+                            }
+                        } else {
+                            for _ in 0..4 {
+                                if let Some(&c) = self.chars.peek() {
+                                    if c.is_ascii_hexdigit() {
+                                        self.advance();
+                                    } else {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    'x' => {
+                        for _ in 0..2 {
+                            if let Some(&c) = self.chars.peek() {
+                                if c.is_ascii_hexdigit() {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
                 continue;
             }
 
@@ -521,6 +589,7 @@ impl<'a> Lexer<'a> {
         let mut escaped = false;
         let mut has_interpolation = false;
         let mut brace_count = 0;
+        let mut start = self.start;
 
         while let Some(&ch) = self.chars.peek() {
             self.advance();
@@ -537,7 +606,7 @@ impl<'a> Lexer<'a> {
 
             if ch == '`' {
                 if has_interpolation {
-                    return Token::new(TokenKind::TemplateMiddle, self.start..self.position + 1);
+                    return Token::new(TokenKind::TemplateComplete, self.start..self.position + 1);
                 }
                 return Token::new(TokenKind::TemplateComplete, self.start..self.position + 1);
             }
@@ -545,8 +614,18 @@ impl<'a> Lexer<'a> {
             if ch == '{' && !has_interpolation {
                 has_interpolation = true;
                 brace_count += 1;
+                let interp_start = self.start;
+                let text_before = &self.source[start..interp_start - 1];
+                if text_before.is_empty() {
+                    return Token::new(TokenKind::TemplateStart, start..interp_start);
+                } else {
+                    return Token::new(TokenKind::TemplateStart, start..self.position);
+                }
             } else if ch == '}' && has_interpolation {
                 brace_count -= 1;
+                if brace_count == 0 {
+                    return Token::new(TokenKind::TemplateMiddle, self.start..self.position + 1);
+                }
             }
 
             if ch == '\n' && brace_count == 0 {
@@ -555,6 +634,172 @@ impl<'a> Lexer<'a> {
         }
 
         Token::new(TokenKind::UnterminatedTemplate, self.start..self.position)
+    }
+
+    fn make_jsx_token(&mut self) -> Token {
+        self.advance();
+
+        match self.chars.peek() {
+            Some(&'/') => {
+                self.advance();
+                match self.chars.peek() {
+                    Some(&'>') => {
+                        self.advance();
+                        self.in_jsx = false;
+                        self.jsx_depth = 0;
+                        return Token::new(
+                            TokenKind::JsxFragmentClose,
+                            self.start..self.position + 1,
+                        );
+                    }
+                    _ => {
+                        self.in_jsx = true;
+                        self.jsx_depth = 1;
+                        return Token::new(TokenKind::JsxElementClose, self.start..self.position);
+                    }
+                }
+            }
+            Some(&'>') => {
+                self.advance();
+                self.in_jsx = true;
+                self.jsx_depth = 1;
+                return Token::new(TokenKind::JsxFragmentOpen, self.start..self.position + 1);
+            }
+            _ => {
+                let _name = self.read_jsx_identifier();
+                match self.chars.peek() {
+                    Some(&'/') => {
+                        self.advance();
+                        match self.chars.peek() {
+                            Some(&'>') => {
+                                self.advance();
+                                self.in_jsx = false;
+                                self.jsx_depth = 0;
+                                return Token::new(
+                                    TokenKind::JsxSelfClosing,
+                                    self.start..self.position + 1,
+                                );
+                            }
+                            _ => {
+                                self.in_jsx = true;
+                                self.jsx_depth = 1;
+                                return Token::new(
+                                    TokenKind::JsxElementOpen,
+                                    self.start..self.position,
+                                );
+                            }
+                        }
+                    }
+                    Some(&'>') => {
+                        self.advance();
+                        self.in_jsx = true;
+                        self.jsx_depth = 1;
+                        return Token::new(
+                            TokenKind::JsxElementOpen,
+                            self.start..self.position + 1,
+                        );
+                    }
+                    _ => {
+                        self.in_jsx = true;
+                        self.jsx_depth = 1;
+                        return Token::new(TokenKind::JsxElementOpen, self.start..self.position);
+                    }
+                }
+            }
+        }
+    }
+
+    fn read_jsx_identifier(&mut self) -> String {
+        let mut identifier = String::new();
+
+        while let Some(&ch) = self.chars.peek() {
+            if ch.is_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
+                self.advance();
+                identifier.push(ch);
+            } else {
+                break;
+            }
+        }
+
+        identifier
+    }
+
+    fn make_jsx_child_token(&mut self) -> Token {
+        let mut text = String::new();
+
+        while let Some(&ch) = self.chars.peek() {
+            if ch == '<' {
+                break;
+            }
+            if ch == '{' {
+                break;
+            }
+            if ch == '\n' {
+                break;
+            }
+            self.advance();
+            text.push(ch);
+        }
+
+        if text.is_empty() {
+            self.advance();
+            return Token::new(TokenKind::JsxChild, self.start..self.position);
+        }
+
+        Token::new(TokenKind::JsxChild, self.start..self.position)
+    }
+
+    fn make_jsx_attribute_token(&mut self) -> Token {
+        let _attr_name = self.read_jsx_identifier();
+
+        match self.chars.peek() {
+            Some(&'=') => {
+                self.advance();
+                match self.chars.peek() {
+                    Some(quote @ '"') | Some(quote @ '\'') => {
+                        let quote_char = *quote;
+                        self.advance();
+                        while let Some(&ch) = self.chars.peek() {
+                            self.advance();
+                            if ch == quote_char {
+                                break;
+                            }
+                        }
+                    }
+                    _ => {
+                        while let Some(&ch) = self.chars.peek() {
+                            if ch.is_whitespace() || ch == '>' || ch == '/' {
+                                break;
+                            }
+                            self.advance();
+                        }
+                    }
+                }
+                Token::new(TokenKind::JsxAttribute, self.start..self.position)
+            }
+            _ => Token::new(TokenKind::JsxAttribute, self.start..self.position),
+        }
+    }
+
+    fn make_jsx_closing_tag_token(&mut self) -> Token {
+        self.advance();
+
+        self.read_jsx_identifier();
+
+        match self.chars.peek() {
+            Some(&'>') => {
+                self.advance();
+                self.in_jsx = false;
+                self.jsx_depth = 0;
+                Token::new(TokenKind::JsxElementClose, self.start..self.position)
+            }
+            _ => Token::new(TokenKind::Error, self.start..self.position),
+        }
+    }
+
+    fn make_jsx_expr_token(&mut self) -> Token {
+        self.advance();
+        Token::new(TokenKind::OpenBrace, self.start..self.position)
     }
 }
 

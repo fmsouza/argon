@@ -473,11 +473,7 @@ impl Parser {
 
         let span = span_start..self.previous().span.end;
 
-        Ok(Some(argon_ast::BorrowAnnotation {
-            kind,
-            target,
-            span,
-        }))
+        Ok(Some(argon_ast::BorrowAnnotation { kind, target, span }))
     }
 
     fn parse_return(&mut self) -> Result<argon_ast::Stmt, ParseError> {
@@ -1233,7 +1229,7 @@ impl Parser {
     fn parse_assignment(&mut self) -> Result<argon_ast::Expr, ParseError> {
         use argon_ast::*;
 
-        let expr = self.parse_or()?;
+        let expr = self.parse_conditional()?;
 
         if self.match_one(&[TokenKind::Equal]) {
             let right = Box::new(self.parse_assignment()?);
@@ -1243,6 +1239,64 @@ impl Parser {
                 right,
                 span: 0..10,
             })));
+        }
+
+        if self.match_one(&[
+            TokenKind::PlusEqual,
+            TokenKind::MinusEqual,
+            TokenKind::StarEqual,
+            TokenKind::SlashEqual,
+            TokenKind::PercentEqual,
+            TokenKind::LessThanLessThanEqual,
+            TokenKind::GreaterThanGreaterThanEqual,
+            TokenKind::GreaterThanGreaterThanGreaterThanEqual,
+            TokenKind::AmpersandEqual,
+            TokenKind::PipeEqual,
+            TokenKind::CaretEqual,
+        ]) {
+            let operator = match self.previous().kind {
+                TokenKind::PlusEqual => AssignmentOperator::PlusAssign,
+                TokenKind::MinusEqual => AssignmentOperator::MinusAssign,
+                TokenKind::StarEqual => AssignmentOperator::MultiplyAssign,
+                TokenKind::SlashEqual => AssignmentOperator::DivideAssign,
+                TokenKind::PercentEqual => AssignmentOperator::ModuloAssign,
+                TokenKind::LessThanLessThanEqual => AssignmentOperator::LeftShiftAssign,
+                TokenKind::GreaterThanGreaterThanEqual => AssignmentOperator::RightShiftAssign,
+                TokenKind::GreaterThanGreaterThanGreaterThanEqual => {
+                    AssignmentOperator::UnsignedRightShiftAssign
+                }
+                TokenKind::AmpersandEqual => AssignmentOperator::BitwiseAndAssign,
+                TokenKind::PipeEqual => AssignmentOperator::BitwiseOrAssign,
+                TokenKind::CaretEqual => AssignmentOperator::BitwiseXorAssign,
+                _ => AssignmentOperator::Assign,
+            };
+            let right = Box::new(self.parse_assignment()?);
+            return Ok(Expr::Assignment(Box::new(AssignmentExpr {
+                left: Box::new(AssignmentTarget::Simple(Box::new(expr))),
+                operator,
+                right,
+                span: 0..10,
+            })));
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_conditional(&mut self) -> Result<argon_ast::Expr, ParseError> {
+        use argon_ast::*;
+
+        let expr = self.parse_or()?;
+
+        if self.match_one(&[TokenKind::Question]) {
+            let consequent = Box::new(self.parse_assignment()?);
+            self.expect_token(TokenKind::Colon, "ternary expression")?;
+            let alternate = Box::new(self.parse_assignment()?);
+            return Ok(Expr::Conditional(ConditionalExpr {
+                test: Box::new(expr),
+                consequent,
+                alternate,
+                span: 0..10,
+            }));
         }
 
         Ok(expr)
@@ -1720,6 +1774,17 @@ impl Parser {
             }
         }
         false
+    }
+
+    fn expect_token(&mut self, kind: TokenKind, context: &str) -> Result<(), ParseError> {
+        if self.match_one(&[kind]) {
+            Ok(())
+        } else {
+            Err(ParseError::ExpectedToken(
+                format!("{:?} in {}", kind, context),
+                self.peek().span.start,
+            ))
+        }
     }
 
     fn peek(&self) -> LexerToken {
