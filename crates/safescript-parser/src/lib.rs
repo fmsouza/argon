@@ -4,6 +4,7 @@
 mod parser_tests;
 
 use safescript_ast::{PropertyKind, SourceFile};
+use safescript_diagnostics::{Diagnostic, DiagnosticEngine, DiagnosticLabel, Severity};
 use safescript_lexer::Token as LexerToken;
 use safescript_lexer::{tokenize, LexerError, TokenKind};
 
@@ -12,6 +13,7 @@ pub enum ParseError {
     Lexer(LexerError),
     Parser(String),
     UnexpectedToken(String),
+    ExpectedToken(String, usize),
 }
 
 impl std::fmt::Display for ParseError {
@@ -20,11 +22,51 @@ impl std::fmt::Display for ParseError {
             ParseError::Lexer(err) => write!(f, "Lexer error: {}", err),
             ParseError::Parser(msg) => write!(f, "Parse error: {}", msg),
             ParseError::UnexpectedToken(msg) => write!(f, "Unexpected token: {}", msg),
+            ParseError::ExpectedToken(msg, pos) => {
+                write!(f, "Expected {} at position {}", msg, pos)
+            }
         }
     }
 }
 
 impl std::error::Error for ParseError {}
+
+impl ParseError {
+    pub fn to_diagnostic(&self, source: &str, source_id: &str) -> Diagnostic {
+        match self {
+            ParseError::Lexer(err) => err.to_diagnostic(source, source_id),
+            ParseError::Parser(msg) => Diagnostic::new(source_id.to_string(), 0..1, msg.clone())
+                .with_code("P000".to_string()),
+            ParseError::UnexpectedToken(msg) => Diagnostic::new(
+                source_id.to_string(),
+                0..10,
+                format!("unexpected token: {}", msg),
+            )
+            .with_code("P001".to_string()),
+            ParseError::ExpectedToken(msg, pos) => Diagnostic::new(
+                source_id.to_string(),
+                *pos..*pos + 1,
+                format!("expected {}", msg),
+            )
+            .with_code("P002".to_string())
+            .with_label(
+                DiagnosticLabel::new(*pos..*pos + 1).with_message(format!("expected {}", msg)),
+            ),
+        }
+    }
+
+    pub fn report(&self, source: &str, source_id: &str, source_name: &str) -> String {
+        let mut engine = DiagnosticEngine::new();
+        engine.add_source(safescript_diagnostics::SourceFile::new(
+            source_id.to_string(),
+            source_name.to_string(),
+            source.to_string(),
+        ));
+
+        let diagnostic = self.to_diagnostic(source, source_id);
+        engine.report(&diagnostic)
+    }
+}
 
 pub fn parse(source: &str) -> Result<SourceFile, ParseError> {
     let tokens = tokenize(source).map_err(ParseError::Lexer)?;

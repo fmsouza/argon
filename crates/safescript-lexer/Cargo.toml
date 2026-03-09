@@ -12,6 +12,7 @@ bumpalo.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
 serde.workspace = true
+safescript-diagnostics = { path = "../safescript-diagnostics" }
 
 [dev-dependencies]
 proptest.workspace = true

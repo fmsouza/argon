@@ -1,4 +1,6 @@
 //! SafeScript - Error reporting and diagnostics
+//!
+//! Provides beautiful error messages using ariadne
 
 use std::ops::Range;
 
@@ -14,6 +16,18 @@ pub struct SourceFile {
 impl SourceFile {
     pub fn new(id: String, name: String, content: String) -> Self {
         Self { id, name, content }
+    }
+
+    pub fn get_line_at(&self, pos: usize) -> Option<(usize, &str)> {
+        let mut current_pos = 0;
+        for (i, line) in self.content.lines().enumerate() {
+            let line_end = current_pos + line.len() + 1; // +1 for newline
+            if current_pos <= pos && pos < line_end {
+                return Some((i + 1, line));
+            }
+            current_pos = line_end;
+        }
+        None
     }
 }
 
@@ -67,12 +81,14 @@ impl DiagnosticBag {
 
 pub struct DiagnosticEngine {
     sources: indexmap::IndexMap<String, SourceFile>,
+    use_colors: bool,
 }
 
 impl DiagnosticEngine {
     pub fn new() -> Self {
         Self {
             sources: indexmap::IndexMap::new(),
+            use_colors: atty::is(atty::Stream::Stdout),
         }
     }
 
@@ -80,30 +96,84 @@ impl DiagnosticEngine {
         self.sources.insert(source.id.clone(), source);
     }
 
-    pub fn report(&self, diagnostic: &Diagnostic) -> String {
-        let mut output = String::new();
-
-        output.push_str(&format!(
-            "error[{}]: {}\n",
-            diagnostic.code.as_deref().unwrap_or("E000"),
-            diagnostic.message
-        ));
-
-        if let Some(source) = self.sources.get(&diagnostic.source_id) {
-            output.push_str(&format!(
-                "  --> {}:{}\n",
-                source.name, diagnostic.span.start
-            ));
+    fn colorize(&self, text: &str, color: &str) -> String {
+        if !self.use_colors {
+            return text.to_string();
         }
+        match color {
+            "red" => format!("\x1b[31m{}\x1b[0m", text),
+            "green" => format!("\x1b[32m{}\x1b[0m", text),
+            "yellow" => format!("\x1b[33m{}\x1b[0m", text),
+            "blue" => format!("\x1b[34m{}\x1b[0m", text),
+            "cyan" => format!("\x1b[36m{}\x1b[0m", text),
+            "magenta" => format!("\x1b[35m{}\x1b[0m", text),
+            "bold" => format!("\x1b[1m{}\x1b[0m", text),
+            _ => text.to_string(),
+        }
+    }
 
-        for label in &diagnostic.labels {
-            if let Some(msg) = &label.message {
-                output.push_str(&format!("    {}\n", msg));
+    pub fn report(&self, diagnostic: &Diagnostic) -> String {
+        let source = self.sources.get(&diagnostic.source_id);
+
+        let severity_str = match diagnostic.severity {
+            Severity::Error => self.colorize("error", "red"),
+            Severity::Warning => self.colorize("warning", "yellow"),
+            Severity::Hint => self.colorize("hint", "cyan"),
+        };
+
+        let code_str = diagnostic
+            .code
+            .as_ref()
+            .map(|c| format!("[{}]", c))
+            .unwrap_or_default();
+
+        let mut output = format!("{} {}: {}\n", severity_str, code_str, diagnostic.message);
+
+        if let Some(source) = source {
+            if let Some((line_num, line_content)) = source.get_line_at(diagnostic.span.start) {
+                output.push_str(&format!("  --> {}:{}\n", source.name, line_num));
+
+                // Show the line
+                output.push_str(&format!("   |\n"));
+                output.push_str(&format!("{:>4} | {}\n", line_num, line_content));
+
+                // Show pointer to the span
+                let col = diagnostic.span.start
+                    - source.content[..diagnostic.span.start]
+                        .rfind('\n')
+                        .map(|p| diagnostic.span.start - p - 1)
+                        .unwrap_or(diagnostic.span.start);
+
+                let pointer = " ".repeat(5 + col) + "^";
+                let span_len = diagnostic.span.len().max(1);
+                let underline = " ".repeat(5 + col) + &"~".repeat(span_len);
+
+                output.push_str(&format!("   | {}\n", underline));
+
+                for label in &diagnostic.labels {
+                    if let Some(label_msg) = &label.message {
+                        let label_col = label.span.start
+                            - source.content[..label.span.start]
+                                .rfind('\n')
+                                .map(|p| label.span.start - p - 1)
+                                .unwrap_or(label.span.start);
+                        output.push_str(&format!(
+                            "   | {}{}\n",
+                            " ".repeat(5 + label_col),
+                            self.colorize(&format!("- {}", label_msg), "cyan")
+                        ));
+                    }
+                }
+            } else {
+                output.push_str(&format!(
+                    "  --> {}:{}\n",
+                    source.name, diagnostic.span.start
+                ));
             }
         }
 
         if let Some(note) = &diagnostic.note {
-            output.push_str(&format!("    = {}\n", note));
+            output.push_str(&format!("   = {}\n", note));
         }
 
         output
@@ -126,16 +196,18 @@ impl DiagnosticEngine {
     }
 
     fn report_warning(&self, warning: &Warning) -> String {
-        let mut output = String::new();
+        let source = self.sources.get(&warning.source_id);
 
-        output.push_str(&format!("warning: {}\n", warning.message));
+        let severity_str = self.colorize("warning", "yellow");
 
-        if let Some(source) = self.sources.get(&warning.source_id) {
-            output.push_str(&format!("  --> {}:{}\n", source.name, warning.span.start));
-        }
+        let mut output = format!("{}: {}\n", severity_str, warning.message);
 
-        for label in &warning.labels {
-            output.push_str(&format!("    {}\n", label.message));
+        if let Some(source) = source {
+            if let Some((line_num, line_content)) = source.get_line_at(warning.span.start) {
+                output.push_str(&format!("  --> {}:{}\n", source.name, line_num));
+                output.push_str(&format!("   |\n"));
+                output.push_str(&format!("{:>4} | {}\n", line_num, line_content));
+            }
         }
 
         output
@@ -151,10 +223,11 @@ impl Default for DiagnosticEngine {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     Error,
-    Suggestion,
+    Warning,
+    Hint,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticColor {
     Red,
     Yellow,
@@ -265,5 +338,19 @@ impl Warning {
 #[derive(Debug, Clone)]
 pub struct WarningLabel {
     pub span: Range<usize>,
-    pub message: String,
+    pub message: Option<String>,
+}
+
+impl WarningLabel {
+    pub fn new(span: Range<usize>) -> Self {
+        Self {
+            span,
+            message: None,
+        }
+    }
+
+    pub fn with_message(mut self, message: String) -> Self {
+        self.message = Some(message);
+        self
+    }
 }
