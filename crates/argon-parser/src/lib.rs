@@ -163,6 +163,9 @@ impl Parser {
         if self.match_one(&[TokenKind::Function]) {
             return self.parse_function();
         }
+        if self.match_one(&[TokenKind::Async]) {
+            return self.parse_async_function();
+        }
         if self.match_one(&[TokenKind::Return]) {
             return self.parse_return();
         }
@@ -439,6 +442,81 @@ impl Parser {
             type_params: vec![],
             return_type,
             is_async: false,
+            borrow_annotation,
+            span: 0..10,
+        }))
+    }
+
+    fn parse_async_function(&mut self) -> Result<argon_ast::Stmt, ParseError> {
+        use argon_ast::*;
+
+        // Expect 'function' keyword after 'async'
+        self.expect(TokenKind::Function)?;
+
+        let id = self.expect_identifier()?;
+
+        self.expect(TokenKind::OpenParen)?;
+
+        let mut params = Vec::new();
+        while !self.check(&TokenKind::CloseParen) && !self.is_at_end() {
+            let name = self.expect_identifier()?;
+            let ty = if self.match_one(&[TokenKind::Colon]) {
+                Some(Box::new(self.parse_type()?))
+            } else {
+                None
+            };
+
+            params.push(Param {
+                pat: Pattern::Identifier(IdentPattern {
+                    name: name.clone(),
+                    type_annotation: ty,
+                    default: None,
+                }),
+                ty: None,
+                default: None,
+                is_optional: false,
+                span: 0..5,
+            });
+
+            if !self.check(&TokenKind::CloseParen) {
+                self.expect_comma()?;
+            }
+        }
+
+        self.expect(TokenKind::CloseParen)?;
+
+        let return_type = if self.match_one(&[TokenKind::Colon]) {
+            Some(Box::new(self.parse_type()?))
+        } else {
+            None
+        };
+
+        let func_name = id.sym.clone();
+        self.validate_function_types(&params, &return_type, &func_name, false)?;
+
+        let borrow_annotation = self.parse_borrow_annotation()?;
+
+        self.expect(TokenKind::OpenBrace)?;
+
+        let mut statements = Vec::new();
+        while !self.check(&TokenKind::CloseBrace) && !self.is_at_end() {
+            statements.push(self.parse_statement()?);
+        }
+
+        self.expect(TokenKind::CloseBrace)?;
+
+        let body = FunctionBody {
+            statements,
+            span: 0..10,
+        };
+
+        Ok(Stmt::AsyncFunction(FunctionDecl {
+            id: Some(id),
+            params,
+            body,
+            type_params: vec![],
+            return_type,
+            is_async: true,
             borrow_annotation,
             span: 0..10,
         }))
@@ -1750,7 +1828,7 @@ impl Parser {
             return self.parse_jsx_fragment();
         }
 
-        if self.match_one(&[TokenKind::JsxElementOpen]) {
+        if self.check(&TokenKind::JsxElementOpen) {
             return self.parse_jsx_element_inner();
         }
 
@@ -1798,7 +1876,7 @@ impl Parser {
 
         let closing = if !is_self_closing && self.match_one(&[TokenKind::JsxElementClose]) {
             Some(JsxClosingElement {
-                name: self.parse_jsx_element_name()?,
+                name: self.parse_jsx_closing_element_name()?,
                 span: 0..10,
             })
         } else {
@@ -1816,6 +1894,25 @@ impl Parser {
     fn parse_jsx_element_name(&mut self) -> Result<argon_ast::JsxElementName, ParseError> {
         use argon_ast::*;
 
+        // Check if we have a JsxElementOpen token - extract name from its span
+        let current_token = &self.peek().kind;
+
+        if let TokenKind::JsxElementOpen = current_token {
+            let token = self.peek();
+            let span = &token.span;
+            // Extract the element name from the source (skip <)
+            let name_str = &self.source[span.start + 1..span.end];
+            // Remove any trailing > or whitespace
+            let name_str = name_str.trim_end_matches(&['>', ' ', '\t', '\n'][..]);
+
+            let name = Ident {
+                sym: name_str.to_string(),
+                span: span.clone(),
+            };
+            self.advance(); // consume the JsxElementOpen token
+            return Ok(JsxElementName::Identifier(name));
+        }
+
         let name = self.expect_identifier()?;
         let mut result = JsxElementName::Identifier(name);
 
@@ -1825,6 +1922,20 @@ impl Parser {
         }
 
         Ok(result)
+    }
+
+    fn parse_jsx_closing_element_name(&mut self) -> Result<argon_ast::JsxElementName, ParseError> {
+        use argon_ast::*;
+
+        // For closing tags, we read from the source directly using the previous token's span
+        // The JsxElementClose token was already consumed
+        // We need to extract the name from source - skip </ and read until >
+        // For now, create a dummy name - the actual parsing would need more work
+        let name = Ident {
+            sym: "".to_string(), // Would need to extract from source
+            span: 0..0,
+        };
+        Ok(JsxElementName::Identifier(name))
     }
 
     fn parse_jsx_attributes(&mut self) -> Result<Vec<argon_ast::JsxAttribute>, ParseError> {

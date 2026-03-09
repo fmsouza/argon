@@ -96,24 +96,48 @@ impl<'a> Lexer<'a> {
                 '&' => self.make_ampersand_token(),
                 '|' => self.make_pipe_token(),
                 '=' => self.make_equals_token(),
-                '<' => self.make_less_than_token(),
                 '>' => self.make_greater_than_token(),
 
-                // JSX
+                // JSX - handle < in JSX context
                 '<' => {
                     if !self.in_jsx {
                         self.make_jsx_token()
                     } else {
-                        self.make_jsx_child_token()
+                        // In JSX mode - could be nested element or closing tag
+                        // Look ahead
+                        self.advance(); // consume <
+                        let ch = *self.chars.peek().unwrap_or(&' ');
+                        self.position -= 1; // go back
+
+                        if ch == '/' {
+                            // Closing tag - handle it
+                            self.make_jsx_closing_tag_token()
+                        } else {
+                            // Could be nested element or text - call make_jsx_token
+                            // which will handle it appropriately
+                            self.make_jsx_token()
+                        }
                     }
                 }
 
                 // Literals
                 '"' | '\'' => self.make_string_token(ch),
-                '0'..='9' => self.make_number_token(),
+                '0'..='9' => {
+                    if self.in_jsx {
+                        self.make_jsx_child_token()
+                    } else {
+                        self.make_number_token()
+                    }
+                }
 
                 // Identifiers and keywords
-                'a'..='z' | 'A'..='Z' | '_' | '$' => self.make_identifier_or_keyword_token(),
+                'a'..='z' | 'A'..='Z' | '_' | '$' => {
+                    if self.in_jsx {
+                        self.make_jsx_child_token()
+                    } else {
+                        self.make_identifier_or_keyword_token()
+                    }
+                }
 
                 // Template literals
                 '`' => self.make_template_literal_token(),
@@ -661,7 +685,7 @@ impl<'a> Lexer<'a> {
                     }
                     _ => {
                         self.in_jsx = true;
-                        self.jsx_depth = 1;
+                        self.jsx_depth += 1;
                         return Token::new(TokenKind::JsxElementClose, self.start..self.position);
                     }
                 }
@@ -669,7 +693,7 @@ impl<'a> Lexer<'a> {
             Some(&'>') => {
                 self.advance();
                 self.in_jsx = true;
-                self.jsx_depth = 1;
+                self.jsx_depth += 1;
                 return Token::new(TokenKind::JsxFragmentOpen, self.start..self.position + 1);
             }
             _ => {
@@ -689,7 +713,7 @@ impl<'a> Lexer<'a> {
                             }
                             _ => {
                                 self.in_jsx = true;
-                                self.jsx_depth = 1;
+                                self.jsx_depth += 1;
                                 return Token::new(
                                     TokenKind::JsxElementOpen,
                                     self.start..self.position,
@@ -700,7 +724,7 @@ impl<'a> Lexer<'a> {
                     Some(&'>') => {
                         self.advance();
                         self.in_jsx = true;
-                        self.jsx_depth = 1;
+                        self.jsx_depth += 1;
                         return Token::new(
                             TokenKind::JsxElementOpen,
                             self.start..self.position + 1,
