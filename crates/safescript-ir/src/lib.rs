@@ -293,6 +293,82 @@ impl IrBuilder {
                     self.translate_statement_to_instructions(s, instructions)?;
                 }
             }
+            Stmt::If(i) => {
+                let cond = self.translate_expression(&i.condition, instructions)?;
+                let then_block = self.new_block();
+                let else_block = self.new_block();
+                let after_block = self.new_block();
+
+                instructions.push(Instruction::Branch {
+                    cond,
+                    then: then_block,
+                    else_: else_block,
+                });
+
+                let mut then_instrs = Vec::new();
+                self.translate_statement_to_instructions(&i.consequent, &mut then_instrs)?;
+                if !matches!(then_instrs.last(), Some(Instruction::Return { .. })) {
+                    then_instrs.push(Instruction::Jump {
+                        target: after_block,
+                    });
+                }
+
+                let mut else_instrs = Vec::new();
+                if let Some(ref alt) = i.alternate {
+                    self.translate_statement_to_instructions(alt, &mut else_instrs)?;
+                }
+                if !matches!(else_instrs.last(), Some(Instruction::Return { .. })) {
+                    else_instrs.push(Instruction::Jump {
+                        target: after_block,
+                    });
+                }
+
+                self.functions.last_mut().unwrap().body.push(BasicBlock {
+                    id: then_block,
+                    instructions: then_instrs,
+                    terminator: Terminator::Unreachable,
+                });
+                self.functions.last_mut().unwrap().body.push(BasicBlock {
+                    id: else_block,
+                    instructions: else_instrs,
+                    terminator: Terminator::Unreachable,
+                });
+                self.functions.last_mut().unwrap().body.push(BasicBlock {
+                    id: after_block,
+                    instructions: Vec::new(),
+                    terminator: Terminator::Unreachable,
+                });
+            }
+            Stmt::While(w) => {
+                let loop_block = self.new_block();
+                let after_block = self.new_block();
+
+                instructions.push(Instruction::Jump { target: loop_block });
+
+                let mut loop_instrs = Vec::new();
+                let cond = self.translate_expression(&w.condition, &mut loop_instrs)?;
+                loop_instrs.push(Instruction::Branch {
+                    cond,
+                    then: loop_block,
+                    else_: after_block,
+                });
+
+                self.translate_statement_to_instructions(&w.body, &mut loop_instrs)?;
+                if !matches!(loop_instrs.last(), Some(Instruction::Return { .. })) {
+                    loop_instrs.push(Instruction::Jump { target: loop_block });
+                }
+
+                self.functions.last_mut().unwrap().body.push(BasicBlock {
+                    id: loop_block,
+                    instructions: loop_instrs,
+                    terminator: Terminator::Unreachable,
+                });
+                self.functions.last_mut().unwrap().body.push(BasicBlock {
+                    id: after_block,
+                    instructions: Vec::new(),
+                    terminator: Terminator::Unreachable,
+                });
+            }
             _ => {}
         }
         Ok(())
@@ -328,14 +404,36 @@ impl IrBuilder {
                 let lhs = self.translate_expression(&b.left, instructions)?;
                 let rhs = self.translate_expression(&b.right, instructions)?;
                 let dest = self.new_value();
-                let op = BinOp::Add; // Simplified
+                let op = match b.operator {
+                    BinaryOperator::Plus => BinOp::Add,
+                    BinaryOperator::Minus => BinOp::Sub,
+                    BinaryOperator::Multiply => BinOp::Mul,
+                    BinaryOperator::Divide => BinOp::Div,
+                    BinaryOperator::Modulo => BinOp::Mod,
+                    BinaryOperator::Equal => BinOp::Eq,
+                    BinaryOperator::NotEqual => BinOp::Ne,
+                    BinaryOperator::LessThan => BinOp::Lt,
+                    BinaryOperator::LessThanOrEqual => BinOp::Le,
+                    BinaryOperator::GreaterThan => BinOp::Gt,
+                    BinaryOperator::GreaterThanOrEqual => BinOp::Ge,
+                    BinaryOperator::BitwiseAnd => BinOp::And,
+                    BinaryOperator::BitwiseOr => BinOp::Or,
+                    BinaryOperator::BitwiseXor => BinOp::Xor,
+                    BinaryOperator::LeftShift => BinOp::Shl,
+                    BinaryOperator::RightShift | BinaryOperator::UnsignedRightShift => BinOp::Shr,
+                    _ => BinOp::Add,
+                };
                 instructions.push(Instruction::BinOp { op, lhs, rhs, dest });
                 Ok(dest)
             }
             Expr::Unary(u) => {
                 let arg = self.translate_expression(&u.argument, instructions)?;
                 let dest = self.new_value();
-                let op = UnOp::Neg;
+                let op = match u.operator {
+                    UnaryOperator::Minus => UnOp::Neg,
+                    UnaryOperator::LogicalNot => UnOp::Not,
+                    _ => UnOp::Neg,
+                };
                 instructions.push(Instruction::UnOp { op, arg, dest });
                 Ok(dest)
             }
@@ -416,3 +514,6 @@ impl std::fmt::Display for IrError {
 }
 
 impl std::error::Error for IrError {}
+
+#[cfg(test)]
+mod ir_builder_tests;

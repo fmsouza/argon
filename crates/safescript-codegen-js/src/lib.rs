@@ -36,6 +36,7 @@ impl JsCodegen {
         match stmt {
             Stmt::Variable(v) => self.generate_variable(v),
             Stmt::Function(f) => self.generate_function(f),
+            Stmt::AsyncFunction(f) => self.generate_async_function(f),
             Stmt::Struct(s) => self.generate_struct(s),
             Stmt::Class(c) => self.generate_class(c),
             Stmt::Expr(e) => {
@@ -65,6 +66,11 @@ impl JsCodegen {
                 Ok(())
             }
             Stmt::Match(m) => self.generate_match(m),
+            Stmt::Try(t) => self.generate_try(t),
+            Stmt::Throw(t) => self.generate_throw(t),
+            Stmt::Switch(s) => self.generate_switch(s),
+            Stmt::DoWhile(d) => self.generate_do_while(d),
+            Stmt::Empty(_) => Ok(()),
             _ => Ok(()),
         }
     }
@@ -538,11 +544,119 @@ impl JsCodegen {
             self.output.push_str(":\n");
 
             self.indent += 1;
-            self.generate_statement(&case.consequent)?;
+            self.generate_statement(case.consequent.as_ref())?;
             self.indent -= 1;
         }
 
         self.output.push_str("}\n");
+        Ok(())
+    }
+
+    fn generate_async_function(&mut self, f: &FunctionDecl) -> Result<(), CodegenError> {
+        self.output.push_str("async function ");
+        if let Some(ref id) = f.id {
+            self.output.push_str(&id.sym);
+        }
+        self.output.push_str("(");
+
+        for (i, p) in f.params.iter().enumerate() {
+            if i > 0 {
+                self.output.push_str(", ");
+            }
+            if let Pattern::Identifier(id) = &p.pat {
+                self.output.push_str(&id.name.sym);
+            }
+        }
+        self.output.push_str(") {\n");
+
+        self.indent += 1;
+        for stmt in &f.body.statements {
+            self.generate_statement(stmt)?;
+        }
+        self.indent -= 1;
+
+        self.output.push_str("}\n\n");
+        Ok(())
+    }
+
+    fn generate_try(&mut self, t: &TryStmt) -> Result<(), CodegenError> {
+        self.output.push_str("try {\n");
+        self.indent += 1;
+        for stmt in &t.block.statements {
+            self.generate_statement(stmt)?;
+        }
+        self.indent -= 1;
+
+        if let Some(ref handler) = t.handler {
+            self.output.push_str("} catch ");
+            if let Some(ref param) = handler.param {
+                self.output.push_str("(");
+                if let Pattern::Identifier(id) = param {
+                    self.output.push_str(&id.name.sym);
+                }
+                self.output.push_str(") ");
+            }
+            self.output.push_str("{\n");
+            self.indent += 1;
+            for stmt in &handler.body.statements {
+                self.generate_statement(stmt)?;
+            }
+            self.indent -= 1;
+        }
+
+        if let Some(ref finalizer) = t.finalizer {
+            self.output.push_str("} finally {\n");
+            self.indent += 1;
+            for stmt in &finalizer.statements {
+                self.generate_statement(stmt)?;
+            }
+            self.indent -= 1;
+        }
+
+        self.output.push_str("}\n");
+        Ok(())
+    }
+
+    fn generate_throw(&mut self, t: &ThrowStmt) -> Result<(), CodegenError> {
+        self.output.push_str("throw ");
+        self.generate_expression(&t.argument)?;
+        self.output.push_str(";\n");
+        Ok(())
+    }
+
+    fn generate_switch(&mut self, s: &SwitchStmt) -> Result<(), CodegenError> {
+        self.output.push_str("switch (");
+        self.generate_expression(&s.discriminant)?;
+        self.output.push_str(") {\n");
+
+        for case in &s.cases {
+            if let Some(ref test) = case.test {
+                self.output.push_str("case ");
+                self.generate_expression(test)?;
+                self.output.push_str(":\n");
+            } else {
+                self.output.push_str("default:\n");
+            }
+
+            self.indent += 1;
+            for stmt in &case.consequent {
+                self.generate_statement(stmt)?;
+            }
+            self.indent -= 1;
+        }
+
+        self.output.push_str("}\n");
+        Ok(())
+    }
+
+    fn generate_do_while(&mut self, d: &DoWhileStmt) -> Result<(), CodegenError> {
+        self.output.push_str("do {\n");
+        self.indent += 1;
+        self.generate_statement(&d.body)?;
+        self.indent -= 1;
+        self.output.push_str("} while (");
+        self.generate_expression(&d.condition)?;
+        self.output.push_str(");\n");
         Ok(())
     }
 
@@ -567,3 +681,6 @@ impl std::fmt::Display for CodegenError {
 }
 
 impl std::error::Error for CodegenError {}
+
+#[cfg(test)]
+mod codegen_tests;
