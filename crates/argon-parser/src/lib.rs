@@ -1743,8 +1743,203 @@ impl Parser {
         Ok(expr)
     }
 
+    fn parse_jsx_element(&mut self) -> Result<argon_ast::Expr, ParseError> {
+        use argon_ast::*;
+
+        if self.match_one(&[TokenKind::JsxFragmentOpen]) {
+            return self.parse_jsx_fragment();
+        }
+
+        if self.match_one(&[TokenKind::JsxElementOpen]) {
+            return self.parse_jsx_element_inner();
+        }
+
+        Err(ParseError::Parser("Expected JSX element".to_string()))
+    }
+
+    fn parse_jsx_fragment(&mut self) -> Result<argon_ast::Expr, ParseError> {
+        use argon_ast::*;
+
+        let children = self.parse_jsx_children()?;
+
+        self.expect_token(TokenKind::JsxFragmentClose, "JSX fragment")?;
+
+        Ok(Expr::JsxFragment(JsxFragment {
+            opening: JsxOpeningFragment { span: 0..3 },
+            children,
+            closing: JsxClosingFragment { span: 0..4 },
+            span: 0..10,
+        }))
+    }
+
+    fn parse_jsx_element_inner(&mut self) -> Result<argon_ast::Expr, ParseError> {
+        use argon_ast::*;
+
+        let name = self.parse_jsx_element_name()?;
+        let attributes = self.parse_jsx_attributes()?;
+
+        let is_self_closing = self.check(&TokenKind::JsxSelfClosing);
+        if is_self_closing {
+            self.advance();
+        }
+
+        let opening = JsxOpeningElement {
+            name,
+            attributes,
+            self_closing: is_self_closing,
+            span: 0..10,
+        };
+
+        let mut children = Vec::new();
+
+        if !is_self_closing && !self.check(&TokenKind::JsxElementClose) {
+            children = self.parse_jsx_children()?;
+        }
+
+        let closing = if !is_self_closing && self.match_one(&[TokenKind::JsxElementClose]) {
+            Some(JsxClosingElement {
+                name: self.parse_jsx_element_name()?,
+                span: 0..10,
+            })
+        } else {
+            None
+        };
+
+        Ok(Expr::JsxElement(JsxElement {
+            opening,
+            children,
+            closing,
+            span: 0..10,
+        }))
+    }
+
+    fn parse_jsx_element_name(&mut self) -> Result<argon_ast::JsxElementName, ParseError> {
+        use argon_ast::*;
+
+        let name = self.expect_identifier()?;
+        let mut result = JsxElementName::Identifier(name);
+
+        while self.match_one(&[TokenKind::Dot]) {
+            let member = self.expect_identifier()?;
+            result = JsxElementName::Member(Box::new(JsxElementName::Identifier(member)));
+        }
+
+        Ok(result)
+    }
+
+    fn parse_jsx_attributes(&mut self) -> Result<Vec<argon_ast::JsxAttribute>, ParseError> {
+        use argon_ast::*;
+
+        let mut attributes = Vec::new();
+
+        while !self.check(&TokenKind::CloseBrace)
+            && !self.check(&TokenKind::JsxElementClose)
+            && !self.check(&TokenKind::JsxSelfClosing)
+            && !self.is_at_end()
+        {
+            if self.check(&TokenKind::JsxAttribute) {
+                self.advance();
+                let name = JsxAttributeName::Identifier(self.expect_identifier()?);
+                let value = if self.match_one(&[TokenKind::Equal]) {
+                    Some(self.parse_jsx_attribute_value()?)
+                } else {
+                    None
+                };
+                attributes.push(JsxAttribute {
+                    name,
+                    value,
+                    span: 0..10,
+                });
+            } else if self.match_one(&[TokenKind::DotDotDot]) {
+                let expr = self.parse_expression()?;
+                attributes.push(JsxAttribute {
+                    name: JsxAttributeName::Identifier(Ident {
+                        sym: "spread".to_string(),
+                        span: 0..1,
+                    }),
+                    value: Some(JsxAttributeValue::Expression(expr)),
+                    span: 0..10,
+                });
+            } else {
+                break;
+            }
+        }
+
+        Ok(attributes)
+    }
+
+    fn parse_jsx_attribute_value(&mut self) -> Result<argon_ast::JsxAttributeValue, ParseError> {
+        use argon_ast::*;
+
+        if self.match_one(&[TokenKind::OpenBrace]) {
+            let expr = self.parse_expression()?;
+            self.expect(TokenKind::CloseBrace)?;
+            return Ok(JsxAttributeValue::Expression(expr));
+        }
+
+        if self.match_one(&[TokenKind::String]) {
+            let span = self.previous().span.clone();
+            let value = self.source[span.clone()].to_string();
+            return Ok(JsxAttributeValue::String(StringLiteral { value, span }));
+        }
+
+        if self.match_one(&[TokenKind::JsxElementOpen]) {
+            let elem = self.parse_jsx_element()?;
+            if let Expr::JsxElement(e) = elem {
+                return Ok(JsxAttributeValue::Element(e));
+            }
+        }
+
+        Err(ParseError::Parser(
+            "Expected JSX attribute value".to_string(),
+        ))
+    }
+
+    fn parse_jsx_children(&mut self) -> Result<Vec<argon_ast::JsxChild>, ParseError> {
+        use argon_ast::*;
+
+        let mut children = Vec::new();
+
+        while !self.check(&TokenKind::JsxElementClose)
+            && !self.check(&TokenKind::JsxFragmentClose)
+            && !self.is_at_end()
+        {
+            if self.check(&TokenKind::OpenBrace) {
+                self.advance();
+                let expr = self.parse_expression()?;
+                self.expect(TokenKind::CloseBrace)?;
+                children.push(JsxChild::Expression(expr));
+            } else if self.check(&TokenKind::JsxElementOpen) {
+                let elem = self.parse_jsx_element()?;
+                if let Expr::JsxElement(e) = elem {
+                    children.push(JsxChild::Element(e));
+                }
+            } else if self.check(&TokenKind::JsxFragmentOpen) {
+                let elem = self.parse_jsx_element()?;
+                if let Expr::JsxFragment(f) = elem {
+                    children.push(JsxChild::Fragment(f));
+                }
+            } else if self.match_one(&[TokenKind::JsxChild]) {
+                let span = self.previous().span.clone();
+                let value = self.source[span.clone()].to_string();
+                children.push(JsxChild::Text(JsxText { value, span }));
+            } else {
+                break;
+            }
+        }
+
+        Ok(children)
+    }
+
     fn parse_primary(&mut self) -> Result<argon_ast::Expr, ParseError> {
         use argon_ast::*;
+
+        if self.match_one(&[TokenKind::JsxElementOpen])
+            || self.match_one(&[TokenKind::JsxFragmentOpen])
+        {
+            self.current -= 1;
+            return self.parse_jsx_element();
+        }
 
         if self.match_one(&[TokenKind::True]) {
             return Ok(Expr::Literal(Literal::Boolean(BooleanLiteral {
