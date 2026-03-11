@@ -13,8 +13,14 @@ use argon_lexer::{tokenize, LexerError, TokenKind};
 #[derive(Debug, Clone)]
 pub enum ParseError {
     Lexer(LexerError),
-    Parser { msg: String, span: Span },
-    UnexpectedToken { msg: String, span: Span },
+    Parser {
+        msg: String,
+        span: Span,
+    },
+    UnexpectedToken {
+        msg: String,
+        span: Span,
+    },
     ExpectedToken(String, usize),
     MissingParameterType {
         param_name: String,
@@ -301,9 +307,7 @@ impl Parser {
                             type_annotation: None,
                             default: None,
                         }),
-                        _ => {
-                            return Err(self.parser_error_prev("Expected identifier in pattern"))
-                        }
+                        _ => return Err(self.parser_error_prev("Expected identifier in pattern")),
                     }
                 };
 
@@ -617,11 +621,7 @@ impl Parser {
             self.current -= 1;
             match self.parse_statement()? {
                 Stmt::Block(b) => ArrowFunctionBody::Block(b),
-                _ => {
-                    return Err(self.parser_error_prev(
-                        "Function expression body must be a block",
-                    ))
-                }
+                _ => return Err(self.parser_error_prev("Function expression body must be a block")),
             }
         } else if self.match_one(&[TokenKind::FatArrow]) {
             let expr = self.parse_expression()?;
@@ -911,9 +911,7 @@ impl Parser {
 
             let body = match self.parse_statement()? {
                 Stmt::Block(b) => b,
-                _ => {
-                    return Err(self.parser_error_prev("catch block must be a block"))
-                }
+                _ => return Err(self.parser_error_prev("catch block must be a block")),
             };
 
             let catch_end = self.previous().span.end;
@@ -929,9 +927,7 @@ impl Parser {
         let finalizer = if self.match_one(&[TokenKind::Finally]) {
             match self.parse_statement()? {
                 Stmt::Block(b) => Some(b),
-                _ => {
-                    return Err(self.parser_error_prev("finally block must be a block"))
-                }
+                _ => return Err(self.parser_error_prev("finally block must be a block")),
             }
         } else {
             None
@@ -1408,9 +1404,7 @@ impl Parser {
 
         let body = match self.parse_statement()? {
             Stmt::Block(b) => b,
-            _ => {
-                return Err(self.parser_error_prev("constructor body must be a block"))
-            }
+            _ => return Err(self.parser_error_prev("constructor body must be a block")),
         };
 
         let end = self.previous().span.end;
@@ -1485,9 +1479,7 @@ impl Parser {
 
         let body_stmt = match self.parse_statement()? {
             Stmt::Block(b) => b,
-            _ => {
-                return Err(self.parser_error_prev("method body must be a block"))
-            }
+            _ => return Err(self.parser_error_prev("method body must be a block")),
         };
 
         let body = argon_ast::FunctionBody {
@@ -2033,10 +2025,7 @@ impl Parser {
             let start = self.previous().span.start;
             let argument = Box::new(self.parse_unary()?);
             let span = start..argument.span().end;
-            return Ok(Expr::Await(AwaitExpr {
-                argument,
-                span,
-            }));
+            return Ok(Expr::Await(AwaitExpr { argument, span }));
         }
 
         if self.match_one(&[TokenKind::PlusPlus, TokenKind::MinusMinus]) {
@@ -2153,6 +2142,7 @@ impl Parser {
                 expr = Expr::Call(CallExpr {
                     callee: Box::new(expr),
                     arguments: args,
+                    type_args: vec![],
                     span,
                 });
             } else if self.match_one(&[TokenKind::OpenBrace]) {
@@ -2250,13 +2240,9 @@ impl Parser {
         let span = start..closing_span.end;
 
         Ok(Expr::JsxFragment(JsxFragment {
-            opening: JsxOpeningFragment {
-                span: opening_span,
-            },
+            opening: JsxOpeningFragment { span: opening_span },
             children,
-            closing: JsxClosingFragment {
-                span: closing_span,
-            },
+            closing: JsxClosingFragment { span: closing_span },
             span,
         }))
     }
@@ -2598,10 +2584,7 @@ impl Parser {
             return self.parse_function_expression();
         }
 
-        Err(self.unexpected_here(format!(
-            "Unexpected token at position {}",
-            self.current
-        )))
+        Err(self.unexpected_here(format!("Unexpected token at position {}", self.current)))
     }
 
     fn parse_type(&mut self) -> Result<argon_ast::Type, ParseError> {

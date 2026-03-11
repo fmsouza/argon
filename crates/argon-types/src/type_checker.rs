@@ -1,6 +1,6 @@
 //! Argon - Type checker
 
-use crate::types::{FunctionSig, StructDef, Type as CompType, TypeId, TypeTable};
+use crate::types::{FunctionSig, StructDef, Type as CompType, TypeId, TypeInstantiator, TypeTable};
 use argon_ast::*;
 use std::collections::HashMap;
 
@@ -12,10 +12,25 @@ pub struct TypeCheckOutput {
 }
 
 #[derive(Debug, Clone)]
+struct TypeAliasDef {
+    type_params: Vec<argon_ast::TypeParam>,
+    type_annotation: Box<argon_ast::Type>,
+}
+
+#[derive(Debug, Clone)]
+struct GenericFunctionDef {
+    sig: FunctionSig,
+    type_params: Vec<argon_ast::TypeParam>,
+}
+
+#[derive(Debug, Clone)]
 pub struct TypeEnvironment {
     vars: HashMap<String, TypeId>,
     structs: HashMap<String, StructDef>,
     functions: HashMap<String, FunctionSig>,
+    generic_functions: HashMap<String, GenericFunctionDef>,
+    type_aliases: HashMap<String, TypeAliasDef>,
+    type_params: HashMap<String, TypeId>,
     this_ty: Option<TypeId>,
 }
 
@@ -25,6 +40,9 @@ impl TypeEnvironment {
             vars: HashMap::new(),
             structs: HashMap::new(),
             functions: HashMap::new(),
+            generic_functions: HashMap::new(),
+            type_aliases: HashMap::new(),
+            type_params: HashMap::new(),
             this_ty: None,
         }
     }
@@ -53,6 +71,36 @@ impl TypeEnvironment {
         self.functions.insert(name, sig);
     }
 
+    pub fn get_generic_function(&self, name: &str) -> Option<&GenericFunctionDef> {
+        self.generic_functions.get(name)
+    }
+
+    pub fn add_generic_function(
+        &mut self,
+        name: String,
+        sig: FunctionSig,
+        type_params: Vec<argon_ast::TypeParam>,
+    ) {
+        self.generic_functions
+            .insert(name, GenericFunctionDef { sig, type_params });
+    }
+
+    fn get_type_alias(&self, name: &str) -> Option<&TypeAliasDef> {
+        self.type_aliases.get(name)
+    }
+
+    fn add_type_alias(&mut self, name: String, def: TypeAliasDef) {
+        self.type_aliases.insert(name, def);
+    }
+
+    pub fn add_type_param(&mut self, name: String, ty: TypeId) {
+        self.type_params.insert(name, ty);
+    }
+
+    pub fn get_type_param(&self, name: &str) -> Option<TypeId> {
+        self.type_params.get(name).copied()
+    }
+
     pub fn set_this(&mut self, ty: Option<TypeId>) {
         self.this_ty = ty;
     }
@@ -66,6 +114,9 @@ impl TypeEnvironment {
             vars: self.vars.clone(),
             structs: self.structs.clone(),
             functions: self.functions.clone(),
+            generic_functions: self.generic_functions.clone(),
+            type_aliases: self.type_aliases.clone(),
+            type_params: self.type_params.clone(),
             this_ty: self.this_ty,
         }
     }
@@ -75,6 +126,9 @@ pub struct TypeChecker {
     type_table: TypeTable,
     env: TypeEnvironment,
     expr_types: HashMap<Span, TypeId>,
+    type_alias_cache: HashMap<String, TypeId>,
+    resolving_type_aliases: Vec<String>,
+    current_return_type: Option<TypeId>,
     errors: Vec<TypeError>,
     #[allow(dead_code)]
     warnings: Vec<String>,
@@ -98,12 +152,77 @@ impl TypeChecker {
             type_table,
             env,
             expr_types: HashMap::new(),
+            type_alias_cache: HashMap::new(),
+            resolving_type_aliases: Vec::new(),
+            current_return_type: None,
             errors: Vec::new(),
             warnings: Vec::new(),
         }
     }
 
+    fn collect_declarations(&mut self, source: &SourceFile) {
+        for stmt in &source.statements {
+            match stmt {
+                Stmt::TypeAlias(a) => {
+                    self.env.add_type_alias(
+                        a.id.sym.clone(),
+                        TypeAliasDef {
+                            type_params: a.type_params.clone(),
+                            type_annotation: a.type_annotation.clone(),
+                        },
+                    );
+                }
+                Stmt::Struct(s) => {
+                    self.env.add_struct(
+                        s.id.sym.clone(),
+                        StructDef {
+                            name: s.id.sym.clone(),
+                            fields: vec![],
+                        },
+                    );
+                }
+                Stmt::Function(f) | Stmt::AsyncFunction(f) => {
+                    if let Some(id) = &f.id {
+                        let param_tys = f
+                            .params
+                            .iter()
+                            .map(|p| {
+                                p.ty.as_ref()
+                                    .map(|t| self.resolve_type(t))
+                                    .unwrap_or_else(|| self.type_table.unknown())
+                            })
+                            .collect();
+                        let return_ty = f
+                            .return_type
+                            .as_ref()
+                            .map(|t| self.resolve_type(t))
+                            .unwrap_or_else(|| self.type_table.void());
+
+                        let sig = FunctionSig {
+                            params: param_tys,
+                            return_type: return_ty,
+                            is_async: f.is_async,
+                        };
+
+                        if f.type_params.is_empty() {
+                            self.env.add_function(id.sym.clone(), sig);
+                        } else {
+                            self.env.add_generic_function(
+                                id.sym.clone(),
+                                sig,
+                                f.type_params.clone(),
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub fn check(&mut self, source: &SourceFile) -> Result<(), TypeError> {
+        self.collect_declarations(source);
+
         for stmt in &source.statements {
             self.check_statement(stmt)?;
         }
@@ -193,6 +312,20 @@ impl TypeChecker {
 
         let mut local_env = self.env.child();
 
+        for type_param in &f.type_params {
+            let constraint = type_param.constraint.as_ref().map(|c| self.resolve_type(c));
+            let default = type_param.default.as_ref().map(|d| self.resolve_type(d));
+
+            let ty = self
+                .type_table
+                .add(CompType::TypeParam(crate::types::TypeParam {
+                    name: type_param.name.sym.clone(),
+                    constraint,
+                    default,
+                }));
+            local_env.add_type_param(type_param.name.sym.clone(), ty);
+        }
+
         let param_tys: Vec<TypeId> = f
             .params
             .iter()
@@ -219,7 +352,12 @@ impl TypeChecker {
             is_async: f.is_async,
         };
 
-        self.env.add_function(func_name.clone(), func_sig);
+        if f.type_params.is_empty() {
+            self.env.add_function(func_name.clone(), func_sig);
+        } else {
+            self.env
+                .add_generic_function(func_name.clone(), func_sig, f.type_params.clone());
+        }
 
         if let Some(ref borrow) = f.borrow_annotation {
             if let Some(target) = &borrow.target {
@@ -229,11 +367,16 @@ impl TypeChecker {
             }
         }
 
+        let old_return = self.current_return_type;
+        self.current_return_type = Some(return_ty);
+
         let old_env = std::mem::replace(&mut self.env, local_env);
         for stmt in &f.body.statements {
             self.check_statement(stmt)?;
         }
         self.env = old_env;
+
+        self.current_return_type = old_return;
 
         if return_ty != self.type_table.void() {
             let has_return = f
@@ -305,8 +448,14 @@ impl TypeChecker {
     }
 
     fn check_return(&mut self, r: &ReturnStmt) -> Result<(), TypeError> {
-        if let Some(ref arg) = r.argument {
-            self.infer_expression(arg);
+        if let Some(expected) = self.current_return_type {
+            if let Some(ref arg) = r.argument {
+                let found = self.infer_expression(arg);
+                self.unify(found, expected);
+            } else {
+                let found = self.type_table.void();
+                self.unify(found, expected);
+            }
         }
         Ok(())
     }
@@ -510,24 +659,89 @@ impl TypeChecker {
     }
 
     fn infer_call(&mut self, c: &CallExpr) -> TypeId {
-        let callee_ty = self.infer_expression(&c.callee);
+        let arg_tys: Vec<TypeId> = c
+            .arguments
+            .iter()
+            .filter_map(|arg| {
+                if let ExprOrSpread::Expr(e) = arg {
+                    Some(self.infer_expression(e))
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-        for arg in &c.arguments {
-            if let ExprOrSpread::Expr(e) = arg {
-                self.infer_expression(e);
-            }
-        }
-
-        if let Some(CompType::Function(sig)) = self.type_table.get(callee_ty) {
-            return sig.return_type;
-        }
         if let Expr::Identifier(id) = &*c.callee {
             if id.sym == "console" {
                 return self.type_table.void();
             }
+
+            if let Some(generic_func) = self.env.get_generic_function(&id.sym).cloned() {
+                let type_args: Vec<TypeId> = if !c.type_args.is_empty() {
+                    c.type_args.iter().map(|t| self.resolve_type(t)).collect()
+                } else {
+                    self.infer_type_args(&generic_func, &arg_tys)
+                };
+
+                let mut instantiator = TypeInstantiator::new();
+                for (param, arg) in generic_func.type_params.iter().zip(type_args.iter()) {
+                    instantiator.add_substitution(param.name.sym.clone(), *arg);
+                }
+
+                let instantiated_sig = FunctionSig {
+                    params: generic_func
+                        .sig
+                        .params
+                        .iter()
+                        .map(|&p| instantiator.instantiate(&mut self.type_table, p))
+                        .collect(),
+                    return_type: instantiator
+                        .instantiate(&mut self.type_table, generic_func.sig.return_type),
+                    is_async: generic_func.sig.is_async,
+                };
+
+                if arg_tys.len() == instantiated_sig.params.len() {
+                    for (arg_ty, param_ty) in arg_tys.iter().zip(instantiated_sig.params.iter()) {
+                        self.unify(*arg_ty, *param_ty);
+                    }
+                }
+
+                return instantiated_sig.return_type;
+            }
+        }
+
+        let callee_ty = self.infer_expression(&c.callee);
+
+        if let Some(CompType::Function(sig)) = self.type_table.get(callee_ty) {
+            return sig.return_type;
         }
 
         self.type_table.unknown()
+    }
+
+    fn infer_type_args(
+        &mut self,
+        generic_func: &GenericFunctionDef,
+        arg_tys: &[TypeId],
+    ) -> Vec<TypeId> {
+        let mut type_args = Vec::with_capacity(generic_func.type_params.len());
+
+        for (i, _param) in generic_func.type_params.iter().enumerate() {
+            if i < arg_tys.len() && i < generic_func.sig.params.len() {
+                let arg_ty = arg_tys[i];
+                let param_ty = generic_func.sig.params[i];
+
+                if let Some(CompType::TypeParam(_)) = self.type_table.get(param_ty) {
+                    type_args.push(arg_ty);
+                } else {
+                    type_args.push(self.type_table.any());
+                }
+            } else {
+                type_args.push(self.type_table.any());
+            }
+        }
+
+        type_args
     }
 
     fn infer_member(&mut self, m: &MemberExpr) -> TypeId {
@@ -732,6 +946,7 @@ impl TypeChecker {
         self.infer_call(&CallExpr {
             callee: c.callee.clone(),
             arguments: c.arguments.clone(),
+            type_args: vec![],
             span: c.span.clone(),
         })
     }
@@ -774,6 +989,30 @@ impl TypeChecker {
             },
             argon_ast::Type::Reference(r) => {
                 if let TypeName::Ident(id) = &r.name {
+                    if let Some(ty) = self.env.get_type_param(&id.sym) {
+                        return ty;
+                    }
+
+                    if r.type_args.is_empty() {
+                        if let Some(alias) = self.env.get_type_alias(&id.sym).cloned() {
+                            return self.resolve_type_alias(&id.sym, &alias);
+                        }
+                    }
+
+                    if id.sym == "Option" && r.type_args.len() == 1 {
+                        let inner = self.resolve_type(&r.type_args[0]);
+                        return self.type_table.option(inner);
+                    }
+                    if id.sym == "Result" && r.type_args.len() == 2 {
+                        let ok = self.resolve_type(&r.type_args[0]);
+                        let err = self.resolve_type(&r.type_args[1]);
+                        return self.type_table.result(ok, err);
+                    }
+                    if id.sym == "Promise" && r.type_args.len() == 1 {
+                        let inner = self.resolve_type(&r.type_args[0]);
+                        return self.type_table.promise(inner);
+                    }
+
                     if let Some(ty) = self.type_table.get_by_name(&id.sym) {
                         return ty;
                     }
@@ -829,6 +1068,36 @@ impl TypeChecker {
             argon_ast::Type::Undefined(_) => self.type_table.undefined(),
             _ => self.type_table.unknown(),
         }
+    }
+
+    fn resolve_type_alias(&mut self, name: &str, def: &TypeAliasDef) -> TypeId {
+        if let Some(id) = self.type_alias_cache.get(name).copied() {
+            return id;
+        }
+
+        if self.resolving_type_aliases.iter().any(|n| n == name) {
+            self.errors.push(TypeError::Invalid {
+                message: format!("recursive type alias '{}'", name),
+            });
+            return self.type_table.unknown();
+        }
+
+        if !def.type_params.is_empty() {
+            self.errors.push(TypeError::Invalid {
+                message: format!(
+                    "generic type alias '{}' is not supported yet (missing instantiation)",
+                    name
+                ),
+            });
+            return self.type_table.unknown();
+        }
+
+        self.resolving_type_aliases.push(name.to_string());
+        let resolved = self.resolve_type(&def.type_annotation);
+        let _ = self.resolving_type_aliases.pop();
+
+        self.type_alias_cache.insert(name.to_string(), resolved);
+        resolved
     }
 
     fn unify(&mut self, found: TypeId, expected: TypeId) {

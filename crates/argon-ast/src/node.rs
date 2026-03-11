@@ -582,6 +582,7 @@ pub struct MemberExpr {
 pub struct CallExpr {
     pub callee: Box<Expr>,
     pub arguments: Vec<ExprOrSpread>,
+    pub type_args: Vec<Type>,
     pub span: Span,
 }
 #[derive(Debug, Clone)]
@@ -1221,6 +1222,7 @@ pub enum ChainElement {
 pub struct OptionalCallExpr {
     pub callee: Box<Expr>,
     pub arguments: Vec<ExprOrSpread>,
+    pub type_args: Vec<Type>,
     pub span: Span,
 }
 #[derive(Debug, Clone)]

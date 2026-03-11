@@ -884,7 +884,10 @@ mod span_parsing {
             _ => panic!("expected block consequent"),
         };
 
-        let jsx = first_return.argument.as_ref().expect("expected return value");
+        let jsx = first_return
+            .argument
+            .as_ref()
+            .expect("expected return value");
         assert_eq!(&source[jsx.span().clone()], "<div>Hello</div>");
     }
 }

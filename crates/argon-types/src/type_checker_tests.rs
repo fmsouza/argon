@@ -249,6 +249,34 @@ mod statement_type_checking {
         // Assert
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn detects_return_type_mismatch() {
+        // Assign
+        let source = "function foo(): i32 { return 'hello'; }";
+        let ast = parse(source).unwrap();
+        let mut checker = TypeChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn detects_missing_return_value_for_non_void() {
+        // Assign
+        let source = "function foo(): i32 { return; }";
+        let ast = parse(source).unwrap();
+        let mut checker = TypeChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_err());
+    }
 }
 
 mod class_type_checking {
@@ -304,6 +332,24 @@ mod function_type_checking {
     fn validates_function_body_statements() {
         // Assign
         let source = "function foo(): number { const x = 1; const y = 2; return x + y; }";
+        let ast = parse(source).unwrap();
+        let mut checker = TypeChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+}
+
+mod type_alias_checking {
+    use super::*;
+
+    #[test]
+    fn resolves_non_generic_type_aliases() {
+        // Assign
+        let source = "type MyNum = number; function id(x: MyNum): MyNum { return x; }";
         let ast = parse(source).unwrap();
         let mut checker = TypeChecker::new();
 
