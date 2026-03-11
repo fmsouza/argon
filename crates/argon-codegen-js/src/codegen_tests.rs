@@ -217,4 +217,84 @@ mod ir_codegen {
         assert!(output.contains("className: \"test\""));
         assert!(output.contains("\"Hello\""));
     }
+
+    #[test]
+    fn generates_switch_via_ir_cfg() {
+        let source = "function f(x: i32): void { switch (x) { case 1: const a = 1; break; default: const b = 2; } }";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+        let ir = builder.build(&ast).unwrap();
+        let mut codegen = JsCodegen::new();
+
+        let output = codegen.generate(&ir).unwrap();
+        assert!(output.contains("function f"));
+        assert!(output.contains("switch (__bb)"));
+    }
+
+    #[test]
+    fn generates_match_via_ir_cfg() {
+        let source = "function f(x: i32): void { match (x) { 1 => const a = 1, 2 => const b = 2, } }";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+        let ir = builder.build(&ast).unwrap();
+        let mut codegen = JsCodegen::new();
+
+        let output = codegen.generate(&ir).unwrap();
+        assert!(output.contains("function f"));
+        assert!(output.contains("switch (__bb)"));
+    }
+
+    #[test]
+    fn generates_exported_function_via_ir() {
+        let source = "export function foo(): i32 { return 1; }\n";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+        let ir = builder.build(&ast).unwrap();
+        let mut codegen = JsCodegen::new();
+
+        let output = codegen.generate(&ir).unwrap();
+        assert!(output.contains("function foo"));
+        assert!(output.contains("export { foo"));
+    }
+
+    #[test]
+    fn generates_logical_and_conditional_via_ir() {
+        let source = "function f(): boolean { return a && b; }\nfunction g(): i32 { return a > b ? a : b; }\n";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+        let ir = builder.build(&ast).unwrap();
+        let mut codegen = JsCodegen::new();
+
+        let output = codegen.generate(&ir).unwrap();
+        assert!(output.contains("function f"));
+        assert!(output.contains("&&"));
+        assert!(output.contains("function g"));
+        assert!(output.contains("?"));
+        assert!(output.contains(":"));
+    }
+
+    #[test]
+    fn generates_array_literal_via_ir() {
+        let source = "function f(): i32 { const arr = [1, 2, 3]; return 0; }\n";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+        let ir = builder.build(&ast).unwrap();
+        let mut codegen = JsCodegen::new();
+
+        let output = codegen.generate(&ir).unwrap();
+        assert!(output.contains("[1, 2, 3]"));
+    }
+
+    #[test]
+    fn does_not_duplicate_assignment_expression_via_ir() {
+        let source = "function f(): i32 { let x = 0; x = 1; return x; }\n";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+        let ir = builder.build(&ast).unwrap();
+        let mut codegen = JsCodegen::new();
+
+        let output = codegen.generate(&ir).unwrap();
+        assert!(output.contains("x = 1"));
+        assert!(!output.contains("\n    1;\n"));
+    }
 }

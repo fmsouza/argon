@@ -75,6 +75,11 @@ pub enum Instruction {
         name: String,
         src: ValueId,
     },
+    AssignExpr {
+        name: String,
+        src: ValueId,
+        dest: ValueId,
+    },
     ExprStmt {
         value: ValueId,
     },
@@ -108,10 +113,33 @@ pub enum Instruction {
         args: Vec<ValueId>,
         dest: ValueId,
     },
+    ArrayLit {
+        dest: ValueId,
+        elements: Vec<Option<ValueId>>,
+    },
+    LogicalOp {
+        op: LogicOp,
+        lhs: ValueId,
+        rhs: ValueId,
+        dest: ValueId,
+    },
+    Conditional {
+        cond: ValueId,
+        then_value: ValueId,
+        else_value: ValueId,
+        dest: ValueId,
+    },
     Const {
         dest: ValueId,
         value: ConstValue,
     },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum LogicOp {
+    And,
+    Or,
+    Nullish,
 }
 
 #[derive(Debug, Clone)]
@@ -225,7 +253,38 @@ impl IrBuilder {
                 Stmt::Struct(s) => self.translate_struct(s)?,
                 Stmt::Class(c) => self.translate_class(c)?,
                 Stmt::Import(i) => self.imports.push(i.clone()),
-                Stmt::Export(e) => self.exports.push(e.clone()),
+                Stmt::Export(e) => {
+                    // IR pipeline treats exports as module metadata; any exported declaration must
+                    // also be lowered into IR so codegen can emit it.
+                    if let Some(ref decl) = e.declaration {
+                        if e.is_type_only {
+                            return Err(IrError::Unsupported(
+                                "export declarations marked type-only are unsupported in IR pipeline"
+                                    .to_string(),
+                            ));
+                        }
+
+                        let exported_syms = self.translate_export_declaration(decl.as_ref())?;
+
+                        // Convert `export <decl>` into `export { name }` so IR codegen has a single
+                        // export emission path.
+                        let mut rewritten = e.clone();
+                        rewritten.declaration = None;
+                        if rewritten.specifiers.is_empty() {
+                            rewritten.specifiers = exported_syms
+                                .into_iter()
+                                .map(|sym| ExportSpecifier {
+                                    orig: Ident { sym, span: 0..0 },
+                                    exported: None,
+                                    span: 0..0,
+                                })
+                                .collect();
+                        }
+                        self.exports.push(rewritten);
+                    } else {
+                        self.exports.push(e.clone());
+                    }
+                }
                 _ => init_stmts.push(stmt.clone()),
             }
         }
@@ -255,6 +314,45 @@ impl IrBuilder {
             imports: self.imports.clone(),
             exports: self.exports.clone(),
         })
+    }
+
+    fn translate_export_declaration(&mut self, decl: &Stmt) -> Result<Vec<String>, IrError> {
+        match decl {
+            Stmt::Function(f) => {
+                let name = f.id.as_ref().map(|i| i.sym.clone()).unwrap_or_default();
+                if name.is_empty() {
+                    return Err(IrError::Unsupported(
+                        "exported function must have a name".to_string(),
+                    ));
+                }
+                self.translate_function(f, false)?;
+                Ok(vec![name])
+            }
+            Stmt::AsyncFunction(f) => {
+                let name = f.id.as_ref().map(|i| i.sym.clone()).unwrap_or_default();
+                if name.is_empty() {
+                    return Err(IrError::Unsupported(
+                        "exported function must have a name".to_string(),
+                    ));
+                }
+                self.translate_function(f, true)?;
+                Ok(vec![name])
+            }
+            Stmt::Struct(s) => {
+                let name = s.id.sym.clone();
+                self.translate_struct(s)?;
+                Ok(vec![name])
+            }
+            Stmt::Class(c) => {
+                let name = c.id.sym.clone();
+                self.translate_class(c)?;
+                Ok(vec![name])
+            }
+            _ => Err(IrError::Unsupported(format!(
+                "unsupported export declaration in IR pipeline: {:?}",
+                decl
+            ))),
+        }
     }
 
     fn new_value(&mut self) -> ValueId {
@@ -463,16 +561,84 @@ impl IrBuilder {
                 Ok(dest)
             }
             Expr::Assignment(a) => {
-                let src = self.translate_expression(&a.right, instructions)?;
-                if let AssignmentTarget::Simple(target) = &*a.left {
-                    if let Expr::Identifier(id) = &**target {
-                        instructions.push(Instruction::AssignVar {
-                            name: id.sym.clone(),
-                            src,
-                        });
+                match &a.operator {
+                    AssignmentOperator::Assign => {}
+                    op => {
+                        return Err(IrError::Unsupported(format!(
+                            "assignment operator: {:?}",
+                            op
+                        )))
                     }
                 }
-                Ok(src)
+
+                let src = self.translate_expression(&a.right, instructions)?;
+                let dest = self.new_value();
+
+                match &*a.left {
+                    AssignmentTarget::Simple(target) => match &**target {
+                        Expr::Identifier(id) => {
+                            instructions.push(Instruction::AssignExpr {
+                                name: id.sym.clone(),
+                                src,
+                                dest,
+                            });
+                            Ok(dest)
+                        }
+                        _ => Err(IrError::Unsupported(
+                            "assignment target (simple)".to_string(),
+                        )),
+                    },
+                    AssignmentTarget::Member(_) => Err(IrError::Unsupported(
+                        "assignment target (member)".to_string(),
+                    )),
+                    AssignmentTarget::Pattern(_) => Err(IrError::Unsupported(
+                        "assignment target (pattern)".to_string(),
+                    )),
+                }
+            }
+            Expr::Logical(l) => {
+                let lhs = self.translate_expression(&l.left, instructions)?;
+                let rhs = self.translate_expression(&l.right, instructions)?;
+                let dest = self.new_value();
+                let op = match &l.operator {
+                    LogicalOperator::And => LogicOp::And,
+                    LogicalOperator::Or => LogicOp::Or,
+                    LogicalOperator::NullishCoalescing => LogicOp::Nullish,
+                };
+                instructions.push(Instruction::LogicalOp { op, lhs, rhs, dest });
+                Ok(dest)
+            }
+            Expr::Conditional(c) => {
+                let cond = self.translate_expression(&c.test, instructions)?;
+                let then_value = self.translate_expression(&c.consequent, instructions)?;
+                let else_value = self.translate_expression(&c.alternate, instructions)?;
+                let dest = self.new_value();
+                instructions.push(Instruction::Conditional {
+                    cond,
+                    then_value,
+                    else_value,
+                    dest,
+                });
+                Ok(dest)
+            }
+            Expr::Array(a) => {
+                let dest = self.new_value();
+                let mut elements = Vec::new();
+                for el in &a.elements {
+                    match el {
+                        None => elements.push(None),
+                        Some(ExprOrSpread::Expr(e)) => {
+                            elements.push(Some(self.translate_expression(e, instructions)?));
+                        }
+                        Some(ExprOrSpread::Spread(_)) => {
+                            return Err(IrError::Unsupported(
+                                "array literal spread element".to_string(),
+                            ));
+                        }
+                    }
+                }
+                instructions.push(Instruction::ArrayLit { dest, elements });
+                Ok(dest)
             }
             Expr::This(_) => {
                 let dest = self.new_value();
@@ -759,9 +925,10 @@ impl IrBuilder {
 }
 
 #[derive(Clone, Copy)]
-struct LoopContext {
+struct BreakableContext {
     break_target: BlockId,
-    continue_target: BlockId,
+    // Only loops provide a continue target.
+    continue_target: Option<BlockId>,
 }
 
 struct FunctionLowerer<'a> {
@@ -769,7 +936,7 @@ struct FunctionLowerer<'a> {
     blocks: Vec<BasicBlock>,
     current_id: BlockId,
     current_instructions: Vec<Instruction>,
-    loop_stack: Vec<LoopContext>,
+    breakable_stack: Vec<BreakableContext>,
 }
 
 impl<'a> FunctionLowerer<'a> {
@@ -779,7 +946,7 @@ impl<'a> FunctionLowerer<'a> {
             blocks: Vec::new(),
             current_id: entry,
             current_instructions: Vec::new(),
-            loop_stack: Vec::new(),
+            breakable_stack: Vec::new(),
         }
     }
 
@@ -843,6 +1010,8 @@ impl<'a> FunctionLowerer<'a> {
             Stmt::While(w) => self.lower_while(w),
             Stmt::For(f) => self.lower_for(f),
             Stmt::DoWhile(d) => self.lower_do_while(d),
+            Stmt::Switch(s) => self.lower_switch(s),
+            Stmt::Match(m) => self.lower_match(m),
             Stmt::Break(_) => self.lower_break(),
             Stmt::Continue(_) => self.lower_continue(),
             Stmt::Empty(_) => Ok(false),
@@ -852,21 +1021,23 @@ impl<'a> FunctionLowerer<'a> {
 
     fn lower_break(&mut self) -> Result<bool, IrError> {
         let ctx = self
-            .loop_stack
+            .breakable_stack
             .last()
             .copied()
-            .ok_or_else(|| IrError::InvalidAst("break outside of loop".to_string()))?;
+            .ok_or_else(|| IrError::InvalidAst("break outside of loop/switch".to_string()))?;
         self.finish_current(Terminator::Jump(ctx.break_target))?;
         Ok(true)
     }
 
     fn lower_continue(&mut self) -> Result<bool, IrError> {
-        let ctx = self
-            .loop_stack
-            .last()
-            .copied()
+        // Continue targets the nearest loop, skipping intervening switch contexts.
+        let target = self
+            .breakable_stack
+            .iter()
+            .rev()
+            .find_map(|c| c.continue_target)
             .ok_or_else(|| IrError::InvalidAst("continue outside of loop".to_string()))?;
-        self.finish_current(Terminator::Jump(ctx.continue_target))?;
+        self.finish_current(Terminator::Jump(target))?;
         Ok(true)
     }
 
@@ -923,12 +1094,12 @@ impl<'a> FunctionLowerer<'a> {
         })?;
 
         self.start_block(body_id)?;
-        self.loop_stack.push(LoopContext {
+        self.breakable_stack.push(BreakableContext {
             break_target: after_id,
-            continue_target: cond_id,
+            continue_target: Some(cond_id),
         });
         let body_terminated = self.lower_stmt(&w.body)?;
-        self.loop_stack.pop();
+        self.breakable_stack.pop();
         if !body_terminated {
             self.finish_current(Terminator::Jump(cond_id))?;
         }
@@ -978,12 +1149,12 @@ impl<'a> FunctionLowerer<'a> {
         })?;
 
         self.start_block(body_id)?;
-        self.loop_stack.push(LoopContext {
+        self.breakable_stack.push(BreakableContext {
             break_target: after_id,
-            continue_target: update_id,
+            continue_target: Some(update_id),
         });
         let body_terminated = self.lower_stmt(&f.body)?;
-        self.loop_stack.pop();
+        self.breakable_stack.pop();
         if !body_terminated {
             self.finish_current(Terminator::Jump(update_id))?;
         }
@@ -1009,12 +1180,12 @@ impl<'a> FunctionLowerer<'a> {
         self.finish_current(Terminator::Jump(body_id))?;
 
         self.start_block(body_id)?;
-        self.loop_stack.push(LoopContext {
+        self.breakable_stack.push(BreakableContext {
             break_target: after_id,
-            continue_target: cond_id,
+            continue_target: Some(cond_id),
         });
         let body_terminated = self.lower_stmt(&d.body)?;
-        self.loop_stack.pop();
+        self.breakable_stack.pop();
         if !body_terminated {
             self.finish_current(Terminator::Jump(cond_id))?;
         }
@@ -1028,6 +1199,150 @@ impl<'a> FunctionLowerer<'a> {
             then: body_id,
             else_: after_id,
         })?;
+
+        self.start_block(after_id)?;
+        Ok(false)
+    }
+
+    fn lower_switch(&mut self, s: &SwitchStmt) -> Result<bool, IrError> {
+        // Lower `switch (discriminant) { case ... }` into a chain of comparisons and case blocks.
+        //
+        // Note: currently re-translates the discriminant in each check block to avoid cross-block
+        // ValueId dependencies in the non-SSA IR.
+        let after_id = self.builder.new_block();
+        self.breakable_stack.push(BreakableContext {
+            break_target: after_id,
+            continue_target: None,
+        });
+
+        let case_block_ids: Vec<BlockId> = (0..s.cases.len()).map(|_| self.builder.new_block()).collect();
+        let default_case = s.cases.iter().position(|c| c.test.is_none());
+        let non_default: Vec<usize> = s
+            .cases
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| if c.test.is_some() { Some(i) } else { None })
+            .collect();
+
+        if non_default.is_empty() {
+            // No tests; jump straight to default or after.
+            let target = default_case.map(|i| case_block_ids[i]).unwrap_or(after_id);
+            self.finish_current(Terminator::Jump(target))?;
+        } else {
+            // Build check blocks.
+            let check_ids: Vec<BlockId> = (0..non_default.len()).map(|_| self.builder.new_block()).collect();
+            self.finish_current(Terminator::Jump(check_ids[0]))?;
+
+            for (j, check_id) in check_ids.iter().enumerate() {
+                self.start_block(*check_id)?;
+                let discr = self
+                    .builder
+                    .translate_expression(&s.discriminant, &mut self.current_instructions)?;
+                let case_idx = non_default[j];
+                let test_expr = s.cases[case_idx]
+                    .test
+                    .as_ref()
+                    .expect("non-default case has test");
+                let test_val =
+                    self.builder
+                        .translate_expression(test_expr, &mut self.current_instructions)?;
+                let cond = self.builder.new_value();
+                self.current_instructions.push(Instruction::BinOp {
+                    op: BinOp::Eq,
+                    lhs: discr,
+                    rhs: test_val,
+                    dest: cond,
+                });
+
+                let else_target = if j + 1 < check_ids.len() {
+                    check_ids[j + 1]
+                } else {
+                    default_case
+                        .map(|i| case_block_ids[i])
+                        .unwrap_or(after_id)
+                };
+                self.finish_current(Terminator::Branch {
+                    cond,
+                    then: case_block_ids[case_idx],
+                    else_: else_target,
+                })?;
+            }
+        }
+
+        // Lower case bodies with fallthrough semantics.
+        for (i, case) in s.cases.iter().enumerate() {
+            self.start_block(case_block_ids[i])?;
+            let terminated = self.lower_stmt_list(&case.consequent)?;
+            if !terminated {
+                let next = if i + 1 < case_block_ids.len() {
+                    case_block_ids[i + 1]
+                } else {
+                    after_id
+                };
+                self.finish_current(Terminator::Jump(next))?;
+            }
+        }
+
+        // Continue after the switch.
+        self.breakable_stack.pop();
+        self.start_block(after_id)?;
+        Ok(false)
+    }
+
+    fn lower_match(&mut self, m: &MatchStmt) -> Result<bool, IrError> {
+        // Lower `match (x) { pat => stmt, ... }` into a chain of comparisons and arms.
+        //
+        // Note: currently re-translates the discriminant in each check block to avoid cross-block
+        // ValueId dependencies in the non-SSA IR.
+        let after_id = self.builder.new_block();
+
+        let arm_ids: Vec<BlockId> = (0..m.cases.len()).map(|_| self.builder.new_block()).collect();
+        let check_ids: Vec<BlockId> = (0..m.cases.len()).map(|_| self.builder.new_block()).collect();
+
+        if m.cases.is_empty() {
+            self.finish_current(Terminator::Jump(after_id))?;
+            self.start_block(after_id)?;
+            return Ok(false);
+        }
+
+        self.finish_current(Terminator::Jump(check_ids[0]))?;
+
+        for (i, check_id) in check_ids.iter().enumerate() {
+            self.start_block(*check_id)?;
+            let discr = self
+                .builder
+                .translate_expression(&m.discriminant, &mut self.current_instructions)?;
+            let pat = self
+                .builder
+                .translate_expression(&m.cases[i].pattern, &mut self.current_instructions)?;
+            let cond = self.builder.new_value();
+            self.current_instructions.push(Instruction::BinOp {
+                op: BinOp::Eq,
+                lhs: discr,
+                rhs: pat,
+                dest: cond,
+            });
+
+            let else_target = if i + 1 < check_ids.len() {
+                check_ids[i + 1]
+            } else {
+                after_id
+            };
+
+            self.finish_current(Terminator::Branch {
+                cond,
+                then: arm_ids[i],
+                else_: else_target,
+            })?;
+        }
+
+        for (i, case) in m.cases.iter().enumerate() {
+            self.start_block(arm_ids[i])?;
+            let terminated = self.lower_stmt(&case.consequent)?;
+            if !terminated {
+                self.finish_current(Terminator::Jump(after_id))?;
+            }
+        }
 
         self.start_block(after_id)?;
         Ok(false)

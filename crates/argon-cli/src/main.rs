@@ -67,11 +67,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             input,
             output,
             target,
-            source_map: _,
+            source_map,
             declarations,
             pipeline,
         } => {
-            compile(&input, output.as_ref(), &target, declarations, &pipeline)?;
+            compile(
+                &input,
+                output.as_ref(),
+                &target,
+                source_map,
+                declarations,
+                &pipeline,
+            )?;
         }
         Commands::Check { input } => {
             check(&input)?;
@@ -102,6 +109,7 @@ fn compile(
     input: &PathBuf,
     output: Option<&PathBuf>,
     target: &str,
+    source_map: bool,
     declarations: bool,
     pipeline: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -120,19 +128,44 @@ fn compile(
 
     if target == "js" {
         println!("Generating JavaScript...");
-        let js = if pipeline == "ast" {
-            let mut codegen = JsCodegen::new();
+        let output_path = output
+            .map(|p| p.clone())
+            .unwrap_or_else(|| PathBuf::from("output.js"));
+
+        let source_name = input.display().to_string();
+        let mut codegen = if source_map {
+            JsCodegen::new().with_source_map(&source_name)
+        } else {
+            JsCodegen::new()
+        };
+
+        let mut js = if pipeline == "ast" {
             codegen.generate_from_ast(&ast)?
         } else {
             let mut builder = IrBuilder::new();
             let ir = builder.build(&ast)?;
-            let mut codegen = JsCodegen::new();
             codegen.generate(&ir)?
         };
 
-        let output_path = output
-            .map(|p| p.clone())
-            .unwrap_or_else(|| PathBuf::from("output.js"));
+        if source_map {
+            let ext = output_path
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("js");
+            let map_path = output_path.with_extension(format!("{}.map", ext));
+            if let Some(map) = codegen.get_source_map() {
+                fs::write(&map_path, &map)?;
+                let map_file = map_path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("output.js.map");
+                js.push_str("\n//# sourceMappingURL=");
+                js.push_str(map_file);
+                js.push_str("\n");
+                println!("Wrote {}", map_path.display());
+            }
+        }
+
         fs::write(&output_path, &js)?;
         println!("Wrote {}", output_path.display());
 

@@ -64,6 +64,7 @@ mod struct_translation {
 
 mod expression_translation {
     use super::*;
+    use crate::Instruction;
 
     #[test]
     fn translates_number_literal() {
@@ -129,6 +130,86 @@ mod expression_translation {
         let result = builder.build(&ast);
 
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn translates_logical_expression() {
+        let source = "function foo(): boolean { return a && b; }";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+
+        let module = builder.build(&ast).unwrap();
+        let foo = module.functions.iter().find(|f| f.id == "foo").unwrap();
+
+        let mut saw_logical = false;
+        for block in &foo.body {
+            for inst in &block.instructions {
+                if matches!(inst, Instruction::LogicalOp { .. }) {
+                    saw_logical = true;
+                }
+            }
+        }
+        assert!(saw_logical);
+    }
+
+    #[test]
+    fn translates_conditional_expression() {
+        let source = "function foo(): i32 { return a > b ? a : b; }";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+
+        let module = builder.build(&ast).unwrap();
+        let foo = module.functions.iter().find(|f| f.id == "foo").unwrap();
+
+        let mut saw_conditional = false;
+        for block in &foo.body {
+            for inst in &block.instructions {
+                if matches!(inst, Instruction::Conditional { .. }) {
+                    saw_conditional = true;
+                }
+            }
+        }
+        assert!(saw_conditional);
+    }
+
+    #[test]
+    fn translates_array_literal() {
+        let source = "function foo(): i32 { const arr = [1, 2, 3]; return 0; }";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+
+        let module = builder.build(&ast).unwrap();
+        let foo = module.functions.iter().find(|f| f.id == "foo").unwrap();
+
+        let mut saw_array = false;
+        for block in &foo.body {
+            for inst in &block.instructions {
+                if matches!(inst, Instruction::ArrayLit { .. }) {
+                    saw_array = true;
+                }
+            }
+        }
+        assert!(saw_array);
+    }
+
+    #[test]
+    fn translates_assignment_as_expression() {
+        let source = "function foo(): i32 { let x = 0; x = 1; return x; }";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+
+        let module = builder.build(&ast).unwrap();
+        let foo = module.functions.iter().find(|f| f.id == "foo").unwrap();
+
+        let mut saw_assign_expr = false;
+        for block in &foo.body {
+            for inst in &block.instructions {
+                if matches!(inst, Instruction::AssignExpr { .. }) {
+                    saw_assign_expr = true;
+                }
+            }
+        }
+        assert!(saw_assign_expr);
     }
 }
 
@@ -276,5 +357,66 @@ mod jsx_translation {
         assert!(saw_create_element);
         assert!(saw_class_name_prop);
         assert!(saw_hello);
+    }
+}
+
+mod switch_and_match_translation {
+    use super::*;
+
+    #[test]
+    fn translates_switch_statement() {
+        let source = "function f(x: i32): void { switch (x) { case 1: const a = 1; break; default: const b = 2; } }";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+
+        let module = builder.build(&ast).unwrap();
+        let f = module.functions.iter().find(|f| f.id == "f").unwrap();
+        assert!(f.body.len() > 1);
+    }
+
+    #[test]
+    fn translates_match_statement() {
+        let source = "function f(x: i32): void { match (x) { 1 => const a = 1, 2 => const b = 2, } }";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+
+        let module = builder.build(&ast).unwrap();
+        let f = module.functions.iter().find(|f| f.id == "f").unwrap();
+        assert!(f.body.len() > 1);
+    }
+}
+
+mod export_translation {
+    use super::*;
+
+    #[test]
+    fn lowers_exported_function_declaration() {
+        let source = "export function foo(): i32 { return 1; }";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+
+        let module = builder.build(&ast).unwrap();
+        assert!(module.functions.iter().any(|f| f.id == "foo"));
+        assert!(module
+            .exports
+            .iter()
+            .any(|e| e.declaration.is_none()
+                && e.specifiers.iter().any(|s| s.orig.sym == "foo")));
+    }
+
+    #[test]
+    fn lowers_exported_async_function_declaration() {
+        let source = "export async function foo(): i32 { return 1; }";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+
+        let module = builder.build(&ast).unwrap();
+        let foo = module.functions.iter().find(|f| f.id == "foo").unwrap();
+        assert!(foo.is_async);
+        assert!(module
+            .exports
+            .iter()
+            .any(|e| e.declaration.is_none()
+                && e.specifiers.iter().any(|s| s.orig.sym == "foo")));
     }
 }

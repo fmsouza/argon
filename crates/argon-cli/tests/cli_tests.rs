@@ -38,6 +38,61 @@ fn test_compile_simple() {
 }
 
 #[test]
+fn test_compile_writes_source_map_when_enabled() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("sourcemap.arg");
+    fs::write(&source_file, "const x = 5;\nconsole.log(x);\n").unwrap();
+
+    let output_js = temp_dir.path().join("output.js");
+    let output_map = temp_dir.path().join("output.js.map");
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(&output_js)
+        .arg("--pipeline")
+        .arg("ir")
+        .arg("--source-map")
+        .assert()
+        .success();
+
+    let js = fs::read_to_string(&output_js).unwrap();
+    assert!(js.contains("sourceMappingURL=output.js.map"));
+
+    let map = fs::read_to_string(&output_map).unwrap();
+    assert!(map.contains("\"version\":3"));
+}
+
+#[test]
+fn test_compile_logical_conditional_array_and_assignment() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("exprs.arg");
+    fs::write(
+        &source_file,
+        "function f(a: i32, b: i32): i32 {\n    let x = 0;\n    x = a > b ? a : b;\n    const ok = (a > 0) && (b > 0);\n    const arr = [1, 2, 3];\n    if (ok) { return x + arr[0]; }\n    return x;\n}\nconsole.log(f(1, 2));\n",
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(temp_dir.path().join("output.js"))
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
+        .success();
+
+    let output = fs::read_to_string(temp_dir.path().join("output.js")).unwrap();
+    assert!(output.contains("[1, 2, 3]"));
+    assert!(output.contains("&&"));
+    assert!(output.contains("?"));
+    assert!(output.contains("x ="));
+    assert!(output.contains("arr[0]"));
+}
+
+#[test]
 fn test_compile_function() {
     let temp_dir = tempfile::tempdir().unwrap();
     let source_file = temp_dir.path().join("function.arg");
