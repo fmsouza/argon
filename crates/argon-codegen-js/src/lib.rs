@@ -75,6 +75,28 @@ impl JsCodegen {
             }
         }
 
+        // Emit module-scope globals before any init IIFE.
+        for g in &_module.globals {
+            self.output.push_str(match g.kind {
+                argon_ir::VarKind::Var => "var ",
+                argon_ir::VarKind::Let => "let ",
+                argon_ir::VarKind::Const => "const ",
+            });
+            self.output.push_str(&g.name);
+            if let Some(v) = g.init {
+                let expr = self.ir_eval_expr(&g.init_insts, v)?;
+                self.output.push_str(" = ");
+                self.output.push_str(&expr);
+            } else if matches!(g.kind, argon_ir::VarKind::Const) {
+                // JS doesn't allow `const x;`; keep output valid.
+                self.output.push_str(" = undefined");
+            }
+            self.output.push_str(";\n");
+        }
+        if !_module.globals.is_empty() {
+            self.output.push_str("\n");
+        }
+
         // Emit all non-init functions.
         for func in &_module.functions {
             if func.id == "__argon_init" {
@@ -123,6 +145,177 @@ impl JsCodegen {
         }
 
         Ok(self.output.clone())
+    }
+
+    fn ir_eval_expr(
+        &self,
+        instructions: &[argon_ir::Instruction],
+        value: argon_ir::ValueId,
+    ) -> Result<String, CodegenError> {
+        use argon_ir::Instruction as IrInst;
+
+        let mut values: std::collections::HashMap<argon_ir::ValueId, String> =
+            std::collections::HashMap::new();
+
+        for inst in instructions {
+            match inst {
+                IrInst::ObjectLit { dest, props } => {
+                    let mut parts = Vec::new();
+                    for p in props {
+                        let v = values
+                            .get(&p.value)
+                            .cloned()
+                            .unwrap_or_else(|| "undefined".to_string());
+                        parts.push(format!("{}: {}", p.key, v));
+                    }
+                    values.insert(*dest, format!("{{ {} }}", parts.join(", ")));
+                }
+                IrInst::New { callee, args, dest } => {
+                    let callee = values
+                        .get(callee)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    let args = args
+                        .iter()
+                        .map(|a| values.get(a).cloned().unwrap_or_else(|| "undefined".to_string()))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    values.insert(*dest, format!("new {}({})", callee, args));
+                }
+                IrInst::Await { arg, dest } => {
+                    let arg = values
+                        .get(arg)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    values.insert(*dest, format!("await {}", arg));
+                }
+                IrInst::AssignExpr { name, src, dest } => {
+                    let expr =
+                        values.get(src).cloned().unwrap_or_else(|| "undefined".to_string());
+                    values.insert(*dest, format!("({} = {})", name, expr));
+                }
+                IrInst::Const { dest, value } => {
+                    values.insert(*dest, self.const_to_js(value));
+                }
+                IrInst::VarRef { dest, name } => {
+                    values.insert(*dest, name.clone());
+                }
+                IrInst::Member {
+                    object,
+                    property,
+                    dest,
+                } => {
+                    let obj = values
+                        .get(object)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    values.insert(*dest, format!("{}.{}", obj, property));
+                }
+                IrInst::MemberComputed {
+                    object,
+                    property,
+                    dest,
+                } => {
+                    let obj = values
+                        .get(object)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    let prop = values
+                        .get(property)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    values.insert(*dest, format!("{}[{}]", obj, prop));
+                }
+                IrInst::BinOp { op, lhs, rhs, dest } => {
+                    let lhs = values
+                        .get(lhs)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    let rhs = values
+                        .get(rhs)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    values.insert(*dest, format!("({} {} {})", lhs, self.binop_to_js(*op), rhs));
+                }
+                IrInst::UnOp { op, arg, dest } => {
+                    let arg = values
+                        .get(arg)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    values.insert(*dest, format!("({}{})", self.unop_to_js(*op), arg));
+                }
+                IrInst::Call { callee, args, dest } => {
+                    let callee = values
+                        .get(callee)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    let args = args
+                        .iter()
+                        .map(|a| values.get(a).cloned().unwrap_or_else(|| "undefined".to_string()))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    values.insert(*dest, format!("{}({})", callee, args));
+                }
+                IrInst::ArrayLit { dest, elements } => {
+                    let parts = elements
+                        .iter()
+                        .map(|e| {
+                            e.and_then(|id| values.get(&id).cloned())
+                                .unwrap_or_else(|| "undefined".to_string())
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    values.insert(*dest, format!("[{}]", parts));
+                }
+                IrInst::LogicalOp { op, lhs, rhs, dest } => {
+                    let lhs = values
+                        .get(lhs)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    let rhs = values
+                        .get(rhs)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    let op_str = match op {
+                        argon_ir::LogicOp::And => "&&",
+                        argon_ir::LogicOp::Or => "||",
+                        argon_ir::LogicOp::Nullish => "??",
+                    };
+                    values.insert(*dest, format!("({} {} {})", lhs, op_str, rhs));
+                }
+                IrInst::Conditional {
+                    cond,
+                    then_value,
+                    else_value,
+                    dest,
+                } => {
+                    let cond = values
+                        .get(cond)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    let then_value = values
+                        .get(then_value)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    let else_value = values
+                        .get(else_value)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    values.insert(*dest, format!("({} ? {} : {})", cond, then_value, else_value));
+                }
+                _ => {
+                    return Err(CodegenError::Unsupported(format!(
+                        "unsupported IR instruction in global initializer: {:?}",
+                        inst
+                    )));
+                }
+            }
+        }
+
+        Ok(values
+            .get(&value)
+            .cloned()
+            .unwrap_or_else(|| "undefined".to_string()))
     }
 
     pub fn generate_from_ast(&mut self, source: &SourceFile) -> Result<String, CodegenError> {

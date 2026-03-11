@@ -312,4 +312,30 @@ mod ir_codegen {
         assert!(output.contains("finally {"));
         assert!(output.contains("throw x"));
     }
+
+    #[test]
+    fn emits_module_scope_globals_via_ir() {
+        let source = "const x = 1;\nlet y = x + 1;\n";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+        let ir = builder.build(&ast).unwrap();
+        let mut codegen = JsCodegen::new();
+
+        let output = codegen.generate(&ir).unwrap();
+        assert!(output.contains("const x = 1;"));
+        assert!(output.contains("let y = (x + 1);"));
+    }
+
+    #[test]
+    fn exports_module_scope_const_via_ir() {
+        let source = "export const x = 1;\n";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+        let ir = builder.build(&ast).unwrap();
+        let mut codegen = JsCodegen::new();
+
+        let output = codegen.generate(&ir).unwrap();
+        assert!(output.contains("const x = 1;"));
+        assert!(output.contains("export { x"));
+    }
 }

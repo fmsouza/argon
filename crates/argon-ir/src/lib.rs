@@ -5,6 +5,8 @@ use argon_ast::*;
 pub type BlockId = usize;
 pub type ValueId = usize;
 
+pub mod passes;
+
 #[derive(Debug, Clone)]
 pub struct Module {
     pub functions: Vec<Function>,
@@ -225,8 +227,11 @@ pub struct Field {
 
 #[derive(Debug, Clone)]
 pub struct Global {
+    pub kind: VarKind,
     pub name: String,
     pub ty: TypeId,
+    // Straight-line instructions to compute `init` (if present).
+    pub init_insts: Vec<Instruction>,
     pub init: Option<ValueId>,
 }
 
@@ -266,6 +271,9 @@ impl IrBuilder {
                 Stmt::AsyncFunction(f) => self.translate_function(f, true)?,
                 Stmt::Struct(s) => self.translate_struct(s)?,
                 Stmt::Class(c) => self.translate_class(c)?,
+                Stmt::Variable(v) => {
+                    self.translate_global_variable_stmt(v)?;
+                }
                 Stmt::Import(i) => self.imports.push(i.clone()),
                 Stmt::Export(e) => {
                     // IR pipeline treats exports as module metadata; any exported declaration must
@@ -361,6 +369,10 @@ impl IrBuilder {
                 let name = c.id.sym.clone();
                 self.translate_class(c)?;
                 Ok(vec![name])
+            }
+            Stmt::Variable(v) => {
+                let names = self.translate_global_variable_stmt(v)?;
+                Ok(names)
             }
             _ => Err(IrError::Unsupported(format!(
                 "unsupported export declaration in IR pipeline: {:?}",
@@ -743,6 +755,43 @@ impl IrBuilder {
                 stmt
             ))),
         }
+    }
+
+    fn translate_global_variable_stmt(&mut self, v: &VariableStmt) -> Result<Vec<String>, IrError> {
+        let mut names = Vec::new();
+        for decl in &v.declarations {
+            let (name, init_expr) = match &decl.id {
+                Pattern::Identifier(id) => (id.name.sym.clone(), decl.init.as_ref()),
+                _ => {
+                    return Err(IrError::Unsupported(
+                        "module-scope destructuring declarations".to_string(),
+                    ));
+                }
+            };
+
+            let kind = match v.kind {
+                VariableKind::Var => VarKind::Var,
+                VariableKind::Let => VarKind::Let,
+                VariableKind::Const => VarKind::Const,
+            };
+
+            let mut init_insts = Vec::new();
+            let init = if let Some(expr) = init_expr {
+                Some(self.translate_expression(expr, &mut init_insts)?)
+            } else {
+                None
+            };
+
+            self.globals.push(Global {
+                kind,
+                name: name.clone(),
+                ty: 0,
+                init_insts,
+                init,
+            });
+            names.push(name);
+        }
+        Ok(names)
     }
 
     fn translate_struct(&mut self, s: &StructDecl) -> Result<(), IrError> {
@@ -1460,3 +1509,5 @@ impl std::error::Error for IrError {}
 
 #[cfg(test)]
 mod ir_builder_tests;
+#[cfg(test)]
+mod passes_tests;

@@ -92,6 +92,27 @@ fn test_compile_try_catch_finally() {
 }
 
 #[test]
+fn test_compile_export_const() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("export_const.arg");
+    fs::write(&source_file, "export const x = 1;\n").unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(temp_dir.path().join("output.js"))
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
+        .success();
+
+    let output = fs::read_to_string(temp_dir.path().join("output.js")).unwrap();
+    assert!(output.contains("const x = 1;"));
+    assert!(output.contains("export { x"));
+}
+
+#[test]
 fn test_compile_logical_conditional_array_and_assignment() {
     let temp_dir = tempfile::tempdir().unwrap();
     let source_file = temp_dir.path().join("exprs.arg");

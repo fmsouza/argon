@@ -250,21 +250,14 @@ mod new_and_object_translation {
         let mut builder = IrBuilder::new();
 
         let module = builder.build(&ast).unwrap();
-        let init = module
-            .functions
-            .iter()
-            .find(|f| f.id == "__argon_init")
-            .expect("expected __argon_init");
-
+        let p = module.globals.iter().find(|g| g.name == "p").expect("expected global p");
         let mut saw_object = false;
         let mut saw_new = false;
-        for block in &init.body {
-            for inst in &block.instructions {
-                match inst {
-                    Instruction::ObjectLit { .. } => saw_object = true,
-                    Instruction::New { .. } => saw_new = true,
-                    _ => {}
-                }
+        for inst in &p.init_insts {
+            match inst {
+                Instruction::ObjectLit { .. } => saw_object = true,
+                Instruction::New { .. } => saw_new = true,
+                _ => {}
             }
         }
 
