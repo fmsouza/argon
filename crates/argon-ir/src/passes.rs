@@ -3,6 +3,8 @@
 use crate::{BasicBlock, BinOp, BlockId, ConstValue, Function, Instruction, Terminator, UnOp, ValueId};
 use std::collections::{HashMap, HashSet};
 
+pub mod ssa;
+
 #[derive(Debug, Clone)]
 pub struct Cfg {
     pub entry: BlockId,

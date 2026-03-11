@@ -42,6 +42,81 @@ mod cfg_and_dominators {
     }
 }
 
+mod ssa_construction {
+    use super::*;
+    use crate::passes::ssa;
+
+    #[test]
+    fn inserts_phi_for_variable_defined_in_two_predecessors() {
+        let func = Function {
+            id: "f".to_string(),
+            params: Vec::new(),
+            return_type: None,
+            is_async: false,
+            body: vec![
+                BasicBlock {
+                    id: 0,
+                    instructions: vec![Instruction::Const {
+                        dest: 0,
+                        value: ConstValue::Bool(true),
+                    }],
+                    terminator: Terminator::Branch {
+                        cond: 0,
+                        then: 1,
+                        else_: 2,
+                    },
+                },
+                BasicBlock {
+                    id: 1,
+                    instructions: vec![
+                        Instruction::Const {
+                            dest: 1,
+                            value: ConstValue::Number(1.0),
+                        },
+                        Instruction::AssignVar {
+                            name: "x".to_string(),
+                            src: 1,
+                        },
+                    ],
+                    terminator: Terminator::Jump(3),
+                },
+                BasicBlock {
+                    id: 2,
+                    instructions: vec![
+                        Instruction::Const {
+                            dest: 2,
+                            value: ConstValue::Number(2.0),
+                        },
+                        Instruction::AssignVar {
+                            name: "x".to_string(),
+                            src: 2,
+                        },
+                    ],
+                    terminator: Terminator::Jump(3),
+                },
+                BasicBlock {
+                    id: 3,
+                    instructions: vec![Instruction::VarRef {
+                        dest: 3,
+                        name: "x".to_string(),
+                    }],
+                    terminator: Terminator::Return(Some(3)),
+                },
+            ],
+        };
+
+        let ssa = ssa::build(&func).unwrap();
+        let join = ssa.blocks.get(&3).unwrap();
+        assert!(join.phis.iter().any(|p| p.var == "x"));
+
+        let phi = join.phis.iter().find(|p| p.var == "x").unwrap();
+        assert_eq!(phi.sources, vec![(1, 1), (2, 2)]);
+
+        // The VarRef in block 3 should read the phi result.
+        assert_eq!(ssa.var_reads.get(&3).copied(), Some(phi.dest));
+    }
+}
+
 mod constant_folding {
     use super::*;
 
@@ -156,4 +231,3 @@ mod local_dce {
             .any(|i| matches!(i, Instruction::Const { dest: 99, .. })));
     }
 }
-
