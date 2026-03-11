@@ -117,6 +117,56 @@ mod ssa_construction {
     }
 }
 
+mod optimize_pipeline {
+    use super::*;
+
+    #[test]
+    fn folds_through_variable_read() {
+        let mut func = Function {
+            id: "f".to_string(),
+            params: Vec::new(),
+            return_type: None,
+            is_async: false,
+            body: vec![BasicBlock {
+                id: 0,
+                instructions: vec![
+                    Instruction::Const {
+                        dest: 0,
+                        value: ConstValue::Number(1.0),
+                    },
+                    Instruction::VarDecl {
+                        kind: crate::VarKind::Const,
+                        name: "a".to_string(),
+                        init: Some(0),
+                    },
+                    Instruction::VarRef {
+                        dest: 1,
+                        name: "a".to_string(),
+                    },
+                    Instruction::Const {
+                        dest: 2,
+                        value: ConstValue::Number(2.0),
+                    },
+                    Instruction::BinOp {
+                        op: BinOp::Add,
+                        lhs: 1,
+                        rhs: 2,
+                        dest: 3,
+                    },
+                ],
+                terminator: Terminator::Return(Some(3)),
+            }],
+        };
+
+        let stats = passes::optimize_function(&mut func);
+        assert!(stats.folded >= 2);
+        assert!(func.body[0]
+            .instructions
+            .iter()
+            .any(|i| matches!(i, Instruction::Const { dest: 3, value: ConstValue::Number(n) } if (*n - 3.0).abs() < 1e-9)));
+    }
+}
+
 mod constant_folding {
     use super::*;
 

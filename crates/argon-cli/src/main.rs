@@ -29,6 +29,8 @@ enum Commands {
         #[arg(short, long)]
         source_map: bool,
         #[arg(long)]
+        opt: bool,
+        #[arg(long)]
         declarations: bool,
         #[arg(long, default_value = "ir")]
         pipeline: String,
@@ -68,6 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             output,
             target,
             source_map,
+            opt,
             declarations,
             pipeline,
         } => {
@@ -76,6 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 output.as_ref(),
                 &target,
                 source_map,
+                opt,
                 declarations,
                 &pipeline,
             )?;
@@ -110,6 +114,7 @@ fn compile(
     output: Option<&PathBuf>,
     target: &str,
     source_map: bool,
+    opt: bool,
     declarations: bool,
     pipeline: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -143,7 +148,10 @@ fn compile(
             codegen.generate_from_ast(&ast)?
         } else {
             let mut builder = IrBuilder::new();
-            let ir = builder.build(&ast)?;
+            let mut ir = builder.build(&ast)?;
+            if opt {
+                let _ = argon_ir::passes::optimize_module(&mut ir);
+            }
             codegen.generate(&ir)?
         };
 
@@ -182,7 +190,10 @@ fn compile(
             codegen.generate_from_ast(&ast)
         } else {
             let mut builder = IrBuilder::new();
-            let ir = builder.build(&ast)?;
+            let mut ir = builder.build(&ast)?;
+            if opt {
+                let _ = argon_ir::passes::optimize_module(&mut ir);
+            }
             codegen.generate(&ir)
         };
 

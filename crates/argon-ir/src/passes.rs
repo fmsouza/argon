@@ -1,6 +1,9 @@
 //! IR analysis and optimization passes (early Phase 4 scaffolding).
 
-use crate::{BasicBlock, BinOp, BlockId, ConstValue, Function, Instruction, Terminator, UnOp, ValueId};
+use crate::{
+    BasicBlock, BinOp, BlockId, ConstValue, Function, Global, Instruction, Module, Terminator,
+    UnOp, ValueId, VarKind,
+};
 use std::collections::{HashMap, HashSet};
 
 pub mod ssa;
@@ -121,6 +124,58 @@ pub fn constant_fold_function(func: &mut Function) -> FoldStats {
     stats
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+pub struct OptStats {
+    pub folded: usize,
+    pub removed: usize,
+}
+
+pub fn optimize_module(module: &mut Module) -> OptStats {
+    let mut stats = OptStats::default();
+    let mut known_globals: HashMap<String, ConstValue> = HashMap::new();
+
+    for g in &mut module.globals {
+        stats.folded += const_prop_and_fold_global(g, &known_globals);
+        if let Some(init) = g.init {
+            stats.removed += local_dce_insts(&mut g.init_insts, init);
+        }
+
+        // Track simple compile-time constants so later globals can fold through them.
+        if matches!(g.kind, VarKind::Const) {
+            if let Some(init) = g.init {
+                if let Some(c) = const_value_of(&g.init_insts, init) {
+                    known_globals.insert(g.name.clone(), c);
+                }
+            }
+        }
+    }
+
+    for f in &mut module.functions {
+        let s = optimize_function(f);
+        stats.folded += s.folded;
+        stats.removed += s.removed;
+    }
+
+    stats
+}
+
+pub fn optimize_function(func: &mut Function) -> OptStats {
+    let mut stats = OptStats::default();
+
+    // Small fixed point: folding can expose DCE opportunities.
+    for _ in 0..4 {
+        let folded = const_prop_and_fold_function(func);
+        let removed = local_dce_function(func).removed;
+        stats.folded += folded;
+        stats.removed += removed;
+        if folded == 0 && removed == 0 {
+            break;
+        }
+    }
+
+    stats
+}
+
 fn constant_fold_block(block: &mut BasicBlock) -> usize {
     let mut consts: HashMap<ValueId, ConstValue> = HashMap::new();
     let mut folded = 0;
@@ -169,6 +224,123 @@ fn constant_fold_block(block: &mut BasicBlock) -> usize {
     folded
 }
 
+fn const_prop_and_fold_function(func: &mut Function) -> usize {
+    let mut folded = 0;
+    for block in &mut func.body {
+        folded += const_prop_and_fold_block(block);
+    }
+    folded
+}
+
+fn const_prop_and_fold_global(g: &mut Global, seed: &HashMap<String, ConstValue>) -> usize {
+    if g.init.is_none() {
+        return 0;
+    }
+
+    let mut block = BasicBlock {
+        id: 0,
+        instructions: std::mem::take(&mut g.init_insts),
+        terminator: Terminator::Return(g.init),
+    };
+
+    let folded = const_prop_and_fold_block_with_seed(&mut block, seed);
+    g.init_insts = block.instructions;
+    folded
+}
+
+fn const_prop_and_fold_block(block: &mut BasicBlock) -> usize {
+    const_prop_and_fold_block_with_seed(block, &HashMap::new())
+}
+
+fn const_prop_and_fold_block_with_seed(
+    block: &mut BasicBlock,
+    seed: &HashMap<String, ConstValue>,
+) -> usize {
+    let mut consts: HashMap<ValueId, ConstValue> = HashMap::new();
+    let mut var_consts: HashMap<String, ConstValue> = seed.clone();
+    let mut folded = 0;
+
+    for inst in &mut block.instructions {
+        let cur = inst.clone();
+        match cur {
+            Instruction::Const { dest, value } => {
+                consts.insert(dest, value);
+            }
+            Instruction::VarDecl { name, init, .. } => {
+                if let Some(init) = init {
+                    if let Some(c) = consts.get(&init).cloned() {
+                        var_consts.insert(name, c);
+                    } else {
+                        var_consts.remove(&name);
+                    }
+                } else {
+                    var_consts.remove(&name);
+                }
+            }
+            Instruction::AssignVar { name, src } => {
+                if let Some(c) = consts.get(&src).cloned() {
+                    var_consts.insert(name, c);
+                } else {
+                    var_consts.remove(&name);
+                }
+            }
+            Instruction::AssignExpr { name, src, dest } => {
+                if let Some(c) = consts.get(&src).cloned() {
+                    // `(x = c)` evaluates to `c`.
+                    consts.insert(dest, c.clone());
+                    var_consts.insert(name, c);
+                } else {
+                    var_consts.remove(&name);
+                }
+            }
+            Instruction::VarRef { dest, name } => {
+                if let Some(c) = var_consts.get(&name).cloned() {
+                    *inst = Instruction::Const {
+                        dest,
+                        value: c.clone(),
+                    };
+                    consts.insert(dest, c);
+                    folded += 1;
+                }
+            }
+            Instruction::UnOp { op, arg, dest } => {
+                if let Some(v) = consts.get(&arg).cloned() {
+                    if let Some(out) = fold_unop(op, v) {
+                        *inst = Instruction::Const {
+                            dest,
+                            value: out.clone(),
+                        };
+                        consts.insert(dest, out);
+                        folded += 1;
+                    }
+                }
+            }
+            Instruction::BinOp {
+                op,
+                lhs,
+                rhs,
+                dest,
+            } => {
+                let l = consts.get(&lhs).cloned();
+                let r = consts.get(&rhs).cloned();
+                if let (Some(l), Some(r)) = (l, r) {
+                    if let Some(out) = fold_binop(op, l, r) {
+                        *inst = Instruction::Const {
+                            dest,
+                            value: out.clone(),
+                        };
+                        consts.insert(dest, out);
+                        folded += 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    folded
+}
+
 fn fold_unop(op: UnOp, v: ConstValue) -> Option<ConstValue> {
     match (op, v) {
         (UnOp::Neg, ConstValue::Number(n)) => Some(ConstValue::Number(-n)),
@@ -202,6 +374,18 @@ fn const_eq(a: &ConstValue, b: &ConstValue) -> bool {
         (ConstValue::Null, ConstValue::Null) => true,
         _ => false,
     }
+}
+
+fn const_value_of(instructions: &[Instruction], value: ValueId) -> Option<ConstValue> {
+    let mut found: Option<ConstValue> = None;
+    for inst in instructions {
+        if let Instruction::Const { dest, value: v } = inst {
+            if *dest == value {
+                found = Some(v.clone());
+            }
+        }
+    }
+    found
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -243,6 +427,17 @@ fn local_dce_block(block: &mut BasicBlock) -> usize {
 
     out.reverse();
     block.instructions = out;
+    removed
+}
+
+fn local_dce_insts(instructions: &mut Vec<Instruction>, live_value: ValueId) -> usize {
+    let mut block = BasicBlock {
+        id: 0,
+        instructions: std::mem::take(instructions),
+        terminator: Terminator::Return(Some(live_value)),
+    };
+    let removed = local_dce_block(&mut block);
+    *instructions = block.instructions;
     removed
 }
 

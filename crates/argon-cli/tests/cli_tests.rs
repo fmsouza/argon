@@ -113,6 +113,28 @@ fn test_compile_export_const() {
 }
 
 #[test]
+fn test_compile_opt_folds_exported_const() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("export_opt.arg");
+    fs::write(&source_file, "const a = 1;\nexport const b = a + 2;\n").unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(temp_dir.path().join("output.js"))
+        .arg("--pipeline")
+        .arg("ir")
+        .arg("--opt")
+        .assert()
+        .success();
+
+    let output = fs::read_to_string(temp_dir.path().join("output.js")).unwrap();
+    assert!(output.contains("const b = 3;"));
+    assert!(output.contains("export { b"));
+}
+
+#[test]
 fn test_compile_logical_conditional_array_and_assignment() {
     let temp_dir = tempfile::tempdir().unwrap();
     let source_file = temp_dir.path().join("exprs.arg");
