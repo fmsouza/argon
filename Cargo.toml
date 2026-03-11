@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/argon-cli",
+    "crates/argon-driver",
     "crates/argon-codegen-js",
     "crates/argon-codegen-wasm",
     "crates/argon-interop",
@@ -66,6 +67,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Async
 tokio = { version = "1.35", features = ["full"] }
+
+# Tooling
+notify = "6.1"
+rustyline = "13.0"
 
 # Error handling
 thiserror = "1.0"

@@ -608,6 +608,114 @@ mod type_annotation_parsing {
     }
 }
 
+mod advanced_type_parsing {
+    use super::*;
+
+    #[test]
+    fn parses_union_and_optional_types() {
+        // Assign
+        let source = "type Maybe = number | null;\nconst x: User? = value;";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn parses_array_and_tuple_types() {
+        // Assign
+        let source = "type A = number[];\ntype T = [number, string];";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn parses_function_type() {
+        // Assign
+        let source = "type F = (a: number, b?: string) => number;";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn parses_type_arguments() {
+        // Assign
+        let source = "type Boxed = Box<number>;";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+}
+
+mod generic_declaration_parsing {
+    use super::*;
+
+    #[test]
+    fn parses_generic_function_declaration() {
+        // Assign
+        let source = "function id<T>(x: T): T { return x; }";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn parses_generic_struct_declaration() {
+        // Assign
+        let source = "struct Box<T> { value: T; }";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+}
+
+mod interface_enum_parsing {
+    use super::*;
+
+    #[test]
+    fn parses_interface_declaration() {
+        // Assign
+        let source = "interface Drawable { draw(canvas: &mut Canvas): void; value?: number; }";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn parses_enum_declaration() {
+        // Assign
+        let source = "enum Color { Red, Green, Blue }";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+}
+
 mod borrow_annotation_parsing {
     use super::*;
 
@@ -679,5 +787,104 @@ mod error_handling {
 
         // Assert
         assert!(result.is_err());
+    }
+}
+
+mod span_parsing {
+    use super::*;
+
+    #[test]
+    fn variable_statement_spans_cover_expected_substrings() {
+        // Assign
+        let source = "const x = 1 + 2;";
+
+        // Act
+        let ast = parse(source).unwrap();
+
+        // Assert
+        let var = match &ast.statements[0] {
+            Stmt::Variable(v) => v,
+            _ => panic!("expected variable statement"),
+        };
+        assert_eq!(&source[var.span.clone()], source);
+
+        let decl = &var.declarations[0];
+        assert_eq!(&source[decl.span.clone()], "x = 1 + 2");
+
+        let init = decl.init.as_ref().expect("expected initializer");
+        assert_eq!(&source[init.span().clone()], "1 + 2");
+    }
+
+    #[test]
+    fn function_and_return_spans_are_precise() {
+        // Assign
+        let source = "function add(a: number, b: number): number { return a + b; }";
+
+        // Act
+        let ast = parse(source).unwrap();
+
+        // Assert
+        let func = match &ast.statements[0] {
+            Stmt::Function(f) => f,
+            _ => panic!("expected function statement"),
+        };
+        assert_eq!(&source[func.span.clone()], source);
+        assert_eq!(&source[func.body.span.clone()], "{ return a + b; }");
+
+        let ret = func
+            .body
+            .statements
+            .iter()
+            .find_map(|s| match s {
+                Stmt::Return(r) => Some(r),
+                _ => None,
+            })
+            .expect("expected return statement");
+        assert_eq!(&source[ret.span.clone()], "return a + b;");
+    }
+
+    #[test]
+    fn if_else_and_jsx_spans_cover_full_constructs() {
+        // Assign
+        let source = "function f(): void { if (x > 0) { return <div>Hello</div>; } else { return <span>Bye</span>; } }";
+
+        // Act
+        let ast = parse(source).unwrap();
+
+        // Assert
+        let func = match &ast.statements[0] {
+            Stmt::Function(f) => f,
+            _ => panic!("expected function statement"),
+        };
+
+        let if_stmt = func
+            .body
+            .statements
+            .iter()
+            .find_map(|s| match s {
+                Stmt::If(i) => Some(i),
+                _ => None,
+            })
+            .expect("expected if statement");
+
+        assert_eq!(
+            &source[if_stmt.span.clone()],
+            "if (x > 0) { return <div>Hello</div>; } else { return <span>Bye</span>; }"
+        );
+
+        let first_return = match &*if_stmt.consequent {
+            Stmt::Block(b) => b
+                .statements
+                .iter()
+                .find_map(|s| match s {
+                    Stmt::Return(r) => Some(r),
+                    _ => None,
+                })
+                .expect("expected return in consequent"),
+            _ => panic!("expected block consequent"),
+        };
+
+        let jsx = first_return.argument.as_ref().expect("expected return value");
+        assert_eq!(&source[jsx.span().clone()], "<div>Hello</div>");
     }
 }

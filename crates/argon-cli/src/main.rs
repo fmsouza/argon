@@ -1,12 +1,7 @@
 //! Argon CLI
 
-use argon_borrowck::BorrowChecker;
-use argon_codegen_js::{generate_type_declarations, JsCodegen};
-use argon_codegen_wasm::WasmCodegen;
-use argon_ir::IrBuilder;
-use argon_parser::parse;
+use argon_driver::{CompileOptions, Compiler, Pipeline, Target};
 use argon_runtime::execute_ast;
-use argon_types::TypeChecker;
 use std::fs;
 use std::path::PathBuf;
 
@@ -59,6 +54,24 @@ enum Commands {
     Init {
         name: String,
     },
+    Watch {
+        input: PathBuf,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        #[arg(short, long, default_value = "js")]
+        target: String,
+        #[arg(short, long)]
+        source_map: bool,
+        #[arg(long)]
+        opt: bool,
+        #[arg(long)]
+        declarations: bool,
+        #[arg(long, default_value = "ir")]
+        pipeline: String,
+        #[arg(long)]
+        check_only: bool,
+    },
+    Repl {},
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -104,6 +117,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Init { name } => {
             init_project(&name)?;
         }
+        Commands::Watch {
+            input,
+            output,
+            target,
+            source_map,
+            opt,
+            declarations,
+            pipeline,
+            check_only,
+        } => {
+            watch(
+                &input,
+                output.as_ref(),
+                &target,
+                source_map,
+                opt,
+                declarations,
+                &pipeline,
+                check_only,
+            )?;
+        }
+        Commands::Repl {} => {
+            repl()?;
+        }
     }
 
     Ok(())
@@ -121,109 +158,98 @@ fn compile(
     let source = fs::read_to_string(input)?;
 
     println!("Parsing {}...", input.display());
-    let ast = parse(&source)?;
-
     println!("Type checking...");
-    let mut type_checker = TypeChecker::new();
-    type_checker.check(&ast)?;
-
     println!("Borrow checking...");
-    let mut borrow_checker = BorrowChecker::new();
-    borrow_checker.check(&ast)?;
 
-    if target == "js" {
-        println!("Generating JavaScript...");
-        let output_path = output
-            .map(|p| p.clone())
-            .unwrap_or_else(|| PathBuf::from("output.js"));
+    let target = match target {
+        "js" => Target::Js,
+        "wasm" => Target::Wasm,
+        other => {
+            return Err(format!("Unknown target: {}", other).into());
+        }
+    };
 
-        let source_name = input.display().to_string();
-        let mut codegen = if source_map {
-            JsCodegen::new().with_source_map(&source_name)
-        } else {
-            JsCodegen::new()
-        };
+    let pipeline = match pipeline {
+        "ast" => Pipeline::Ast,
+        "ir" => Pipeline::Ir,
+        other => {
+            return Err(format!("Unknown pipeline: {}", other).into());
+        }
+    };
 
-        let mut js = if pipeline == "ast" {
-            codegen.generate_from_ast(&ast)?
-        } else {
-            let mut builder = IrBuilder::new();
-            let mut ir = builder.build(&ast)?;
-            if opt {
-                let _ = argon_ir::passes::optimize_module(&mut ir);
+    let compiler = Compiler::new();
+    let options = CompileOptions {
+        target,
+        pipeline,
+        optimize: opt,
+        source_map,
+        declarations,
+    };
+
+    let source_name = input.display().to_string();
+    let artifacts = match compiler.compile(&source, &source_name, &options) {
+        Ok(a) => a,
+        Err(e) => {
+            if let Some(diag) = e.diagnostics() {
+                eprintln!("{}", diag.rendered);
             }
-            codegen.generate(&ir)?
-        };
+            return Err(e.into());
+        }
+    };
 
-        if source_map {
-            let ext = output_path
-                .extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or("js");
-            let map_path = output_path.with_extension(format!("{}.map", ext));
-            if let Some(map) = codegen.get_source_map() {
-                fs::write(&map_path, &map)?;
-                let map_file = map_path
-                    .file_name()
+    match target {
+        Target::Js => {
+            println!("Generating JavaScript...");
+            let output_path = output
+                .map(|p| p.clone())
+                .unwrap_or_else(|| PathBuf::from("output.js"));
+
+            let mut js = artifacts.js.unwrap_or_default();
+
+            if source_map {
+                let ext = output_path
+                    .extension()
                     .and_then(|s| s.to_str())
-                    .unwrap_or("output.js.map");
-                js.push_str("\n//# sourceMappingURL=");
-                js.push_str(map_file);
-                js.push_str("\n");
-                println!("Wrote {}", map_path.display());
-            }
-        }
-
-        fs::write(&output_path, &js)?;
-        println!("Wrote {}", output_path.display());
-
-        if declarations {
-            let dts = generate_type_declarations(&ast);
-            let dts_path = output_path.with_extension("d.ts");
-            fs::write(&dts_path, &dts)?;
-            println!("Wrote {}", dts_path.display());
-        }
-    } else if target == "wasm" {
-        println!("Generating WebAssembly...");
-        let mut codegen = WasmCodegen::new();
-        let wasm_result = if pipeline == "ast" {
-            codegen.generate_from_ast(&ast)
-        } else {
-            let mut builder = IrBuilder::new();
-            let mut ir = builder.build(&ast)?;
-            if opt {
-                let _ = argon_ir::passes::optimize_module(&mut ir);
-            }
-            codegen.generate(&ir)
-        };
-
-        match wasm_result {
-            Ok(wasm_bytes) => {
-                let output_path = output
-                    .map(|p| p.clone())
-                    .unwrap_or_else(|| PathBuf::from("output.wasm"));
-                fs::write(&output_path, &wasm_bytes)?;
-                println!("Wrote {}", output_path.display());
-
-                match wasmprinter::print_bytes(&wasm_bytes) {
-                    Ok(wat) => {
-                        let wat_path = output_path.with_extension("wat");
-                        fs::write(&wat_path, &wat)?;
-                        println!("Wrote {}", wat_path.display());
-                        println!("\nWAT output:\n{}", wat);
-                    }
-                    Err(e) => {
-                        println!("Note: Could not generate .wat file: {}", e);
-                    }
+                    .unwrap_or("js");
+                let map_path = output_path.with_extension(format!("{}.map", ext));
+                if let Some(map) = artifacts.source_map {
+                    fs::write(&map_path, &map)?;
+                    let map_file = map_path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("output.js.map");
+                    js.push_str("\n//# sourceMappingURL=");
+                    js.push_str(map_file);
+                    js.push_str("\n");
+                    println!("Wrote {}", map_path.display());
                 }
             }
-            Err(e) => {
-                eprintln!("WASM generation error: {}", e);
-                return Err(format!("WASM generation error: {}", e).into());
+
+            fs::write(&output_path, &js)?;
+            println!("Wrote {}", output_path.display());
+
+            if let Some(dts) = artifacts.declarations {
+                let dts_path = output_path.with_extension("d.ts");
+                fs::write(&dts_path, &dts)?;
+                println!("Wrote {}", dts_path.display());
             }
         }
-    } else {
-        println!("Unknown target: {}", target);
+        Target::Wasm => {
+            println!("Generating WebAssembly...");
+            let wasm_bytes = artifacts.wasm.unwrap_or_default();
+            let output_path = output
+                .map(|p| p.clone())
+                .unwrap_or_else(|| PathBuf::from("output.wasm"));
+            fs::write(&output_path, &wasm_bytes)?;
+            println!("Wrote {}", output_path.display());
+
+            if let Some(wat) = artifacts.wat {
+                let wat_path = output_path.with_extension("wat");
+                fs::write(&wat_path, &wat)?;
+                println!("Wrote {}", wat_path.display());
+                println!("\nWAT output:\n{}", wat);
+            }
+        }
     }
 
     println!("Done!");
@@ -234,15 +260,26 @@ fn check(input: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let source = fs::read_to_string(input)?;
 
     println!("Parsing {}...", input.display());
-    let ast = parse(&source)?;
-
     println!("Type checking...");
-    let mut type_checker = TypeChecker::new();
-    type_checker.check(&ast)?;
-
     println!("Borrow checking...");
-    let mut borrow_checker = BorrowChecker::new();
-    borrow_checker.check(&ast)?;
+
+    let compiler = Compiler::new();
+    let source_name = input.display().to_string();
+    let ast = match compiler.parse(&source, &source_name) {
+        Ok(ast) => ast,
+        Err(e) => {
+            if let Some(diag) = e.diagnostics() {
+                eprintln!("{}", diag.rendered);
+            }
+            return Err(e.into());
+        }
+    };
+    if let Err(e) = compiler.check_semantics(&source, &source_name, &ast) {
+        if let Some(diag) = e.diagnostics() {
+            eprintln!("{}", diag.rendered);
+        }
+        return Err(e.into());
+    }
 
     println!("OK!");
     Ok(())
@@ -252,15 +289,26 @@ fn run(input: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     let source = fs::read_to_string(input)?;
 
     println!("Parsing {}...", input.display());
-    let ast = parse(&source)?;
-
     println!("Type checking...");
-    let mut type_checker = TypeChecker::new();
-    type_checker.check(&ast)?;
-
     println!("Borrow checking...");
-    let mut borrow_checker = BorrowChecker::new();
-    borrow_checker.check(&ast)?;
+
+    let compiler = Compiler::new();
+    let source_name = input.display().to_string();
+    let ast = match compiler.parse(&source, &source_name) {
+        Ok(ast) => ast,
+        Err(e) => {
+            if let Some(diag) = e.diagnostics() {
+                eprintln!("{}", diag.rendered);
+            }
+            return Err(e.into());
+        }
+    };
+    if let Err(e) = compiler.check_semantics(&source, &source_name, &ast) {
+        if let Some(diag) = e.diagnostics() {
+            eprintln!("{}", diag.rendered);
+        }
+        return Err(e.into());
+    }
 
     println!("Executing...\n");
     match execute_ast(&ast) {
@@ -399,36 +447,43 @@ fn run_test_file_with_pipeline(
     pipeline: &str,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let source = fs::read_to_string(test_file)?;
-
-    let ast = parse(&source).map_err(|e| format!("Parse error: {}", e))?;
-
-    let mut type_checker = TypeChecker::new();
-    type_checker
-        .check(&ast)
-        .map_err(|e| format!("Type error: {}", e))?;
-
-    let mut borrow_checker = BorrowChecker::new();
-    borrow_checker
-        .check(&ast)
-        .map_err(|e| format!("Borrow error: {}", e))?;
-
-    let js = if pipeline == "ast" {
-        let mut codegen = JsCodegen::new();
-        codegen
-            .generate_from_ast(&ast)
-            .map_err(|e| format!("Codegen error: {}", e))?
-    } else {
-        let mut builder = IrBuilder::new();
-        let ir = builder
-            .build(&ast)
-            .map_err(|e| format!("IR error: {}", e))?;
-        let mut codegen = JsCodegen::new();
-        codegen
-            .generate(&ir)
-            .map_err(|e| format!("Codegen error: {}", e))?
+    let compiler = Compiler::new();
+    let options = CompileOptions {
+        target: Target::Js,
+        pipeline: if pipeline == "ast" {
+            Pipeline::Ast
+        } else {
+            Pipeline::Ir
+        },
+        optimize: false,
+        source_map: false,
+        declarations: false,
     };
 
-    let temp_file = std::env::temp_dir().join("argon_test.js");
+    let source_name = test_file.display().to_string();
+    let artifacts = compiler
+        .compile(&source, &source_name, &options)
+        .map_err(|e| {
+            if let Some(diag) = e.diagnostics() {
+                format!("{}", diag.rendered)
+            } else {
+                format!("{}", e)
+            }
+        })?;
+
+    let js = artifacts.js.unwrap_or_default();
+
+    let is_esm = js.contains("\nexport ")
+        || js.starts_with("export ")
+        || js.contains("\nimport ")
+        || js.starts_with("import ");
+    let ext = if is_esm { "mjs" } else { "js" };
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let temp_file = std::env::temp_dir()
+        .join(format!("argon_test_{}_{}.{}", std::process::id(), unique, ext));
     fs::write(&temp_file, &js)?;
 
     let output = std::process::Command::new("node")
@@ -578,6 +633,169 @@ main();
 
     println!("Initialized Argon project in {}", name);
     println!("Run 'cd {} && npm install' to get started", name);
+
+    Ok(())
+}
+
+fn watch(
+    input: &PathBuf,
+    output: Option<&PathBuf>,
+    target: &str,
+    source_map: bool,
+    opt: bool,
+    declarations: bool,
+    pipeline: &str,
+    check_only: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let (tx, rx) = mpsc::channel();
+    let mut watcher = RecommendedWatcher::new(tx, Config::default())?;
+    watcher.watch(input, RecursiveMode::NonRecursive)?;
+
+    println!("Watching {} (Ctrl-C to stop)", input.display());
+
+    // Run once immediately.
+    if check_only {
+        let _ = check(input);
+    } else {
+        let _ = compile(input, output, target, source_map, opt, declarations, pipeline);
+    }
+
+    loop {
+        // Wait for at least one event, then debounce by draining the queue.
+        let _ = rx.recv()?;
+        std::thread::sleep(Duration::from_millis(75));
+        while rx.try_recv().is_ok() {}
+
+        println!("\nChange detected. Rebuilding...\n");
+        if check_only {
+            if let Err(e) = check(input) {
+                eprintln!("{}", e);
+            }
+        } else if let Err(e) = compile(input, output, target, source_map, opt, declarations, pipeline)
+        {
+            eprintln!("{}", e);
+        }
+    }
+}
+
+fn repl() -> Result<(), Box<dyn std::error::Error>> {
+    use rustyline::error::ReadlineError;
+    use rustyline::DefaultEditor;
+
+    let mut rl = DefaultEditor::new()?;
+    let compiler = Compiler::new();
+
+    let mut buffer = String::new();
+    println!("Argon REPL");
+    println!("Commands: :load <file>, :show, :reset, :check, :compile [js|wasm], :exit");
+
+    loop {
+        let line = match rl.readline("argon> ") {
+            Ok(line) => line,
+            Err(ReadlineError::Interrupted) => continue,
+            Err(ReadlineError::Eof) => break,
+            Err(e) => return Err(e.into()),
+        };
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        rl.add_history_entry(trimmed)?;
+
+        if let Some(cmd) = trimmed.strip_prefix(':') {
+            let mut parts = cmd.split_whitespace();
+            let name = parts.next().unwrap_or("");
+            match name {
+                "exit" | "quit" => break,
+                "reset" => {
+                    buffer.clear();
+                    println!("(buffer cleared)");
+                }
+                "show" => {
+                    println!("{}", buffer);
+                }
+                "load" => {
+                    let path = parts.next().ok_or("usage: :load <file>")?;
+                    buffer = fs::read_to_string(path)?;
+                    println!("Loaded {}", path);
+                }
+                "check" => {
+                    let source_name = "<repl>";
+                    match compiler.parse(&buffer, source_name) {
+                        Ok(ast) => {
+                            if let Err(e) = compiler.check_semantics(&buffer, source_name, &ast) {
+                                if let Some(diag) = e.diagnostics() {
+                                    eprintln!("{}", diag.rendered);
+                                }
+                                continue;
+                            }
+                            println!("OK");
+                        }
+                        Err(e) => {
+                            if let Some(diag) = e.diagnostics() {
+                                eprintln!("{}", diag.rendered);
+                            } else {
+                                eprintln!("{}", e);
+                            }
+                        }
+                    }
+                }
+                "compile" => {
+                    let target = parts.next().unwrap_or("js");
+                    let target = match target {
+                        "js" => Target::Js,
+                        "wasm" => Target::Wasm,
+                        other => {
+                            eprintln!("Unknown target: {}", other);
+                            continue;
+                        }
+                    };
+                    let options = CompileOptions {
+                        target,
+                        pipeline: Pipeline::Ir,
+                        optimize: false,
+                        source_map: false,
+                        declarations: false,
+                    };
+
+                    let source_name = "<repl>";
+                    match compiler.compile(&buffer, source_name, &options) {
+                        Ok(artifacts) => match target {
+                            Target::Js => {
+                                let js = artifacts.js.unwrap_or_default();
+                                println!("{}", js);
+                            }
+                            Target::Wasm => {
+                                let wat =
+                                    artifacts.wat.unwrap_or_else(|| "<wat unavailable>".into());
+                                println!("{}", wat);
+                            }
+                        },
+                        Err(e) => {
+                            if let Some(diag) = e.diagnostics() {
+                                eprintln!("{}", diag.rendered);
+                            } else {
+                                eprintln!("{}", e);
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    eprintln!("Unknown command: :{}", name);
+                }
+            }
+            continue;
+        }
+
+        buffer.push_str(trimmed);
+        buffer.push('\n');
+    }
 
     Ok(())
 }

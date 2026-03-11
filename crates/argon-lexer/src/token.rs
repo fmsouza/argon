@@ -62,7 +62,6 @@ pub enum TokenKind {
     BangEqual,
     BangEqualEqual,
     Ampersand,
-    AmpersandMut,
     AmpersandAmpersand,
     AmpersandEqual,
     Pipe,
@@ -84,8 +83,8 @@ pub enum TokenKind {
     GreaterThanGreaterThanGreaterThanEqual,
 
     // Literals
-    Number,
-    String,
+    NumberLiteral,
+    StringLiteral,
     TemplateComplete,
     TemplateMiddle,
     TemplateStart,
@@ -105,7 +104,10 @@ pub enum TokenKind {
     As,
     Async,
     Await,
+    NumberKw,
+    StringKw,
     Boolean,
+    BigInt,
     Break,
     Case,
     Catch,
@@ -242,6 +244,7 @@ impl TokenKind {
             "async" => TokenKind::Async,
             "await" => TokenKind::Await,
             "boolean" => TokenKind::Boolean,
+            "bigint" => TokenKind::BigInt,
             "break" => TokenKind::Break,
             "case" => TokenKind::Case,
             "catch" => TokenKind::Catch,
@@ -278,7 +281,7 @@ impl TokenKind {
             "never" => TokenKind::Never,
             "new" => TokenKind::New,
             "null" => TokenKind::Null,
-            "number" => TokenKind::Number,
+            "number" => TokenKind::NumberKw,
             "object" => TokenKind::Object,
             "of" => TokenKind::Of,
             "package" => TokenKind::Package,
@@ -290,7 +293,7 @@ impl TokenKind {
             "return" => TokenKind::Return,
             "set" => TokenKind::Set,
             "static" => TokenKind::Static,
-            "string" => TokenKind::String,
+            "string" => TokenKind::StringKw,
             "super" => TokenKind::Super,
             "switch" => TokenKind::Switch,
             "symbol" => TokenKind::Symbol,
@@ -330,6 +333,7 @@ impl TokenKind {
                 | TokenKind::Async
                 | TokenKind::Await
                 | TokenKind::Boolean
+                | TokenKind::BigInt
                 | TokenKind::Break
                 | TokenKind::Case
                 | TokenKind::Catch
@@ -365,7 +369,7 @@ impl TokenKind {
                 | TokenKind::Never
                 | TokenKind::New
                 | TokenKind::Null
-                | TokenKind::Number
+                | TokenKind::NumberKw
                 | TokenKind::Object
                 | TokenKind::Of
                 | TokenKind::Package
@@ -377,7 +381,7 @@ impl TokenKind {
                 | TokenKind::Return
                 | TokenKind::Set
                 | TokenKind::Static
-                | TokenKind::String
+                | TokenKind::StringKw
                 | TokenKind::Super
                 | TokenKind::Switch
                 | TokenKind::Symbol

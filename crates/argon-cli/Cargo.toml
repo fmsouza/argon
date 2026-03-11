@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+argon-driver = { path = "../argon-driver" }
 argon-lexer = { path = "../argon-lexer" }
 argon-parser = { path = "../argon-parser" }
 argon-ast = { path = "../argon-ast" }
@@ -26,6 +27,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 directories.workspace = true
 wasmprinter.workspace = true
+notify.workspace = true
+rustyline.workspace = true
 
 [[bin]]
 name = "argon"

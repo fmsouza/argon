@@ -98,7 +98,7 @@ mod literal_tokenization {
         // Assert
         assert!(result.is_ok());
         let tokens = result.unwrap();
-        assert_eq!(tokens[0].kind, TokenKind::Number);
+        assert_eq!(tokens[0].kind, TokenKind::NumberLiteral);
     }
 
     #[test]
@@ -112,7 +112,7 @@ mod literal_tokenization {
         // Assert
         assert!(result.is_ok());
         let tokens = result.unwrap();
-        assert_eq!(tokens[0].kind, TokenKind::Number);
+        assert_eq!(tokens[0].kind, TokenKind::NumberLiteral);
     }
 
     #[test]
@@ -126,7 +126,7 @@ mod literal_tokenization {
         // Assert
         assert!(result.is_ok());
         let tokens = result.unwrap();
-        assert_eq!(tokens[0].kind, TokenKind::Number);
+        assert_eq!(tokens[0].kind, TokenKind::NumberLiteral);
     }
 
     #[test]
@@ -140,7 +140,7 @@ mod literal_tokenization {
         // Assert
         assert!(result.is_ok());
         let tokens = result.unwrap();
-        assert_eq!(tokens[0].kind, TokenKind::Number);
+        assert_eq!(tokens[0].kind, TokenKind::NumberLiteral);
     }
 
     #[test]
@@ -154,7 +154,7 @@ mod literal_tokenization {
         // Assert
         assert!(result.is_ok());
         let tokens = result.unwrap();
-        assert_eq!(tokens[0].kind, TokenKind::String);
+        assert_eq!(tokens[0].kind, TokenKind::StringLiteral);
     }
 
     #[test]
@@ -168,7 +168,7 @@ mod literal_tokenization {
         // Assert
         assert!(result.is_ok());
         let tokens = result.unwrap();
-        assert_eq!(tokens[0].kind, TokenKind::String);
+        assert_eq!(tokens[0].kind, TokenKind::StringLiteral);
     }
 
     #[test]
@@ -182,7 +182,7 @@ mod literal_tokenization {
         // Assert
         assert!(result.is_ok());
         let tokens = result.unwrap();
-        assert_eq!(tokens[0].kind, TokenKind::String);
+        assert_eq!(tokens[0].kind, TokenKind::StringLiteral);
     }
 
     #[test]
@@ -284,6 +284,38 @@ mod jsx_vs_less_than {
             ),
             "expected JSX token after return"
         );
+    }
+
+    #[test]
+    fn lexes_generic_type_params_not_jsx() {
+        // Assign
+        let source = "function id<T>(x: T): T { return x; }";
+
+        // Act
+        let result = tokenize(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::LessThan));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::GreaterThan));
+        assert!(!tokens.iter().any(|t| t.kind == TokenKind::JsxElementOpen));
+    }
+
+    #[test]
+    fn lexes_type_arguments_not_jsx() {
+        // Assign
+        let source = "type Boxed = Box<number>;";
+
+        // Act
+        let result = tokenize(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::LessThan));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::GreaterThan));
+        assert!(!tokens.iter().any(|t| t.kind == TokenKind::JsxElementOpen));
     }
 }
 
@@ -502,7 +534,7 @@ mod operator_tokenization {
     }
 
     #[test]
-    fn returns_ampersand_mut_token_when_mutable_reference_syntax_is_provided() {
+    fn tokenizes_mutable_reference_syntax_as_ampersand_then_mut_keyword() {
         // Assign
         let source = "&mut";
 
@@ -512,7 +544,8 @@ mod operator_tokenization {
         // Assert
         assert!(result.is_ok());
         let tokens = result.unwrap();
-        assert_eq!(tokens[0].kind, TokenKind::AmpersandMut);
+        assert_eq!(tokens[0].kind, TokenKind::Ampersand);
+        assert_eq!(tokens[1].kind, TokenKind::Mut);
     }
 
     #[test]
@@ -1711,7 +1744,8 @@ mod composite_tokenization {
         // Assert
         assert!(result.is_ok());
         let tokens = result.unwrap();
-        assert_eq!(tokens[0].kind, TokenKind::AmpersandMut);
+        assert_eq!(tokens[0].kind, TokenKind::Ampersand);
+        assert_eq!(tokens[1].kind, TokenKind::Mut);
     }
 
     #[test]
@@ -1949,7 +1983,7 @@ mod unicode_character_handling {
         // Assert
         assert!(result.is_ok());
         let tokens = result.unwrap();
-        assert_eq!(tokens[0].kind, TokenKind::String);
+        assert_eq!(tokens[0].kind, TokenKind::StringLiteral);
     }
 
     #[test]

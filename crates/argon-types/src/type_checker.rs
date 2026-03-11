@@ -4,7 +4,14 @@ use crate::types::{FunctionSig, StructDef, Type as CompType, TypeId, TypeTable};
 use argon_ast::*;
 use std::collections::HashMap;
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
+pub struct TypeCheckOutput {
+    pub type_table: TypeTable,
+    pub env: TypeEnvironment,
+    pub expr_types: HashMap<Span, TypeId>,
+}
+
+#[derive(Debug, Clone)]
 pub struct TypeEnvironment {
     vars: HashMap<String, TypeId>,
     structs: HashMap<String, StructDef>,
@@ -67,6 +74,7 @@ impl TypeEnvironment {
 pub struct TypeChecker {
     type_table: TypeTable,
     env: TypeEnvironment,
+    expr_types: HashMap<Span, TypeId>,
     errors: Vec<TypeError>,
     #[allow(dead_code)]
     warnings: Vec<String>,
@@ -89,6 +97,7 @@ impl TypeChecker {
         Self {
             type_table,
             env,
+            expr_types: HashMap::new(),
             errors: Vec::new(),
             warnings: Vec::new(),
         }
@@ -104,6 +113,15 @@ impl TypeChecker {
         }
 
         Ok(())
+    }
+
+    pub fn check_with_output(&mut self, source: &SourceFile) -> Result<TypeCheckOutput, TypeError> {
+        self.check(source)?;
+        Ok(TypeCheckOutput {
+            type_table: self.type_table.clone(),
+            env: self.env.clone(),
+            expr_types: self.expr_types.clone(),
+        })
     }
 
     fn check_statement(&mut self, stmt: &Stmt) -> Result<(), TypeError> {
@@ -378,7 +396,7 @@ impl TypeChecker {
     }
 
     fn infer_expression(&mut self, expr: &Expr) -> TypeId {
-        match expr {
+        let ty = match expr {
             Expr::Literal(lit) => self.infer_literal(lit),
             Expr::Identifier(id) => self.infer_identifier(id),
             Expr::Binary(b) => self.infer_binary(b),
@@ -411,7 +429,10 @@ impl TypeChecker {
             Expr::OptionalCall(c) => self.infer_optional_call(c),
             Expr::OptionalMember(m) => self.infer_optional_member(m),
             _ => self.type_table.unknown(),
-        }
+        };
+
+        self.expr_types.insert(expr.span().clone(), ty);
+        ty
     }
 
     fn infer_literal(&mut self, lit: &Literal) -> TypeId {
@@ -726,6 +747,17 @@ impl TypeChecker {
 
     fn resolve_type(&mut self, ty: &argon_ast::Type) -> TypeId {
         match ty {
+            argon_ast::Type::Parenthesized(inner) => self.resolve_type(inner),
+            argon_ast::Type::Number(_) => self.type_table.number(),
+            argon_ast::Type::String(_) => self.type_table.string(),
+            argon_ast::Type::Boolean(_) => self.type_table.boolean(),
+            argon_ast::Type::BigInt(_) => self.type_table.add(CompType::BigInt),
+            argon_ast::Type::Symbol(_) => self.type_table.add(CompType::Symbol),
+            argon_ast::Type::ThisType(_) => self.type_table.object(),
+            argon_ast::Type::Optional(o) => {
+                let inner = self.resolve_type(&o.ty);
+                self.type_table.option(inner)
+            }
             argon_ast::Type::Primitive(p) => match p {
                 PrimitiveType::Number => self.type_table.number(),
                 PrimitiveType::String => self.type_table.string(),

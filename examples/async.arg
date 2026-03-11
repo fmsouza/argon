@@ -1,0 +1,8 @@
+async function greet(): string {
+    return "hello";
+}
+
+async function main(): string {
+    const result = await greet();
+    return result;
+}

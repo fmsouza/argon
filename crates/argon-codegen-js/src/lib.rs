@@ -2351,6 +2351,19 @@ pub fn generate_type_declarations(source: &SourceFile) -> String {
 
 fn type_to_ts_string(ty: &argon_ast::Type) -> String {
     match ty {
+        argon_ast::Type::Parenthesized(p) => type_to_ts_string(p),
+        argon_ast::Type::Any(_) => "any".to_string(),
+        argon_ast::Type::Unknown(_) => "unknown".to_string(),
+        argon_ast::Type::Never(_) => "never".to_string(),
+        argon_ast::Type::Void(_) => "void".to_string(),
+        argon_ast::Type::Null(_) => "null".to_string(),
+        argon_ast::Type::Undefined(_) => "undefined".to_string(),
+        argon_ast::Type::Number(_) => "number".to_string(),
+        argon_ast::Type::String(_) => "string".to_string(),
+        argon_ast::Type::Boolean(_) => "boolean".to_string(),
+        argon_ast::Type::BigInt(_) => "bigint".to_string(),
+        argon_ast::Type::Symbol(_) => "symbol".to_string(),
+        argon_ast::Type::ThisType(_) => "this".to_string(),
         argon_ast::Type::Primitive(p) => match p {
             PrimitiveType::Number => "number".to_string(),
             PrimitiveType::String => "string".to_string(),
@@ -2381,6 +2394,12 @@ fn type_to_ts_string(ty: &argon_ast::Type) -> String {
         }
         argon_ast::Type::Ref(r) => type_to_ts_string(&r.ty),
         argon_ast::Type::MutRef(r) => type_to_ts_string(&r.ty),
+        argon_ast::Type::Shared(s) => {
+            format!("Shared<{}>", type_to_ts_string(&s.ty))
+        }
+        argon_ast::Type::Optional(o) => {
+            format!("{} | null", type_to_ts_string(&o.ty))
+        }
         argon_ast::Type::Function(f) => {
             let params: Vec<String> = f.params.iter().map(|p| type_to_ts_string(&p.ty)).collect();
             format!(

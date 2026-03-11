@@ -5,6 +5,7 @@
 mod borrow_checker_tests;
 
 use argon_ast::*;
+use argon_types::TypeCheckOutput;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -72,6 +73,7 @@ pub struct BorrowChecker {
     loop_scope: usize,
     in_unsafe: bool,
     thread_access: HashSet<String>,
+    type_info: Option<TypeCheckOutput>,
 }
 
 impl BorrowChecker {
@@ -89,10 +91,25 @@ impl BorrowChecker {
             loop_scope: 0,
             in_unsafe: false,
             thread_access: HashSet::new(),
+            type_info: None,
         }
     }
 
     pub fn check(&mut self, source: &SourceFile) -> Result<(), BorrowError> {
+        self.type_info = None;
+        self.check_impl(source)
+    }
+
+    pub fn check_typed(
+        &mut self,
+        source: &SourceFile,
+        type_info: TypeCheckOutput,
+    ) -> Result<(), BorrowError> {
+        self.type_info = Some(type_info);
+        self.check_impl(source)
+    }
+
+    fn check_impl(&mut self, source: &SourceFile) -> Result<(), BorrowError> {
         for stmt in &source.statements {
             self.check_statement(stmt)?;
         }
@@ -234,13 +251,16 @@ impl BorrowChecker {
     fn check_variable(&mut self, v: &VariableStmt) -> Result<(), BorrowError> {
         for decl in &v.declarations {
             if let Pattern::Identifier(id) = &decl.id {
-                let ownership = if let Some(ref init) = decl.init {
+                let mut ownership = if let Some(ref init) = decl.init {
                     self.check_moveable(init)?
                 } else {
                     Ownership::Owned
                 };
 
-                let is_copyable = self.is_copyable_type(&decl.init);
+                let is_copyable = self.is_copyable_variable(&id.name.sym, &decl.init);
+                if is_copyable && matches!(ownership, Ownership::Owned) {
+                    ownership = Ownership::Copied;
+                }
                 let lifetime = self.generate_lifetime();
 
                 self.locals.insert(
@@ -259,7 +279,27 @@ impl BorrowChecker {
         Ok(())
     }
 
-    fn is_copyable_type(&self, init: &Option<Expr>) -> bool {
+    fn is_copyable_variable(&self, name: &str, init: &Option<Expr>) -> bool {
+        if let Some(info) = &self.type_info {
+            if let Some(expr) = init {
+                if let Some(ty) = info.expr_types.get(expr.span()) {
+                    if let Some(t) = info.type_table.get(*ty) {
+                        return t.is_copyable();
+                    }
+                }
+            }
+
+            if let Some(ty) = info.env.get_var(name) {
+                if let Some(t) = info.type_table.get(ty) {
+                    return t.is_copyable();
+                }
+            }
+        }
+
+        self.is_copyable_type_heuristic(init)
+    }
+
+    fn is_copyable_type_heuristic(&self, init: &Option<Expr>) -> bool {
         if let Some(expr) = init {
             match expr {
                 Expr::Literal(lit) => matches!(
@@ -718,7 +758,11 @@ impl BorrowChecker {
             Expr::Literal(_) => Ok(Ownership::Copied),
             Expr::Identifier(id) => {
                 if let Some(state) = self.locals.get(&id.sym) {
+                    if state.is_copyable {
+                        Ok(Ownership::Copied)
+                    } else {
                     Ok(state.ownership.clone())
+                    }
                 } else {
                     Ok(Ownership::Copied)
                 }

@@ -135,6 +135,26 @@ fn test_compile_opt_folds_exported_const() {
 }
 
 #[test]
+fn test_argon_test_runs_esm_output() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("esm_test.arg");
+    fs::write(
+        &source_file,
+        "export const x: number = 1;\nconsole.log(x);\n",
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("test")
+        .arg("--input")
+        .arg(&source_file)
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
+        .success();
+}
+
+#[test]
 fn test_compile_logical_conditional_array_and_assignment() {
     let temp_dir = tempfile::tempdir().unwrap();
     let source_file = temp_dir.path().join("exprs.arg");

@@ -456,15 +456,6 @@ impl<'a> Lexer<'a> {
                 self.advance();
                 Token::new(TokenKind::AmpersandEqual, self.start..self.position + 1)
             }
-            Some(&'m') => {
-                if self.peek_n(1) == Some('u') && self.peek_n(2) == Some('t') {
-                    self.advance();
-                    self.advance();
-                    self.advance();
-                    return Token::new(TokenKind::AmpersandMut, self.start..self.position + 1);
-                }
-                Token::new(TokenKind::Ampersand, self.start..self.position + 1)
-            }
             _ => Token::new(TokenKind::Ampersand, self.start..self.position + 1),
         }
     }
@@ -634,7 +625,7 @@ impl<'a> Lexer<'a> {
 
             if ch == quote {
                 // `self.position` is already advanced past the closing quote (exclusive end).
-                return Token::new(TokenKind::String, self.start..self.position);
+                return Token::new(TokenKind::StringLiteral, self.start..self.position);
             }
 
             if ch == '\n' {
@@ -664,7 +655,7 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        Token::new(TokenKind::Number, self.start..self.position)
+        Token::new(TokenKind::NumberLiteral, self.start..self.position)
     }
 
     fn make_identifier_or_keyword_token(&mut self) -> Token {
