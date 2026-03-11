@@ -1288,12 +1288,16 @@ impl Parser {
         self.expect(TokenKind::From)?;
         let source = self.parse_literal_string()?;
 
-        Ok(Stmt::Import(ImportStmt {
+        let stmt = Stmt::Import(ImportStmt {
             specifiers,
             source,
             is_type_only: false,
             span: self.previous().span.clone(),
-        }))
+        });
+
+        // Allow optional trailing semicolon.
+        self.match_one(&[TokenKind::Semi]);
+        Ok(stmt)
     }
 
     fn parse_export(&mut self) -> Result<argon_ast::Stmt, ParseError> {
@@ -1350,10 +1354,9 @@ impl Parser {
     }
 
     fn parse_literal_string(&mut self) -> Result<argon_ast::StringLiteral, ParseError> {
-        if let TokenKind::String = &self.peek().kind {
+        if self.match_one(&[TokenKind::String]) {
             let span = self.previous().span.clone();
             let value = self.source[span.clone()].to_string();
-            self.advance();
             Ok(argon_ast::StringLiteral { value, span })
         } else {
             Err(ParseError::Parser("Expected string".to_string()))
@@ -1864,9 +1867,10 @@ impl Parser {
         let name = self.parse_jsx_element_name()?;
         let attributes = self.parse_jsx_attributes()?;
 
-        let is_self_closing = self.check(&TokenKind::JsxSelfClosing);
-        if is_self_closing {
-            self.advance();
+        let is_self_closing = self.match_one(&[TokenKind::JsxSelfClosing]);
+        if !is_self_closing {
+            // End of opening tag.
+            self.expect(TokenKind::GreaterThan)?;
         }
 
         let opening = JsxOpeningElement {
@@ -1951,13 +1955,11 @@ impl Parser {
 
         let mut attributes = Vec::new();
 
-        while !self.check(&TokenKind::CloseBrace)
-            && !self.check(&TokenKind::JsxElementClose)
+        while !self.check(&TokenKind::GreaterThan)
             && !self.check(&TokenKind::JsxSelfClosing)
             && !self.is_at_end()
         {
-            if self.check(&TokenKind::JsxAttribute) {
-                self.advance();
+            if self.check(&TokenKind::Identifier) {
                 let name = JsxAttributeName::Identifier(self.expect_identifier()?);
                 let value = if self.match_one(&[TokenKind::Equal]) {
                     Some(self.parse_jsx_attribute_value()?)
@@ -1969,7 +1971,11 @@ impl Parser {
                     value,
                     span: 0..10,
                 });
-            } else if self.match_one(&[TokenKind::DotDotDot]) {
+                continue;
+            }
+
+            if self.match_one(&[TokenKind::DotDotDot]) {
+                // Spread attributes like `{...props}`. Not fully supported yet; parse as an expression.
                 let expr = self.parse_expression()?;
                 attributes.push(JsxAttribute {
                     name: JsxAttributeName::Identifier(Ident {
@@ -1979,9 +1985,10 @@ impl Parser {
                     value: Some(JsxAttributeValue::Expression(expr)),
                     span: 0..10,
                 });
-            } else {
-                break;
+                continue;
             }
+
+            break;
         }
 
         Ok(attributes)

@@ -18,6 +18,7 @@ pub struct Lexer<'a> {
     position: usize,
     start: usize,
     in_jsx: bool,
+    in_jsx_tag: bool,
     jsx_depth: usize,
     prev_token_kind: Option<TokenKind>,
 }
@@ -30,6 +31,7 @@ impl<'a> Lexer<'a> {
             position: 0,
             start: 0,
             in_jsx: false,
+            in_jsx_tag: false,
             jsx_depth: 0,
             prev_token_kind: None,
         }
@@ -112,8 +114,17 @@ impl<'a> Lexer<'a> {
 
         if let Some(&ch) = self.chars.peek() {
             let token = match ch {
-                // JSX closing tag
-                '/' if self.in_jsx => self.make_jsx_closing_tag_token(),
+                // JSX self-closing tag end: `/>`
+                '/' if self.in_jsx_tag && self.peek_n(1) == Some('>') => {
+                    self.advance(); // '/'
+                    self.advance(); // '>'
+                    self.in_jsx_tag = false;
+                    if self.jsx_depth > 0 {
+                        self.jsx_depth -= 1;
+                    }
+                    self.in_jsx = self.jsx_depth > 0;
+                    Token::new(TokenKind::JsxSelfClosing, self.start..self.position)
+                }
 
                 // Punctuation
                 '{' => {
@@ -124,13 +135,7 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 '}' => {
-                    if self.in_jsx {
-                        self.in_jsx = false;
-                        self.jsx_depth = 0;
-                        self.make_token(TokenKind::CloseBrace)
-                    } else {
-                        self.make_token(TokenKind::CloseBrace)
-                    }
+                    self.make_token(TokenKind::CloseBrace)
                 }
                 '(' => self.make_token(TokenKind::OpenParen),
                 ')' => self.make_token(TokenKind::CloseParen),
@@ -154,7 +159,17 @@ impl<'a> Lexer<'a> {
                 '&' => self.make_ampersand_token(),
                 '|' => self.make_pipe_token(),
                 '=' => self.make_equals_token(),
-                '>' => self.make_greater_than_token(),
+                '>' => {
+                    if self.in_jsx_tag {
+                        self.advance();
+                        self.in_jsx_tag = false;
+                        // After `>`, switch into JSX children mode.
+                        self.in_jsx = true;
+                        Token::new(TokenKind::GreaterThan, self.start..self.position)
+                    } else {
+                        self.make_greater_than_token()
+                    }
+                }
 
                 // JSX - handle < in JSX context
                 '<' => {
@@ -175,7 +190,7 @@ impl<'a> Lexer<'a> {
                 // Literals
                 '"' | '\'' => self.make_string_token(ch),
                 '0'..='9' => {
-                    if self.in_jsx {
+                    if self.in_jsx && !self.in_jsx_tag {
                         self.make_jsx_child_token()
                     } else {
                         self.make_number_token()
@@ -184,7 +199,7 @@ impl<'a> Lexer<'a> {
 
                 // Identifiers and keywords
                 'a'..='z' | 'A'..='Z' | '_' | '$' => {
-                    if self.in_jsx {
+                    if self.in_jsx && !self.in_jsx_tag {
                         self.make_jsx_child_token()
                     } else {
                         self.make_identifier_or_keyword_token()
@@ -618,7 +633,8 @@ impl<'a> Lexer<'a> {
             }
 
             if ch == quote {
-                return Token::new(TokenKind::String, self.start..self.position + 1);
+                // `self.position` is already advanced past the closing quote (exclusive end).
+                return Token::new(TokenKind::String, self.start..self.position);
             }
 
             if ch == '\n' {
@@ -720,74 +736,29 @@ impl<'a> Lexer<'a> {
     }
 
     fn make_jsx_token(&mut self) -> Token {
-        self.advance();
+        // Cursor is at '<'.
+        self.advance(); // consume '<'
 
         match self.chars.peek() {
-            Some(&'/') => {
-                self.advance();
-                match self.chars.peek() {
-                    Some(&'>') => {
-                        self.advance();
-                        self.in_jsx = false;
-                        self.jsx_depth = 0;
-                        return Token::new(
-                            TokenKind::JsxFragmentClose,
-                            self.start..self.position + 1,
-                        );
-                    }
-                    _ => {
-                        self.in_jsx = true;
-                        self.jsx_depth += 1;
-                        return Token::new(TokenKind::JsxElementClose, self.start..self.position);
-                    }
-                }
-            }
+            // Closing tag or fragment close.
+            Some(&'/') => self.make_jsx_closing_tag_token(),
+
+            // Fragment open: `<>`
             Some(&'>') => {
-                self.advance();
+                self.advance(); // consume '>'
                 self.in_jsx = true;
+                self.in_jsx_tag = false;
                 self.jsx_depth += 1;
-                return Token::new(TokenKind::JsxFragmentOpen, self.start..self.position + 1);
+                Token::new(TokenKind::JsxFragmentOpen, self.start..self.position)
             }
+
+            // Opening tag: `<div ...>`
             _ => {
                 let _name = self.read_jsx_identifier();
-                match self.chars.peek() {
-                    Some(&'/') => {
-                        self.advance();
-                        match self.chars.peek() {
-                            Some(&'>') => {
-                                self.advance();
-                                self.in_jsx = false;
-                                self.jsx_depth = 0;
-                                return Token::new(
-                                    TokenKind::JsxSelfClosing,
-                                    self.start..self.position + 1,
-                                );
-                            }
-                            _ => {
-                                self.in_jsx = true;
-                                self.jsx_depth += 1;
-                                return Token::new(
-                                    TokenKind::JsxElementOpen,
-                                    self.start..self.position,
-                                );
-                            }
-                        }
-                    }
-                    Some(&'>') => {
-                        self.advance();
-                        self.in_jsx = true;
-                        self.jsx_depth += 1;
-                        return Token::new(
-                            TokenKind::JsxElementOpen,
-                            self.start..self.position + 1,
-                        );
-                    }
-                    _ => {
-                        self.in_jsx = true;
-                        self.jsx_depth = 1;
-                        return Token::new(TokenKind::JsxElementOpen, self.start..self.position);
-                    }
-                }
+                self.in_jsx = true;
+                self.in_jsx_tag = true;
+                self.jsx_depth += 1;
+                Token::new(TokenKind::JsxElementOpen, self.start..self.position)
             }
         }
     }
@@ -874,7 +845,7 @@ impl<'a> Lexer<'a> {
             self.advance(); // consume '/'
         }
 
-        self.read_jsx_identifier();
+        let name = self.read_jsx_identifier();
 
         // Skip any whitespace before the closing '>'
         while let Some(&ch) = self.chars.peek() {
@@ -897,7 +868,11 @@ impl<'a> Lexer<'a> {
         }
         self.in_jsx = self.jsx_depth > 0;
 
-        Token::new(TokenKind::JsxElementClose, self.start..self.position)
+        if name.is_empty() {
+            Token::new(TokenKind::JsxFragmentClose, self.start..self.position)
+        } else {
+            Token::new(TokenKind::JsxElementClose, self.start..self.position)
+        }
     }
 
     fn make_jsx_expr_token(&mut self) -> Token {

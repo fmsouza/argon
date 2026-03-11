@@ -40,13 +40,10 @@ impl WasmCodegen {
 
                 let body = vec![BasicBlock {
                     id: 0,
-                    instructions: vec![
-                        IrInstruction::Const {
-                            dest: 0,
-                            value: ConstValue::Number(42.0),
-                        },
-                        IrInstruction::Return { value: Some(0) },
-                    ],
+                    instructions: vec![IrInstruction::Const {
+                        dest: 0,
+                        value: ConstValue::Number(42.0),
+                    }],
                     terminator: Terminator::Return(Some(0)),
                 }];
 
@@ -54,6 +51,7 @@ impl WasmCodegen {
                     id: func_name,
                     params,
                     return_type: Some(0),
+                    is_async: false,
                     body,
                 });
             }

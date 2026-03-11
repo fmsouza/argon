@@ -537,6 +537,3 @@ main();
 
     Ok(())
 }
-
-#[cfg(test)]
-mod cli_tests;

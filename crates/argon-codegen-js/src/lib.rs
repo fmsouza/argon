@@ -63,18 +63,11 @@ impl JsCodegen {
             if let TypeDef::Struct { name, fields } = ty {
                 self.output.push_str("function ");
                 self.output.push_str(name);
-                self.output.push_str("(");
-                for (i, f) in fields.iter().enumerate() {
-                    if i > 0 {
-                        self.output.push_str(", ");
-                    }
-                    self.output.push_str(&f.name);
-                }
-                self.output.push_str(") {\n");
+                self.output.push_str("(init) {\n");
                 for f in fields {
                     self.output.push_str("    this.");
                     self.output.push_str(&f.name);
-                    self.output.push_str(" = ");
+                    self.output.push_str(" = init.");
                     self.output.push_str(&f.name);
                     self.output.push_str(";\n");
                 }
@@ -141,35 +134,284 @@ impl JsCodegen {
     }
 
     fn generate_ir_init(&mut self, func: &argon_ir::Function) -> Result<(), CodegenError> {
-        let entry = func
-            .body
-            .first()
-            .ok_or_else(|| CodegenError::Unsupported("init function has no body".to_string()))?;
+        if func.body.len() == 1 && matches!(func.body[0].terminator, argon_ir::Terminator::Return(_))
+        {
+            let entry = func.body.first().ok_or_else(|| {
+                CodegenError::Unsupported("init function has no body".to_string())
+            })?;
+            self.output.push_str("(() => {\n");
+            self.generate_ir_block(entry, true)?;
+            self.output.push_str("})();\n\n");
+            return Ok(());
+        }
 
         self.output.push_str("(() => {\n");
-        self.generate_ir_block(entry, true)?;
+        self.generate_ir_cfg(func, true)?;
         self.output.push_str("})();\n\n");
         Ok(())
     }
 
     fn generate_ir_function(&mut self, func: &argon_ir::Function) -> Result<(), CodegenError> {
-        let entry = func
+        if func.body.len() == 1 && matches!(func.body[0].terminator, argon_ir::Terminator::Return(_))
+        {
+            let entry = func.body.first().ok_or_else(|| {
+                CodegenError::Unsupported("function has no body".to_string())
+            })?;
+
+            if func.is_async {
+                self.output.push_str("async ");
+            }
+            self.output.push_str("function ");
+            self.output.push_str(&func.id);
+            self.output.push_str("(");
+            for (i, p) in func.params.iter().enumerate() {
+                if i > 0 {
+                    self.output.push_str(", ");
+                }
+                self.output.push_str(&p.name);
+            }
+            self.output.push_str(") {\n");
+            self.generate_ir_block(entry, false)?;
+            self.output.push_str("}\n\n");
+            return Ok(());
+        }
+
+        self.generate_ir_cfg(func, false)
+    }
+
+    fn generate_ir_cfg(
+        &mut self,
+        func: &argon_ir::Function,
+        is_init: bool,
+    ) -> Result<(), CodegenError> {
+        use argon_ir::Terminator as IrTerm;
+
+        if !is_init {
+            if func.is_async {
+                self.output.push_str("async ");
+            }
+            self.output.push_str("function ");
+            self.output.push_str(&func.id);
+            self.output.push_str("(");
+            for (i, p) in func.params.iter().enumerate() {
+                if i > 0 {
+                    self.output.push_str(", ");
+                }
+                self.output.push_str(&p.name);
+            }
+            self.output.push_str(") {\n");
+        }
+
+        let entry_id = func
             .body
             .first()
-            .ok_or_else(|| CodegenError::Unsupported("function has no body".to_string()))?;
+            .ok_or_else(|| CodegenError::Unsupported("function has no body".to_string()))?
+            .id;
 
-        self.output.push_str("function ");
-        self.output.push_str(&func.id);
-        self.output.push_str("(");
-        for (i, p) in func.params.iter().enumerate() {
-            if i > 0 {
-                self.output.push_str(", ");
+        self.output
+            .push_str(&format!("    let __bb = {};\n", entry_id));
+        self.output.push_str("    while (true) {\n");
+        self.output.push_str("        switch (__bb) {\n");
+
+        for block in &func.body {
+            self.output
+                .push_str(&format!("        case {}: {{\n", block.id));
+
+            let mut values: std::collections::HashMap<argon_ir::ValueId, String> =
+                std::collections::HashMap::new();
+            self.emit_ir_instructions_cfg(&block.instructions, &mut values)?;
+
+            match &block.terminator {
+                IrTerm::Jump(target) => {
+                    self.output
+                        .push_str(&format!("            __bb = {};\n", target));
+                    self.output.push_str("            continue;\n");
+                }
+                IrTerm::Branch { cond, then, else_ } => {
+                    let cond_expr = values
+                        .get(cond)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    self.output
+                        .push_str(&format!("            if ({}) {{\n", cond_expr));
+                    self.output
+                        .push_str(&format!("                __bb = {};\n", then));
+                    self.output.push_str("            } else {\n");
+                    self.output
+                        .push_str(&format!("                __bb = {};\n", else_));
+                    self.output.push_str("            }\n");
+                    self.output.push_str("            continue;\n");
+                }
+                IrTerm::Return(Some(v)) => {
+                    let expr = values.get(v).cloned().unwrap_or_else(|| "undefined".to_string());
+                    self.output
+                        .push_str(&format!("            return {};\n", expr));
+                }
+                IrTerm::Return(None) => {
+                    self.output.push_str("            return;\n");
+                }
+                IrTerm::Unreachable => {
+                    self.output
+                        .push_str("            throw new Error(\"unreachable\");\n");
+                }
             }
-            self.output.push_str(&p.name);
+
+            self.output.push_str("        }\n");
         }
-        self.output.push_str(") {\n");
-        self.generate_ir_block(entry, false)?;
-        self.output.push_str("}\n\n");
+
+        self.output.push_str("        default: {\n");
+        self.output
+            .push_str("            throw new Error(\"invalid basic block\");\n");
+        self.output.push_str("        }\n");
+        self.output.push_str("        }\n");
+        self.output.push_str("    }\n");
+
+        if !is_init {
+            self.output.push_str("}\n\n");
+        }
+
+        Ok(())
+    }
+
+    fn emit_ir_instructions_cfg(
+        &mut self,
+        instructions: &[argon_ir::Instruction],
+        values: &mut std::collections::HashMap<argon_ir::ValueId, String>,
+    ) -> Result<(), CodegenError> {
+        use argon_ir::Instruction as IrInst;
+
+        for inst in instructions {
+            match inst {
+                IrInst::ObjectLit { dest, props } => {
+                    let mut parts = Vec::new();
+                    for p in props {
+                        let v = values
+                            .get(&p.value)
+                            .cloned()
+                            .unwrap_or_else(|| "undefined".to_string());
+                        parts.push(format!("{}: {}", p.key, v));
+                    }
+                    values.insert(*dest, format!("{{ {} }}", parts.join(", ")));
+                }
+                IrInst::New { callee, args, dest } => {
+                    let callee = values
+                        .get(callee)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    let args = args
+                        .iter()
+                        .map(|a| values.get(a).cloned().unwrap_or_else(|| "undefined".to_string()))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    values.insert(*dest, format!("new {}({})", callee, args));
+                }
+                IrInst::Await { arg, dest } => {
+                    let arg = values
+                        .get(arg)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    values.insert(*dest, format!("await {}", arg));
+                }
+                IrInst::Const { dest, value } => {
+                    values.insert(*dest, self.const_to_js(value));
+                }
+                IrInst::VarRef { dest, name } => {
+                    values.insert(*dest, name.clone());
+                }
+                IrInst::Member {
+                    object,
+                    property,
+                    dest,
+                } => {
+                    let obj = values
+                        .get(object)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    values.insert(*dest, format!("{}.{}", obj, property));
+                }
+                IrInst::MemberComputed {
+                    object,
+                    property,
+                    dest,
+                } => {
+                    let obj = values
+                        .get(object)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    let prop = values
+                        .get(property)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    values.insert(*dest, format!("{}[{}]", obj, prop));
+                }
+                IrInst::BinOp { op, lhs, rhs, dest } => {
+                    let lhs = values
+                        .get(lhs)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    let rhs = values
+                        .get(rhs)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    values.insert(*dest, format!("({} {} {})", lhs, self.binop_to_js(*op), rhs));
+                }
+                IrInst::UnOp { op, arg, dest } => {
+                    let arg = values
+                        .get(arg)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    values.insert(*dest, format!("({}{})", self.unop_to_js(*op), arg));
+                }
+                IrInst::Call { callee, args, dest } => {
+                    let callee = values
+                        .get(callee)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    let args = args
+                        .iter()
+                        .map(|a| values.get(a).cloned().unwrap_or_else(|| "undefined".to_string()))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    values.insert(*dest, format!("{}({})", callee, args));
+                }
+                IrInst::VarDecl { name, init, .. } => {
+                    self.output.push_str("            var ");
+                    self.output.push_str(name);
+                    if let Some(v) = init {
+                        let expr =
+                            values.get(v).cloned().unwrap_or_else(|| "undefined".to_string());
+                        self.output.push_str(" = ");
+                        self.output.push_str(&expr);
+                    }
+                    self.output.push_str(";\n");
+                }
+                IrInst::AssignVar { name, src } => {
+                    let expr =
+                        values.get(src).cloned().unwrap_or_else(|| "undefined".to_string());
+                    self.output.push_str("            ");
+                    self.output.push_str(name);
+                    self.output.push_str(" = ");
+                    self.output.push_str(&expr);
+                    self.output.push_str(";\n");
+                }
+                IrInst::ExprStmt { value } => {
+                    let expr = values
+                        .get(value)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    self.output.push_str("            ");
+                    self.output.push_str(&expr);
+                    self.output.push_str(";\n");
+                }
+                _ => {
+                    return Err(CodegenError::Unsupported(format!(
+                        "unsupported IR instruction in CFG mode: {:?}",
+                        inst
+                    )));
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -186,6 +428,36 @@ impl JsCodegen {
 
         for inst in &block.instructions {
             match inst {
+                IrInst::ObjectLit { dest, props } => {
+                    let mut parts = Vec::new();
+                    for p in props {
+                        let v = values
+                            .get(&p.value)
+                            .cloned()
+                            .unwrap_or_else(|| "undefined".to_string());
+                        parts.push(format!("{}: {}", p.key, v));
+                    }
+                    values.insert(*dest, format!("{{ {} }}", parts.join(", ")));
+                }
+                IrInst::New { callee, args, dest } => {
+                    let callee = values
+                        .get(callee)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    let args = args
+                        .iter()
+                        .map(|a| values.get(a).cloned().unwrap_or_else(|| "undefined".to_string()))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    values.insert(*dest, format!("new {}({})", callee, args));
+                }
+                IrInst::Await { arg, dest } => {
+                    let arg = values
+                        .get(arg)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    values.insert(*dest, format!("await {}", arg));
+                }
                 IrInst::Const { dest, value } => {
                     values.insert(*dest, self.const_to_js(value));
                 }
@@ -329,8 +601,8 @@ impl JsCodegen {
             argon_ir::BinOp::Mul => "*",
             argon_ir::BinOp::Div => "/",
             argon_ir::BinOp::Mod => "%",
-            argon_ir::BinOp::Eq => "==",
-            argon_ir::BinOp::Ne => "!=",
+            argon_ir::BinOp::Eq => "===",
+            argon_ir::BinOp::Ne => "!==",
             argon_ir::BinOp::Lt => "<",
             argon_ir::BinOp::Le => "<=",
             argon_ir::BinOp::Gt => ">",
@@ -526,21 +798,19 @@ impl JsCodegen {
     }
 
     fn generate_struct(&mut self, s: &StructDecl) -> Result<(), CodegenError> {
-        // Generate a constructor function for the struct
+        // Generate a constructor function for the struct.
+        // The parser lowers `Point { x: 1 }` into `new Point({ x: 1 })`,
+        // so the constructor expects a single initializer object.
         self.output.push_str("function ");
         self.output.push_str(&s.id.sym);
-        self.output.push_str("(");
-
-        // Parameters are the field names
-        let params: Vec<_> = s.fields.iter().map(|f| f.id.sym.as_str()).collect();
-        self.output.push_str(&params.join(", "));
-        self.output.push_str(") {\n");
+        self.output.push_str("(init) {\n");
 
         // Assign fields to this
         for field in &s.fields {
             self.output.push_str("    this.");
             self.output.push_str(&field.id.sym);
             self.output.push_str(" = ");
+            self.output.push_str("init.");
             self.output.push_str(&field.id.sym);
             self.output.push_str(";\n");
         }

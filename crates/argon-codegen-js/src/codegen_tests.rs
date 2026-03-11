@@ -1,6 +1,7 @@
 //! Argon - JS Codegen Tests
 
 use crate::JsCodegen;
+use argon_ir::IrBuilder;
 use argon_parser::parse;
 
 mod statement_codegen {
@@ -168,5 +169,52 @@ mod class_codegen {
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.contains("function Point"));
+    }
+}
+
+mod ir_codegen {
+    use super::*;
+
+    #[test]
+    fn generates_struct_literal_via_ir() {
+        let source =
+            "struct Point { x: number; y: number; }\nconst p = Point { x: 1, y: 2 };\nconsole.log(p.x);\n";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+        let ir = builder.build(&ast).unwrap();
+        let mut codegen = JsCodegen::new();
+
+        let output = codegen.generate(&ir).unwrap();
+        assert!(output.contains("function Point(init)"));
+        assert!(output.contains("new Point({ x: 1, y: 2 })"));
+    }
+
+    #[test]
+    fn generates_async_and_await_via_ir() {
+        let source = "async function greet(): string { return \"hello\"; }\nasync function main(): string { const r = await greet(); return r; }\n";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+        let ir = builder.build(&ast).unwrap();
+        let mut codegen = JsCodegen::new();
+
+        let output = codegen.generate(&ir).unwrap();
+        assert!(output.contains("async function greet"));
+        assert!(output.contains("async function main"));
+        assert!(output.contains("await greet()"));
+    }
+
+    #[test]
+    fn generates_jsx_via_ir() {
+        let source = "<div className=\"test\">Hello</div>\n";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+        let ir = builder.build(&ast).unwrap();
+        let mut codegen = JsCodegen::new();
+
+        let output = codegen.generate(&ir).unwrap();
+        assert!(output.contains("React.createElement"));
+        assert!(output.contains("\"div\""));
+        assert!(output.contains("className: \"test\""));
+        assert!(output.contains("\"Hello\""));
     }
 }
