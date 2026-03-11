@@ -63,6 +63,8 @@ impl WasmCodegen {
             functions,
             types: Vec::new(),
             globals: Vec::new(),
+            imports: Vec::new(),
+            exports: Vec::new(),
         };
         self.generate(&module)
     }

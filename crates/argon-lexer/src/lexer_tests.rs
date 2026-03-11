@@ -242,6 +242,51 @@ mod literal_tokenization {
     }
 }
 
+mod jsx_vs_less_than {
+    use super::*;
+
+    #[test]
+    fn lexes_less_than_in_comparison_not_jsx() {
+        // Assign
+        let source = "while (i < 10) { i = i + 1; }";
+
+        // Act
+        let result = tokenize(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::LessThan));
+        assert!(!tokens.iter().any(|t| t.kind == TokenKind::JsxElementOpen));
+    }
+
+    #[test]
+    fn lexes_jsx_after_return() {
+        // Assign
+        let source = "function f(): void { return <div>Hello</div>; }";
+
+        // Act
+        let result = tokenize(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+
+        // Find `return`, then ensure the next token begins JSX.
+        let return_pos = tokens
+            .iter()
+            .position(|t| t.kind == TokenKind::Return)
+            .expect("expected Return token");
+        assert!(
+            matches!(
+                tokens.get(return_pos + 1).map(|t| t.kind),
+                Some(TokenKind::JsxElementOpen) | Some(TokenKind::JsxFragmentOpen)
+            ),
+            "expected JSX token after return"
+        );
+    }
+}
+
 mod operator_tokenization {
     use super::*;
 

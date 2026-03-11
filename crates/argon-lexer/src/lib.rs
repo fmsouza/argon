@@ -19,6 +19,7 @@ pub struct Lexer<'a> {
     start: usize,
     in_jsx: bool,
     jsx_depth: usize,
+    prev_token_kind: Option<TokenKind>,
 }
 
 impl<'a> Lexer<'a> {
@@ -30,6 +31,7 @@ impl<'a> Lexer<'a> {
             start: 0,
             in_jsx: false,
             jsx_depth: 0,
+            prev_token_kind: None,
         }
     }
 
@@ -38,6 +40,7 @@ impl<'a> Lexer<'a> {
 
         while let Some(token) = self.next_token()? {
             if token.kind != TokenKind::Whitespace && token.kind != TokenKind::Comment {
+                self.prev_token_kind = Some(token.kind);
                 tokens.push(token);
             }
         }
@@ -45,6 +48,61 @@ impl<'a> Lexer<'a> {
         tokens.push(Token::new(TokenKind::Eof, self.position..self.position + 1));
 
         Ok(tokens)
+    }
+
+    fn should_start_jsx_after_prev(&self) -> bool {
+        // Heuristic: only treat '<' as the start of JSX in positions where an expression can begin.
+        // This avoids breaking comparisons like `i < 10` (which previously flipped the lexer into JSX mode).
+        match self.prev_token_kind {
+            None => true,
+            Some(kind) => matches!(
+                kind,
+                TokenKind::Equal
+                    | TokenKind::OpenParen
+                    | TokenKind::OpenBrace
+                    | TokenKind::OpenBracket
+                    | TokenKind::Comma
+                    | TokenKind::Colon
+                    | TokenKind::Semi
+                    | TokenKind::Return
+                    | TokenKind::Throw
+                    | TokenKind::Await
+                    | TokenKind::Yield
+                    | TokenKind::Question
+                    | TokenKind::Plus
+                    | TokenKind::Minus
+                    | TokenKind::Star
+                    | TokenKind::Slash
+                    | TokenKind::Percent
+                    | TokenKind::Bang
+                    | TokenKind::Ampersand
+                    | TokenKind::Pipe
+                    | TokenKind::Caret
+                    | TokenKind::Tilde
+                    | TokenKind::AmpersandAmpersand
+                    | TokenKind::PipePipe
+                    | TokenKind::EqualEqual
+                    | TokenKind::EqualEqualEqual
+                    | TokenKind::BangEqual
+                    | TokenKind::BangEqualEqual
+                    | TokenKind::LessThan
+                    | TokenKind::LessThanEqual
+                    | TokenKind::GreaterThan
+                    | TokenKind::GreaterThanEqual
+            ),
+        }
+    }
+
+    fn looks_like_jsx_start(&mut self) -> bool {
+        // We are currently positioned at '<'. Peek the next char to avoid treating operators like
+        // '<=', '<<', or '< 10' as JSX.
+        let next = self.peek_n(1);
+        match next {
+            Some('>') => true, // fragment open <>
+            Some('/') => true, // closing tag </...>
+            Some(c) => c.is_ascii_alphabetic() || c == '_' || c == '$',
+            None => false,
+        }
     }
 
     fn next_token(&mut self) -> Result<Option<Token>, LexerError> {
@@ -100,23 +158,17 @@ impl<'a> Lexer<'a> {
 
                 // JSX - handle < in JSX context
                 '<' => {
-                    if !self.in_jsx {
-                        self.make_jsx_token()
-                    } else {
-                        // In JSX mode - could be nested element or closing tag
-                        // Look ahead
-                        self.advance(); // consume <
-                        let ch = *self.chars.peek().unwrap_or(&' ');
-                        self.position -= 1; // go back
-
-                        if ch == '/' {
-                            // Closing tag - handle it
+                    if self.in_jsx {
+                        // In JSX mode - could be nested element or closing tag.
+                        if self.peek_n(1) == Some('/') {
                             self.make_jsx_closing_tag_token()
                         } else {
-                            // Could be nested element or text - call make_jsx_token
-                            // which will handle it appropriately
                             self.make_jsx_token()
                         }
+                    } else if self.should_start_jsx_after_prev() && self.looks_like_jsx_start() {
+                        self.make_jsx_token()
+                    } else {
+                        self.make_less_than_token()
                     }
                 }
 
@@ -813,19 +865,39 @@ impl<'a> Lexer<'a> {
     }
 
     fn make_jsx_closing_tag_token(&mut self) -> Token {
-        self.advance();
+        // Handles a closing tag like `</div>` (or `</Foo.Bar>`).
+        // This can be called when the cursor is at '<' (preferred) or '/' (legacy).
+        if self.chars.peek() == Some(&'<') {
+            self.advance(); // consume '<'
+        }
+        if self.chars.peek() == Some(&'/') {
+            self.advance(); // consume '/'
+        }
 
         self.read_jsx_identifier();
 
-        match self.chars.peek() {
-            Some(&'>') => {
+        // Skip any whitespace before the closing '>'
+        while let Some(&ch) = self.chars.peek() {
+            if ch.is_whitespace() {
                 self.advance();
-                self.in_jsx = false;
-                self.jsx_depth = 0;
-                Token::new(TokenKind::JsxElementClose, self.start..self.position)
+            } else {
+                break;
             }
-            _ => Token::new(TokenKind::Error, self.start..self.position),
         }
+
+        if self.chars.peek() == Some(&'>') {
+            self.advance(); // consume '>'
+        } else {
+            return Token::new(TokenKind::Error, self.start..self.position);
+        }
+
+        // Close one JSX level and remain in JSX if we're still nested.
+        if self.jsx_depth > 0 {
+            self.jsx_depth -= 1;
+        }
+        self.in_jsx = self.jsx_depth > 0;
+
+        Token::new(TokenKind::JsxElementClose, self.start..self.position)
     }
 
     fn make_jsx_expr_token(&mut self) -> Token {

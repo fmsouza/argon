@@ -146,6 +146,84 @@ mod function_parsing {
     }
 }
 
+mod loop_parsing {
+    use super::*;
+
+    #[test]
+    fn parses_while_loop_with_less_than_condition() {
+        // Assign
+        let source = "while (i < 10) { i = i + 1; }";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn parses_for_loop_with_less_than_condition() {
+        // Assign
+        let source = "for (let i = 0; i < 10; i = i + 1) { const x = i; }";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn parses_do_while_loop_with_less_than_condition() {
+        // Assign
+        let source = "do { x = x + 1; } while (x < 10);";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+}
+
+mod jsx_parsing {
+    use super::*;
+
+    #[test]
+    fn parses_jsx_expression_after_return() {
+        // Assign
+        let source = "function f(): void { return <div>Hello</div>; }";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let ast = result.unwrap();
+
+        let func = match &ast.statements[0] {
+            Stmt::Function(f) => f,
+            _ => panic!("expected function statement"),
+        };
+
+        let ret = func
+            .body
+            .statements
+            .iter()
+            .find_map(|s| match s {
+                Stmt::Return(r) => Some(r),
+                _ => None,
+            })
+            .expect("expected return statement");
+
+        let arg = ret.argument.as_ref().expect("expected return value");
+        assert!(
+            matches!(arg, Expr::JsxElement(_) | Expr::JsxFragment(_)),
+            "expected JSX expression"
+        );
+    }
+}
+
 mod struct_parsing {
     use super::*;
 

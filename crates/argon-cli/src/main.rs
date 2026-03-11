@@ -3,6 +3,7 @@
 use argon_borrowck::BorrowChecker;
 use argon_codegen_js::{generate_type_declarations, JsCodegen};
 use argon_codegen_wasm::WasmCodegen;
+use argon_ir::IrBuilder;
 use argon_parser::parse;
 use argon_runtime::execute_ast;
 use argon_types::TypeChecker;
@@ -29,6 +30,8 @@ enum Commands {
         source_map: bool,
         #[arg(long)]
         declarations: bool,
+        #[arg(long, default_value = "ir")]
+        pipeline: String,
     },
     Check {
         input: PathBuf,
@@ -43,6 +46,8 @@ enum Commands {
         directory: Option<PathBuf>,
         #[arg(short, long)]
         verbose: bool,
+        #[arg(long, default_value = "ir")]
+        pipeline: String,
     },
     Format {
         input: PathBuf,
@@ -64,8 +69,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             target,
             source_map: _,
             declarations,
+            pipeline,
         } => {
-            compile(&input, output.as_ref(), &target, declarations)?;
+            compile(&input, output.as_ref(), &target, declarations, &pipeline)?;
         }
         Commands::Check { input } => {
             check(&input)?;
@@ -77,8 +83,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             input,
             directory,
             verbose,
+            pipeline,
         } => {
-            test(input.as_ref(), directory.as_ref(), verbose)?;
+            test(input.as_ref(), directory.as_ref(), verbose, &pipeline)?;
         }
         Commands::Format { input, output } => {
             format_file(&input, output.as_ref())?;
@@ -96,6 +103,7 @@ fn compile(
     output: Option<&PathBuf>,
     target: &str,
     declarations: bool,
+    pipeline: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let source = fs::read_to_string(input)?;
 
@@ -112,8 +120,15 @@ fn compile(
 
     if target == "js" {
         println!("Generating JavaScript...");
-        let mut codegen = JsCodegen::new();
-        let js = codegen.generate_from_ast(&ast).unwrap_or_default();
+        let js = if pipeline == "ast" {
+            let mut codegen = JsCodegen::new();
+            codegen.generate_from_ast(&ast)?
+        } else {
+            let mut builder = IrBuilder::new();
+            let ir = builder.build(&ast)?;
+            let mut codegen = JsCodegen::new();
+            codegen.generate(&ir)?
+        };
 
         let output_path = output
             .map(|p| p.clone())
@@ -130,7 +145,15 @@ fn compile(
     } else if target == "wasm" {
         println!("Generating WebAssembly...");
         let mut codegen = WasmCodegen::new();
-        match codegen.generate_from_ast(&ast) {
+        let wasm_result = if pipeline == "ast" {
+            codegen.generate_from_ast(&ast)
+        } else {
+            let mut builder = IrBuilder::new();
+            let ir = builder.build(&ast)?;
+            codegen.generate(&ir)
+        };
+
+        match wasm_result {
             Ok(wasm_bytes) => {
                 let output_path = output
                     .map(|p| p.clone())
@@ -213,6 +236,7 @@ fn test(
     input: Option<&PathBuf>,
     directory: Option<&PathBuf>,
     verbose: bool,
+    pipeline: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut test_files: Vec<PathBuf> = Vec::new();
 
@@ -270,7 +294,7 @@ fn test(
 
         print!("  {} ... ", file_name);
 
-        match run_test_file(test_file, verbose) {
+        match run_test_file_with_pipeline(test_file, verbose, pipeline) {
             Ok(true) => {
                 println!("ok");
                 passed += 1;
@@ -301,10 +325,8 @@ fn test(
 }
 
 fn is_test_file(name: &str) -> bool {
-    name.contains("_test.")
-        || name.contains("_tests.")
-        || name.ends_with("_test.arg")
-        || name.ends_with("_tests.arg")
+    // Minimal convention: any `.arg` file is runnable as a test; naming can be layered on later.
+    name.ends_with(".arg")
 }
 
 fn collect_test_files(
@@ -314,20 +336,24 @@ fn collect_test_files(
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_file() {
-            if let Some(ext) = path.extension() {
-                if ext == "ss" {
-                    files.push(path);
+            if path.is_file() {
+                if let Some(ext) = path.extension() {
+                    if ext == "arg" || ext == "ss" {
+                        files.push(path);
+                    }
                 }
+            } else if path.is_dir() {
+                collect_test_files(&path, files)?;
             }
-        } else if path.is_dir() {
-            collect_test_files(&path, files)?;
-        }
     }
     Ok(())
 }
 
-fn run_test_file(test_file: &PathBuf, verbose: bool) -> Result<bool, Box<dyn std::error::Error>> {
+fn run_test_file_with_pipeline(
+    test_file: &PathBuf,
+    verbose: bool,
+    pipeline: &str,
+) -> Result<bool, Box<dyn std::error::Error>> {
     let source = fs::read_to_string(test_file)?;
 
     let ast = parse(&source).map_err(|e| format!("Parse error: {}", e))?;
@@ -342,10 +368,21 @@ fn run_test_file(test_file: &PathBuf, verbose: bool) -> Result<bool, Box<dyn std
         .check(&ast)
         .map_err(|e| format!("Borrow error: {}", e))?;
 
-    let mut codegen = JsCodegen::new();
-    let js = codegen
-        .generate_from_ast(&ast)
-        .map_err(|e| format!("Codegen error: {}", e))?;
+    let js = if pipeline == "ast" {
+        let mut codegen = JsCodegen::new();
+        codegen
+            .generate_from_ast(&ast)
+            .map_err(|e| format!("Codegen error: {}", e))?
+    } else {
+        let mut builder = IrBuilder::new();
+        let ir = builder
+            .build(&ast)
+            .map_err(|e| format!("IR error: {}", e))?;
+        let mut codegen = JsCodegen::new();
+        codegen
+            .generate(&ir)
+            .map_err(|e| format!("Codegen error: {}", e))?
+    };
 
     let temp_file = std::env::temp_dir().join("argon_test.js");
     fs::write(&temp_file, &js)?;

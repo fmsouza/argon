@@ -1,7 +1,6 @@
 //! Argon - Intermediate representation
 
 use argon_ast::*;
-use std::collections::HashMap;
 
 pub type BlockId = usize;
 pub type ValueId = usize;
@@ -11,6 +10,8 @@ pub struct Module {
     pub functions: Vec<Function>,
     pub types: Vec<TypeDef>,
     pub globals: Vec<Global>,
+    pub imports: Vec<ImportStmt>,
+    pub exports: Vec<ExportStmt>,
 }
 
 #[derive(Debug, Clone)]
@@ -25,6 +26,13 @@ pub struct Function {
 pub struct Param {
     pub name: String,
     pub ty: TypeId,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum VarKind {
+    Var,
+    Let,
+    Const,
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +52,32 @@ pub enum Instruction {
         dest: ValueId,
         src: ValueId,
     },
+    VarDecl {
+        kind: VarKind,
+        name: String,
+        init: Option<ValueId>,
+    },
+    AssignVar {
+        name: String,
+        src: ValueId,
+    },
+    ExprStmt {
+        value: ValueId,
+    },
+    VarRef {
+        dest: ValueId,
+        name: String,
+    },
+    Member {
+        object: ValueId,
+        property: String,
+        dest: ValueId,
+    },
+    MemberComputed {
+        object: ValueId,
+        property: ValueId,
+        dest: ValueId,
+    },
     BinOp {
         op: BinOp,
         lhs: ValueId,
@@ -56,7 +90,7 @@ pub enum Instruction {
         dest: ValueId,
     },
     Call {
-        func: String,
+        callee: ValueId,
         args: Vec<ValueId>,
         dest: ValueId,
     },
@@ -149,10 +183,11 @@ pub type TypeId = usize;
 pub struct IrBuilder {
     next_value: ValueId,
     next_block: BlockId,
-    locals: HashMap<String, ValueId>,
     functions: Vec<Function>,
     types: Vec<TypeDef>,
     globals: Vec<Global>,
+    imports: Vec<ImportStmt>,
+    exports: Vec<ExportStmt>,
 }
 
 impl IrBuilder {
@@ -160,21 +195,52 @@ impl IrBuilder {
         Self {
             next_value: 0,
             next_block: 0,
-            locals: HashMap::new(),
             functions: Vec::new(),
             types: Vec::new(),
             globals: Vec::new(),
+            imports: Vec::new(),
+            exports: Vec::new(),
         }
     }
 
     pub fn build(&mut self, source: &SourceFile) -> Result<Module, IrError> {
+        let mut init_instructions = Vec::new();
+
         for stmt in &source.statements {
-            self.translate_statement(stmt)?;
+            match stmt {
+                Stmt::Function(f) => self.translate_function(f)?,
+                Stmt::Struct(s) => self.translate_struct(s)?,
+                Stmt::Variable(v) => self.translate_variable_stmt(v, &mut init_instructions)?,
+                Stmt::Expr(e) => {
+                    let value = self.translate_expression(&e.expr, &mut init_instructions)?;
+                    init_instructions.push(Instruction::ExprStmt { value });
+                }
+                Stmt::Import(i) => self.imports.push(i.clone()),
+                Stmt::Export(e) => self.exports.push(e.clone()),
+                _ => {}
+            }
         }
+
+        if !init_instructions.is_empty() {
+            let block_id = self.new_block();
+            self.functions.push(Function {
+                id: "__argon_init".to_string(),
+                params: Vec::new(),
+                return_type: None,
+                body: vec![BasicBlock {
+                    id: block_id,
+                    instructions: init_instructions,
+                    terminator: Terminator::Return(None),
+                }],
+            });
+        }
+
         Ok(Module {
             functions: self.functions.clone(),
             types: self.types.clone(),
             globals: self.globals.clone(),
+            imports: self.imports.clone(),
+            exports: self.exports.clone(),
         })
     }
 
@@ -190,15 +256,6 @@ impl IrBuilder {
         b
     }
 
-    fn translate_statement(&mut self, stmt: &Stmt) -> Result<(), IrError> {
-        match stmt {
-            Stmt::Function(f) => self.translate_function(f),
-            Stmt::Variable(v) => self.translate_variable(v),
-            Stmt::Struct(s) => self.translate_struct(s),
-            _ => Ok(()),
-        }
-    }
-
     fn translate_function(&mut self, f: &FunctionDecl) -> Result<(), IrError> {
         let func_name = f.id.as_ref().map(|i| i.sym.clone()).unwrap_or_default();
 
@@ -210,8 +267,6 @@ impl IrBuilder {
                     name: id.name.sym.clone(),
                     ty,
                 });
-                let v = self.new_value();
-                self.locals.insert(id.name.sym.clone(), v);
             }
         }
 
@@ -255,8 +310,6 @@ impl IrBuilder {
             body,
         });
 
-        self.locals.clear();
-
         Ok(())
     }
 
@@ -267,107 +320,29 @@ impl IrBuilder {
     ) -> Result<(), IrError> {
         match stmt {
             Stmt::Variable(v) => {
-                for decl in &v.declarations {
-                    if let Pattern::Identifier(id) = &decl.id {
-                        let dest = self.new_value();
-                        if let Some(init) = &decl.init {
-                            let _src = self.translate_expression(init, instructions)?;
-                        }
-                        self.locals.insert(id.name.sym.clone(), dest);
-                    }
-                }
+                self.translate_variable_stmt(v, instructions)?;
             }
             Stmt::Return(r) => {
-                let value = r
-                    .argument
-                    .as_ref()
-                    .and_then(|e| self.translate_expression(e, instructions).ok());
+                let value = if let Some(arg) = &r.argument {
+                    Some(self.translate_expression(arg, instructions)?)
+                } else {
+                    None
+                };
                 instructions.push(Instruction::Return { value });
             }
             Stmt::Expr(e) => {
-                self.translate_expression(&e.expr, instructions)?;
+                let value = self.translate_expression(&e.expr, instructions)?;
+                instructions.push(Instruction::ExprStmt { value });
             }
             Stmt::Block(b) => {
                 for s in &b.statements {
                     self.translate_statement_to_instructions(s, instructions)?;
                 }
             }
-            Stmt::If(i) => {
-                let cond = self.translate_expression(&i.condition, instructions)?;
-                let then_block = self.new_block();
-                let else_block = self.new_block();
-                let after_block = self.new_block();
-
-                instructions.push(Instruction::Branch {
-                    cond,
-                    then: then_block,
-                    else_: else_block,
-                });
-
-                let mut then_instrs = Vec::new();
-                self.translate_statement_to_instructions(&i.consequent, &mut then_instrs)?;
-                if !matches!(then_instrs.last(), Some(Instruction::Return { .. })) {
-                    then_instrs.push(Instruction::Jump {
-                        target: after_block,
-                    });
-                }
-
-                let mut else_instrs = Vec::new();
-                if let Some(ref alt) = i.alternate {
-                    self.translate_statement_to_instructions(alt, &mut else_instrs)?;
-                }
-                if !matches!(else_instrs.last(), Some(Instruction::Return { .. })) {
-                    else_instrs.push(Instruction::Jump {
-                        target: after_block,
-                    });
-                }
-
-                self.functions.last_mut().unwrap().body.push(BasicBlock {
-                    id: then_block,
-                    instructions: then_instrs,
-                    terminator: Terminator::Unreachable,
-                });
-                self.functions.last_mut().unwrap().body.push(BasicBlock {
-                    id: else_block,
-                    instructions: else_instrs,
-                    terminator: Terminator::Unreachable,
-                });
-                self.functions.last_mut().unwrap().body.push(BasicBlock {
-                    id: after_block,
-                    instructions: Vec::new(),
-                    terminator: Terminator::Unreachable,
-                });
-            }
-            Stmt::While(w) => {
-                let loop_block = self.new_block();
-                let after_block = self.new_block();
-
-                instructions.push(Instruction::Jump { target: loop_block });
-
-                let mut loop_instrs = Vec::new();
-                let cond = self.translate_expression(&w.condition, &mut loop_instrs)?;
-                loop_instrs.push(Instruction::Branch {
-                    cond,
-                    then: loop_block,
-                    else_: after_block,
-                });
-
-                self.translate_statement_to_instructions(&w.body, &mut loop_instrs)?;
-                if !matches!(loop_instrs.last(), Some(Instruction::Return { .. })) {
-                    loop_instrs.push(Instruction::Jump { target: loop_block });
-                }
-
-                self.functions.last_mut().unwrap().body.push(BasicBlock {
-                    id: loop_block,
-                    instructions: loop_instrs,
-                    terminator: Terminator::Unreachable,
-                });
-                self.functions.last_mut().unwrap().body.push(BasicBlock {
-                    id: after_block,
-                    instructions: Vec::new(),
-                    terminator: Terminator::Unreachable,
-                });
-            }
+            Stmt::If(_) => return Err(IrError::Unsupported("if statement".to_string())),
+            Stmt::While(_) => return Err(IrError::Unsupported("while loop".to_string())),
+            Stmt::For(_) => return Err(IrError::Unsupported("for loop".to_string())),
+            Stmt::DoWhile(_) => return Err(IrError::Unsupported("do-while loop".to_string())),
             _ => {}
         }
         Ok(())
@@ -392,12 +367,35 @@ impl IrBuilder {
                 Ok(dest)
             }
             Expr::Identifier(id) => {
-                if let Some(&v) = self.locals.get(&id.sym) {
-                    Ok(v)
-                } else {
-                    let dest = self.new_value();
-                    Ok(dest)
+                let dest = self.new_value();
+                instructions.push(Instruction::VarRef {
+                    dest,
+                    name: id.sym.clone(),
+                });
+                Ok(dest)
+            }
+            Expr::Member(m) => {
+                let object = self.translate_expression(&m.object, instructions)?;
+                let dest = self.new_value();
+
+                if !m.computed {
+                    if let Expr::Identifier(prop) = &*m.property {
+                        instructions.push(Instruction::Member {
+                            object,
+                            property: prop.sym.clone(),
+                            dest,
+                        });
+                        return Ok(dest);
+                    }
                 }
+
+                let property = self.translate_expression(&m.property, instructions)?;
+                instructions.push(Instruction::MemberComputed {
+                    object,
+                    property,
+                    dest,
+                });
+                Ok(dest)
             }
             Expr::Binary(b) => {
                 let lhs = self.translate_expression(&b.left, instructions)?;
@@ -445,12 +443,20 @@ impl IrBuilder {
                     }
                 }
                 let dest = self.new_value();
-                let func = "call".to_string();
-                instructions.push(Instruction::Call { func, args, dest });
+                let callee = self.translate_expression(&c.callee, instructions)?;
+                instructions.push(Instruction::Call { callee, args, dest });
                 Ok(dest)
             }
             Expr::Assignment(a) => {
                 let src = self.translate_expression(&a.right, instructions)?;
+                if let AssignmentTarget::Simple(target) = &*a.left {
+                    if let Expr::Identifier(id) = &**target {
+                        instructions.push(Instruction::AssignVar {
+                            name: id.sym.clone(),
+                            src,
+                        });
+                    }
+                }
                 Ok(src)
             }
             _ => {
@@ -460,19 +466,30 @@ impl IrBuilder {
         }
     }
 
-    fn translate_variable(&mut self, v: &VariableStmt) -> Result<(), IrError> {
+    fn translate_variable_stmt(
+        &mut self,
+        v: &VariableStmt,
+        instructions: &mut Vec<Instruction>,
+    ) -> Result<(), IrError> {
         for decl in &v.declarations {
             if let Pattern::Identifier(id) = &decl.id {
-                let dest = self.new_value();
-                if let Some(init) = &decl.init {
-                    let src = self.translate_expression(init, &mut vec![])?;
-                    self.globals.push(Global {
-                        name: id.name.sym.clone(),
-                        ty: 0,
-                        init: Some(src),
-                    });
-                }
-                self.locals.insert(id.name.sym.clone(), dest);
+                let init = if let Some(init) = &decl.init {
+                    Some(self.translate_expression(init, instructions)?)
+                } else {
+                    None
+                };
+
+                let kind = match v.kind {
+                    VariableKind::Var => VarKind::Var,
+                    VariableKind::Let => VarKind::Let,
+                    VariableKind::Const => VarKind::Const,
+                };
+
+                instructions.push(Instruction::VarDecl {
+                    kind,
+                    name: id.name.sym.clone(),
+                    init,
+                });
             }
         }
         Ok(())
