@@ -245,7 +245,7 @@ impl JsCodegen {
 
             let mut values: std::collections::HashMap<argon_ir::ValueId, String> =
                 std::collections::HashMap::new();
-            self.emit_ir_instructions_cfg(&block.instructions, &mut values)?;
+            self.emit_ir_instructions_cfg_with_prefix(&block.instructions, &mut values, "            ")?;
 
             match &block.terminator {
                 IrTerm::Jump(target) => {
@@ -299,10 +299,11 @@ impl JsCodegen {
         Ok(())
     }
 
-    fn emit_ir_instructions_cfg(
+    fn emit_ir_instructions_cfg_with_prefix(
         &mut self,
         instructions: &[argon_ir::Instruction],
         values: &mut std::collections::HashMap<argon_ir::ValueId, String>,
+        prefix: &str,
     ) -> Result<(), CodegenError> {
         use argon_ir::Instruction as IrInst;
 
@@ -452,8 +453,65 @@ impl JsCodegen {
                         .unwrap_or_else(|| "undefined".to_string());
                     values.insert(*dest, format!("({} ? {} : {})", cond, then_value, else_value));
                 }
+                IrInst::ThrowStmt { arg } => {
+                    let expr =
+                        values.get(arg).cloned().unwrap_or_else(|| "undefined".to_string());
+                    self.output.push_str(prefix);
+                    self.output.push_str("throw ");
+                    self.output.push_str(&expr);
+                    self.output.push_str(";\n");
+                }
+                IrInst::Try {
+                    try_body,
+                    catch,
+                    finally_body,
+                } => {
+                    self.output.push_str(prefix);
+                    self.output.push_str("try {\n");
+                    let mut nested_prefix = String::new();
+                    nested_prefix.push_str(prefix);
+                    nested_prefix.push_str("    ");
+                    self.emit_ir_instructions_cfg_with_prefix(
+                        try_body,
+                        values,
+                        &nested_prefix,
+                    )?;
+                    self.output.push_str(prefix);
+                    self.output.push_str("}");
+
+                    if let Some(c) = catch {
+                        self.output.push_str(" catch");
+                        if let Some(ref p) = c.param {
+                            self.output.push_str(" (");
+                            self.output.push_str(p);
+                            self.output.push_str(")");
+                        }
+                        self.output.push_str(" {\n");
+                        self.emit_ir_instructions_cfg_with_prefix(
+                            &c.body,
+                            values,
+                            &nested_prefix,
+                        )?;
+                        self.output.push_str(prefix);
+                        self.output.push_str("}");
+                    }
+
+                    if let Some(f) = finally_body {
+                        self.output.push_str(" finally {\n");
+                        self.emit_ir_instructions_cfg_with_prefix(
+                            f,
+                            values,
+                            &nested_prefix,
+                        )?;
+                        self.output.push_str(prefix);
+                        self.output.push_str("}");
+                    }
+
+                    self.output.push_str("\n");
+                }
                 IrInst::VarDecl { name, init, .. } => {
-                    self.output.push_str("            var ");
+                    self.output.push_str(prefix);
+                    self.output.push_str("var ");
                     self.output.push_str(name);
                     if let Some(v) = init {
                         let expr =
@@ -466,7 +524,7 @@ impl JsCodegen {
                 IrInst::AssignVar { name, src } => {
                     let expr =
                         values.get(src).cloned().unwrap_or_else(|| "undefined".to_string());
-                    self.output.push_str("            ");
+                    self.output.push_str(prefix);
                     self.output.push_str(name);
                     self.output.push_str(" = ");
                     self.output.push_str(&expr);
@@ -477,7 +535,7 @@ impl JsCodegen {
                         .get(value)
                         .cloned()
                         .unwrap_or_else(|| "undefined".to_string());
-                    self.output.push_str("            ");
+                    self.output.push_str(prefix);
                     self.output.push_str(&expr);
                     self.output.push_str(";\n");
                 }
@@ -498,13 +556,46 @@ impl JsCodegen {
         block: &argon_ir::BasicBlock,
         is_init: bool,
     ) -> Result<(), CodegenError> {
-        use argon_ir::Instruction as IrInst;
         use argon_ir::Terminator as IrTerm;
 
         let mut values: std::collections::HashMap<argon_ir::ValueId, String> =
             std::collections::HashMap::new();
 
-        for inst in &block.instructions {
+        self.emit_ir_instructions_block_with_prefix(&block.instructions, &mut values, "    ")?;
+
+        if !is_init {
+            match &block.terminator {
+                IrTerm::Return(Some(v)) => {
+                    let expr =
+                        values.get(v).cloned().unwrap_or_else(|| "undefined".to_string());
+                    self.output.push_str("    return ");
+                    self.output.push_str(&expr);
+                    self.output.push_str(";\n");
+                }
+                IrTerm::Return(None) => {
+                    self.output.push_str("    return;\n");
+                }
+                _ => {
+                    return Err(CodegenError::Unsupported(format!(
+                        "unsupported IR terminator: {:?}",
+                        block.terminator
+                    )));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn emit_ir_instructions_block_with_prefix(
+        &mut self,
+        instructions: &[argon_ir::Instruction],
+        values: &mut std::collections::HashMap<argon_ir::ValueId, String>,
+        prefix: &str,
+    ) -> Result<(), CodegenError> {
+        use argon_ir::Instruction as IrInst;
+
+        for inst in instructions {
             match inst {
                 IrInst::ObjectLit { dest, props } => {
                     let mut parts = Vec::new();
@@ -547,12 +638,67 @@ impl JsCodegen {
                         values.get(src).cloned().unwrap_or_else(|| "undefined".to_string());
                     values.insert(*dest, format!("({} = {})", name, expr));
                 }
+                IrInst::ThrowStmt { arg } => {
+                    let expr =
+                        values.get(arg).cloned().unwrap_or_else(|| "undefined".to_string());
+                    self.output.push_str(prefix);
+                    self.output.push_str("throw ");
+                    self.output.push_str(&expr);
+                    self.output.push_str(";\n");
+                }
+                IrInst::Try {
+                    try_body,
+                    catch,
+                    finally_body,
+                } => {
+                    self.output.push_str(prefix);
+                    self.output.push_str("try {\n");
+
+                    let mut nested_prefix = String::new();
+                    nested_prefix.push_str(prefix);
+                    nested_prefix.push_str("    ");
+                    self.emit_ir_instructions_block_with_prefix(
+                        try_body,
+                        values,
+                        &nested_prefix,
+                    )?;
+
+                    self.output.push_str(prefix);
+                    self.output.push_str("}");
+
+                    if let Some(c) = catch {
+                        self.output.push_str(" catch");
+                        if let Some(ref p) = c.param {
+                            self.output.push_str(" (");
+                            self.output.push_str(p);
+                            self.output.push_str(")");
+                        }
+                        self.output.push_str(" {\n");
+                        self.emit_ir_instructions_block_with_prefix(
+                            &c.body,
+                            values,
+                            &nested_prefix,
+                        )?;
+                        self.output.push_str(prefix);
+                        self.output.push_str("}");
+                    }
+
+                    if let Some(f) = finally_body {
+                        self.output.push_str(" finally {\n");
+                        self.emit_ir_instructions_block_with_prefix(f, values, &nested_prefix)?;
+                        self.output.push_str(prefix);
+                        self.output.push_str("}");
+                    }
+
+                    self.output.push_str("\n");
+                }
                 IrInst::Member {
                     object,
                     property,
                     dest,
                 } => {
-                    let obj = values.get(object).cloned().unwrap_or_else(|| "undefined".to_string());
+                    let obj =
+                        values.get(object).cloned().unwrap_or_else(|| "undefined".to_string());
                     values.insert(*dest, format!("{}.{}", obj, property));
                 }
                 IrInst::MemberComputed {
@@ -560,7 +706,8 @@ impl JsCodegen {
                     property,
                     dest,
                 } => {
-                    let obj = values.get(object).cloned().unwrap_or_else(|| "undefined".to_string());
+                    let obj =
+                        values.get(object).cloned().unwrap_or_else(|| "undefined".to_string());
                     let prop = values
                         .get(property)
                         .cloned()
@@ -633,10 +780,13 @@ impl JsCodegen {
                         .get(else_value)
                         .cloned()
                         .unwrap_or_else(|| "undefined".to_string());
-                    values.insert(*dest, format!("({} ? {} : {})", cond, then_value, else_value));
+                    values.insert(
+                        *dest,
+                        format!("({} ? {} : {})", cond, then_value, else_value),
+                    );
                 }
                 IrInst::VarDecl { kind, name, init } => {
-                    self.output.push_str("    ");
+                    self.output.push_str(prefix);
                     self.output.push_str(match kind {
                         argon_ir::VarKind::Var => "var ",
                         argon_ir::VarKind::Let => "let ",
@@ -654,7 +804,7 @@ impl JsCodegen {
                 IrInst::AssignVar { name, src } => {
                     let expr =
                         values.get(src).cloned().unwrap_or_else(|| "undefined".to_string());
-                    self.output.push_str("    ");
+                    self.output.push_str(prefix);
                     self.output.push_str(name);
                     self.output.push_str(" = ");
                     self.output.push_str(&expr);
@@ -665,7 +815,7 @@ impl JsCodegen {
                         .get(value)
                         .cloned()
                         .unwrap_or_else(|| "undefined".to_string());
-                    self.output.push_str("    ");
+                    self.output.push_str(prefix);
                     self.output.push_str(&expr);
                     self.output.push_str(";\n");
                 }
@@ -674,27 +824,6 @@ impl JsCodegen {
                     return Err(CodegenError::Unsupported(format!(
                         "unsupported IR instruction: {:?}",
                         inst
-                    )));
-                }
-            }
-        }
-
-        if !is_init {
-            match &block.terminator {
-                IrTerm::Return(Some(v)) => {
-                    let expr =
-                        values.get(v).cloned().unwrap_or_else(|| "undefined".to_string());
-                    self.output.push_str("    return ");
-                    self.output.push_str(&expr);
-                    self.output.push_str(";\n");
-                }
-                IrTerm::Return(None) => {
-                    self.output.push_str("    return;\n");
-                }
-                _ => {
-                    return Err(CodegenError::Unsupported(format!(
-                        "unsupported IR terminator: {:?}",
-                        block.terminator
                     )));
                 }
             }

@@ -80,6 +80,14 @@ pub enum Instruction {
         src: ValueId,
         dest: ValueId,
     },
+    ThrowStmt {
+        arg: ValueId,
+    },
+    Try {
+        try_body: Vec<Instruction>,
+        catch: Option<TryCatch>,
+        finally_body: Option<Vec<Instruction>>,
+    },
     ExprStmt {
         value: ValueId,
     },
@@ -133,6 +141,12 @@ pub enum Instruction {
         dest: ValueId,
         value: ConstValue,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct TryCatch {
+    pub param: Option<String>,
+    pub body: Vec<Instruction>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -692,6 +706,45 @@ impl IrBuilder {
         Ok(())
     }
 
+    fn translate_flat_stmt_list(&mut self, stmts: &[Stmt]) -> Result<Vec<Instruction>, IrError> {
+        let mut instructions = Vec::new();
+        for stmt in stmts {
+            self.translate_flat_stmt(stmt, &mut instructions)?;
+        }
+        Ok(instructions)
+    }
+
+    fn translate_flat_stmt(
+        &mut self,
+        stmt: &Stmt,
+        instructions: &mut Vec<Instruction>,
+    ) -> Result<(), IrError> {
+        match stmt {
+            Stmt::Variable(v) => self.translate_variable_stmt(v, instructions),
+            Stmt::Expr(e) => {
+                let value = self.translate_expression(&e.expr, instructions)?;
+                instructions.push(Instruction::ExprStmt { value });
+                Ok(())
+            }
+            Stmt::Throw(t) => {
+                let arg = self.translate_expression(&t.argument, instructions)?;
+                instructions.push(Instruction::ThrowStmt { arg });
+                Ok(())
+            }
+            Stmt::Block(b) => {
+                for s in &b.statements {
+                    self.translate_flat_stmt(s, instructions)?;
+                }
+                Ok(())
+            }
+            Stmt::Empty(_) => Ok(()),
+            _ => Err(IrError::Unsupported(format!(
+                "statement in try/catch/finally: {:?}",
+                stmt
+            ))),
+        }
+    }
+
     fn translate_struct(&mut self, s: &StructDecl) -> Result<(), IrError> {
         let fields = s
             .fields
@@ -991,6 +1044,45 @@ impl<'a> FunctionLowerer<'a> {
                     .builder
                     .translate_expression(&e.expr, &mut self.current_instructions)?;
                 self.current_instructions.push(Instruction::ExprStmt { value });
+                Ok(false)
+            }
+            Stmt::Throw(t) => {
+                let arg = self
+                    .builder
+                    .translate_expression(&t.argument, &mut self.current_instructions)?;
+                self.current_instructions.push(Instruction::ThrowStmt { arg });
+                Ok(false)
+            }
+            Stmt::Try(t) => {
+                let try_body = self.builder.translate_flat_stmt_list(&t.block.statements)?;
+
+                let catch = if let Some(ref h) = t.handler {
+                    let param = match &h.param {
+                        None => None,
+                        Some(Pattern::Identifier(id)) => Some(id.name.sym.clone()),
+                        Some(_) => {
+                            return Err(IrError::Unsupported(
+                                "catch parameter pattern".to_string(),
+                            ));
+                        }
+                    };
+                    let body = self.builder.translate_flat_stmt_list(&h.body.statements)?;
+                    Some(TryCatch { param, body })
+                } else {
+                    None
+                };
+
+                let finally_body = if let Some(ref f) = t.finalizer {
+                    Some(self.builder.translate_flat_stmt_list(&f.statements)?)
+                } else {
+                    None
+                };
+
+                self.current_instructions.push(Instruction::Try {
+                    try_body,
+                    catch,
+                    finally_body,
+                });
                 Ok(false)
             }
             Stmt::Return(r) => {

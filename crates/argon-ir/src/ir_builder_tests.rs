@@ -420,3 +420,37 @@ mod export_translation {
                 && e.specifiers.iter().any(|s| s.orig.sym == "foo")));
     }
 }
+
+mod try_catch_translation {
+    use super::*;
+    use crate::Instruction;
+
+    #[test]
+    fn translates_try_catch_finally() {
+        let source = "function f(): void { try { const x = 1; throw x; } catch (e) { const y = e; } finally { const z = 3; } }";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+
+        let module = builder.build(&ast).unwrap();
+        let f = module.functions.iter().find(|f| f.id == "f").unwrap();
+
+        let mut saw_try = false;
+        let mut saw_throw = false;
+        for block in &f.body {
+            for inst in &block.instructions {
+                match inst {
+                    Instruction::Try { try_body, .. } => {
+                        saw_try = true;
+                        if try_body.iter().any(|i| matches!(i, Instruction::ThrowStmt { .. })) {
+                            saw_throw = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        assert!(saw_try);
+        assert!(saw_throw);
+    }
+}

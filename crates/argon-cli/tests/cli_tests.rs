@@ -65,6 +65,33 @@ fn test_compile_writes_source_map_when_enabled() {
 }
 
 #[test]
+fn test_compile_try_catch_finally() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("try.arg");
+    fs::write(
+        &source_file,
+        "function f(): void { try { const x = 1; throw x; } catch (e) { const y = e; } finally { const z = 3; } }\nf();\n",
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(temp_dir.path().join("output.js"))
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
+        .success();
+
+    let output = fs::read_to_string(temp_dir.path().join("output.js")).unwrap();
+    assert!(output.contains("try {"));
+    assert!(output.contains("catch (e)"));
+    assert!(output.contains("finally {"));
+    assert!(output.contains("throw x"));
+}
+
+#[test]
 fn test_compile_logical_conditional_array_and_assignment() {
     let temp_dir = tempfile::tempdir().unwrap();
     let source_file = temp_dir.path().join("exprs.arg");

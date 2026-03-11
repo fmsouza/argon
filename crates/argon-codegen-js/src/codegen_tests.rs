@@ -297,4 +297,19 @@ mod ir_codegen {
         assert!(output.contains("x = 1"));
         assert!(!output.contains("\n    1;\n"));
     }
+
+    #[test]
+    fn generates_try_catch_finally_via_ir() {
+        let source = "function f(): void { try { const x = 1; throw x; } catch (e) { const y = e; } finally { const z = 3; } }\n";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+        let ir = builder.build(&ast).unwrap();
+        let mut codegen = JsCodegen::new();
+
+        let output = codegen.generate(&ir).unwrap();
+        assert!(output.contains("try {"));
+        assert!(output.contains("catch (e)"));
+        assert!(output.contains("finally {"));
+        assert!(output.contains("throw x"));
+    }
 }
