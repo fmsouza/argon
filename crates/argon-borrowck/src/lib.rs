@@ -64,7 +64,7 @@ struct FunctionBorrowContract {
     param_borrows: Vec<Option<BorrowKind>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct BorrowBinding {
     source: String,
     kind: BorrowKind,
@@ -329,6 +329,208 @@ impl BorrowChecker {
         }
 
         Ok(())
+    }
+
+    fn merge_branch_locals(
+        &self,
+        base: &HashMap<String, VariableState>,
+        then_locals: &HashMap<String, VariableState>,
+        else_locals: &HashMap<String, VariableState>,
+    ) -> HashMap<String, VariableState> {
+        let mut merged = HashMap::new();
+
+        for (name, base_state) in base {
+            let then_state = then_locals.get(name).unwrap_or(base_state);
+            let else_state = else_locals.get(name).unwrap_or(base_state);
+
+            let mut state = base_state.clone();
+            state.ownership = Self::merge_ownership(&then_state.ownership, &else_state.ownership);
+            merged.insert(name.clone(), state);
+        }
+
+        merged
+    }
+
+    fn merge_ownership(then_ownership: &Ownership, else_ownership: &Ownership) -> Ownership {
+        if matches!(then_ownership, Ownership::Moved) || matches!(else_ownership, Ownership::Moved) {
+            return Ownership::Moved;
+        }
+
+        let has_mut_borrow = matches!(then_ownership, Ownership::Borrowed(BorrowKind::Mutable))
+            || matches!(else_ownership, Ownership::Borrowed(BorrowKind::Mutable));
+        if has_mut_borrow {
+            return Ownership::Borrowed(BorrowKind::Mutable);
+        }
+
+        let has_shared_borrow = matches!(then_ownership, Ownership::Borrowed(BorrowKind::Shared))
+            || matches!(else_ownership, Ownership::Borrowed(BorrowKind::Shared));
+        if has_shared_borrow {
+            return Ownership::Borrowed(BorrowKind::Shared);
+        }
+
+        if matches!(then_ownership, Ownership::SharedOwner)
+            || matches!(else_ownership, Ownership::SharedOwner)
+        {
+            return Ownership::SharedOwner;
+        }
+
+        if matches!(then_ownership, Ownership::Copied) || matches!(else_ownership, Ownership::Copied) {
+            return Ownership::Copied;
+        }
+
+        Ownership::Owned
+    }
+
+    fn merge_branch_borrows(
+        &self,
+        then_borrows: &HashMap<String, Vec<Borrow>>,
+        else_borrows: &HashMap<String, Vec<Borrow>>,
+    ) -> HashMap<String, Vec<Borrow>> {
+        let mut merged = HashMap::new();
+
+        let mut names: HashSet<String> = HashSet::new();
+        names.extend(then_borrows.keys().cloned());
+        names.extend(else_borrows.keys().cloned());
+
+        for name in names {
+            let then_list = then_borrows.get(&name).cloned().unwrap_or_default();
+            let else_list = else_borrows.get(&name).cloned().unwrap_or_default();
+            let list = Self::merge_borrow_lists(&then_list, &else_list);
+            if !list.is_empty() {
+                merged.insert(name, list);
+            }
+        }
+
+        merged
+    }
+
+    fn merge_borrow_lists(then_list: &[Borrow], else_list: &[Borrow]) -> Vec<Borrow> {
+        let pick_mut = then_list
+            .iter()
+            .find(|b| b.kind == BorrowKind::Mutable)
+            .cloned()
+            .or_else(|| {
+                else_list
+                    .iter()
+                    .find(|b| b.kind == BorrowKind::Mutable)
+                    .cloned()
+            });
+
+        if let Some(borrow) = pick_mut {
+            return vec![borrow];
+        }
+
+        if then_list.len() >= else_list.len() {
+            then_list.to_vec()
+        } else {
+            else_list.to_vec()
+        }
+    }
+
+    fn merge_branch_bindings(
+        &self,
+        merged_locals: &HashMap<String, VariableState>,
+        then_bindings: &HashMap<String, BorrowBinding>,
+        else_bindings: &HashMap<String, BorrowBinding>,
+        merged_remaining_uses: &HashMap<String, usize>,
+    ) -> HashMap<String, BorrowBinding> {
+        let mut merged_bindings = HashMap::new();
+
+        for (name, count) in merged_remaining_uses {
+            if *count == 0 || !merged_locals.contains_key(name) {
+                continue;
+            }
+
+            let binding = match (then_bindings.get(name), else_bindings.get(name)) {
+                (Some(then_binding), Some(else_binding)) => {
+                    if then_binding == else_binding {
+                        Some(then_binding.clone())
+                    } else {
+                        None
+                    }
+                }
+                (Some(then_binding), None) => Some(then_binding.clone()),
+                (None, Some(else_binding)) => Some(else_binding.clone()),
+                (None, None) => None,
+            };
+
+            if let Some(binding) = binding {
+                merged_bindings.insert(name.clone(), binding);
+            }
+        }
+
+        merged_bindings
+    }
+
+    fn expired_branch_bindings(
+        &self,
+        then_bindings: &HashMap<String, BorrowBinding>,
+        else_bindings: &HashMap<String, BorrowBinding>,
+        merged_remaining_uses: &HashMap<String, usize>,
+    ) -> Vec<BorrowBinding> {
+        let mut names: HashSet<String> = HashSet::new();
+        names.extend(then_bindings.keys().cloned());
+        names.extend(else_bindings.keys().cloned());
+
+        let mut seen: HashSet<(String, BorrowKind)> = HashSet::new();
+        let mut expired = Vec::new();
+
+        for name in names {
+            if merged_remaining_uses.get(&name).copied().unwrap_or(0) > 0 {
+                continue;
+            }
+
+            let candidates = match (then_bindings.get(&name), else_bindings.get(&name)) {
+                (Some(then_binding), Some(else_binding)) => {
+                    if then_binding == else_binding {
+                        vec![then_binding.clone()]
+                    } else {
+                        vec![then_binding.clone(), else_binding.clone()]
+                    }
+                }
+                (Some(then_binding), None) => vec![then_binding.clone()],
+                (None, Some(else_binding)) => vec![else_binding.clone()],
+                (None, None) => Vec::new(),
+            };
+
+            for binding in candidates {
+                let key = (binding.source.clone(), binding.kind);
+                if seen.insert(key) {
+                    expired.push(binding);
+                }
+            }
+        }
+
+        expired
+    }
+
+    fn merge_remaining_uses_after_if(
+        &self,
+        base_remaining_uses: &HashMap<String, usize>,
+        then_remaining_uses: &HashMap<String, usize>,
+        else_remaining_uses: &HashMap<String, usize>,
+    ) -> HashMap<String, usize> {
+        let mut merged = HashMap::new();
+
+        let mut names: HashSet<String> = HashSet::new();
+        names.extend(base_remaining_uses.keys().cloned());
+        names.extend(then_remaining_uses.keys().cloned());
+        names.extend(else_remaining_uses.keys().cloned());
+
+        for name in names {
+            let base = base_remaining_uses.get(&name).copied().unwrap_or(0);
+            let then_count = then_remaining_uses.get(&name).copied().unwrap_or(0);
+            let else_count = else_remaining_uses.get(&name).copied().unwrap_or(0);
+
+            let merged_count = then_count
+                .saturating_add(else_count)
+                .saturating_sub(base);
+            if merged_count > 0 {
+                merged.insert(name, merged_count);
+            }
+        }
+
+        merged
     }
 
     fn count_identifier_uses_in_statements(&self, statements: &[Stmt]) -> HashMap<String, usize> {
@@ -946,15 +1148,70 @@ impl BorrowChecker {
     fn check_if(&mut self, i: &IfStmt) -> Result<(), BorrowError> {
         self.check_expression(&i.condition)?;
 
-        let then_locals = self.locals.clone();
+        let base_locals = self.locals.clone();
+        let base_borrows = self.active_borrows.clone();
+        let base_bindings = self.borrow_bindings.clone();
+        let base_remaining_uses = self
+            .remaining_identifier_uses
+            .last()
+            .cloned()
+            .unwrap_or_default();
+
+        self.locals = base_locals.clone();
+        self.active_borrows = base_borrows.clone();
+        self.borrow_bindings = base_bindings.clone();
+        if let Some(remaining) = self.remaining_identifier_uses.last_mut() {
+            *remaining = base_remaining_uses.clone();
+        }
         self.check_statement(&i.consequent)?;
+        let then_locals = self.locals.clone();
         let then_borrows = self.active_borrows.clone();
-        let _ = then_borrows;
+        let then_bindings = self.borrow_bindings.clone();
+        let then_remaining_uses = self
+            .remaining_identifier_uses
+            .last()
+            .cloned()
+            .unwrap_or_default();
 
-        self.locals = then_locals;
-
+        self.locals = base_locals.clone();
+        self.active_borrows = base_borrows.clone();
+        self.borrow_bindings = base_bindings.clone();
+        if let Some(remaining) = self.remaining_identifier_uses.last_mut() {
+            *remaining = base_remaining_uses.clone();
+        }
         if let Some(ref alt) = i.alternate {
             self.check_statement(alt)?;
+        }
+        let else_locals = self.locals.clone();
+        let else_borrows = self.active_borrows.clone();
+        let else_bindings = self.borrow_bindings.clone();
+        let else_remaining_uses = self
+            .remaining_identifier_uses
+            .last()
+            .cloned()
+            .unwrap_or_default();
+
+        self.locals = self.merge_branch_locals(&base_locals, &then_locals, &else_locals);
+        let merged_remaining_uses = self.merge_remaining_uses_after_if(
+            &base_remaining_uses,
+            &then_remaining_uses,
+            &else_remaining_uses,
+        );
+        let expired_branch_bindings =
+            self.expired_branch_bindings(&then_bindings, &else_bindings, &merged_remaining_uses);
+        let merged_bindings = self.merge_branch_bindings(
+            &self.locals,
+            &then_bindings,
+            &else_bindings,
+            &merged_remaining_uses,
+        );
+        self.active_borrows = self.merge_branch_borrows(&then_borrows, &else_borrows);
+        self.borrow_bindings = merged_bindings;
+        for binding in expired_branch_bindings {
+            self.release_source_borrow(&binding.source, binding.kind)?;
+        }
+        if let Some(remaining) = self.remaining_identifier_uses.last_mut() {
+            *remaining = merged_remaining_uses;
         }
 
         Ok(())

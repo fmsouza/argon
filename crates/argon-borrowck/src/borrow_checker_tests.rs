@@ -936,6 +936,48 @@ mod nll_like_regressions {
         // Assert
         assert!(result.is_err());
     }
+
+    #[test]
+    fn allows_exclusive_mutable_borrows_across_if_else_paths() {
+        // Assign
+        let source = "function f(a: i32): i32 { if (flag) { const m = &mut a; } else { const n = &mut a; } return 0; }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rejects_mutable_borrow_when_shared_borrow_may_live_on_else_path() {
+        // Assign
+        let source = "function f(a: i32): i32 { const r = &a; if (flag) { const m = &mut a; } else { console.log(r); } return 0; }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn allows_mutable_borrow_after_if_when_shared_binding_consumed_on_all_paths() {
+        // Assign
+        let source = "function f(a: i32): i32 { const r = &a; if (flag) { console.log(r); } else { console.log(r); } const m = &mut a; return 0; }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok());
+    }
 }
 
 mod cross_function_borrow_regressions {
