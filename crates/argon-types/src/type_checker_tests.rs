@@ -422,6 +422,42 @@ const b: NumBox = new Box<number>(1);
         // Assert
         assert!(result.is_ok(), "type check error: {:?}", result.err());
     }
+
+    #[test]
+    fn allows_object_literal_assignment_to_instantiated_generic_struct_alias() {
+        // Assign
+        let source = r#"
+struct Container<T> { value: T; }
+type NumberContainer = Container<number>;
+const container: NumberContainer = { value: 42 };
+"#;
+        let ast = parse(source).unwrap();
+        let mut checker = TypeChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok(), "type check error: {:?}", result.err());
+    }
+
+    #[test]
+    fn rejects_object_literal_assignment_with_missing_field_for_generic_struct_alias() {
+        // Assign
+        let source = r#"
+struct Container<T> { value: T; }
+type NumberContainer = Container<number>;
+const container: NumberContainer = { };
+"#;
+        let ast = parse(source).unwrap();
+        let mut checker = TypeChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_err());
+    }
 }
 
 mod generic_constraints {
@@ -443,6 +479,33 @@ const b = id("nope");
 
         // Assert
         assert!(result.is_err());
+    }
+}
+
+mod union_assignability {
+    use super::*;
+
+    #[test]
+    fn allows_returning_either_variant_for_struct_union_return_type() {
+        // Assign
+        let source = r#"
+struct Some { value: i32; }
+struct None {}
+function find(flag: boolean, value: i32): Some | None {
+    if (flag) {
+        return Some { value };
+    }
+    return None {};
+}
+"#;
+        let ast = parse(source).unwrap();
+        let mut checker = TypeChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok(), "type check error: {:?}", result.err());
     }
 }
 

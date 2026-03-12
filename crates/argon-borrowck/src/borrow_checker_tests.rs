@@ -1022,6 +1022,20 @@ mod nll_like_regressions {
     }
 
     #[test]
+    fn allows_reusing_shared_reference_binding_without_move() {
+        // Assign
+        let source = "function f(a: i32): i32 { const r = &a; console.log(r); console.log(r); const m = &mut a; return 0; }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
     fn rejects_mutable_borrow_after_match_without_wildcard_when_binding_may_survive() {
         // Assign
         let source = "function f(a: i32): i32 { const r = &a; match (flag) { 0 => console.log(r), } const m = &mut a; console.log(r); return 0; }";

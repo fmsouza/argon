@@ -1288,6 +1288,7 @@ impl BorrowChecker {
                     lit,
                     Literal::Number(_) | Literal::Boolean(_) | Literal::String(_)
                 ),
+                Expr::Ref(_) => true,
                 _ => false,
             }
         } else {
@@ -2168,6 +2169,7 @@ impl BorrowChecker {
     fn check_moveable(&self, expr: &Expr) -> Result<Ownership, BorrowError> {
         match expr {
             Expr::Literal(_) => Ok(Ownership::Copied),
+            Expr::Ref(_) => Ok(Ownership::Copied),
             Expr::Identifier(id) => {
                 if let Some(state) = self.locals.get(&id.sym) {
                     if state.is_copyable {

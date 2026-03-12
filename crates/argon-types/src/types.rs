@@ -63,6 +63,8 @@ impl Type {
                 | Type::Null
                 | Type::Undefined
                 | Type::Void
+                | Type::Ref(_)
+                | Type::Shared(_)
         )
     }
 

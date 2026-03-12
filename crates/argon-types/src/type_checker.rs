@@ -516,6 +516,14 @@ impl TypeChecker {
                     if declared_ty != self.type_table.unknown()
                         && declared_ty != self.type_table.any()
                     {
+                        if let Expr::Object(obj) = init {
+                            if self.is_struct_or_class_type(declared_ty) {
+                                self.check_object_literal_assignment(obj, declared_ty);
+                                self.env.add_var(id.name.sym.clone(), declared_ty);
+                                continue;
+                            }
+                        }
+
                         self.unify(init_ty, declared_ty);
                         self.env.add_var(id.name.sym.clone(), declared_ty);
                     } else {
@@ -527,6 +535,102 @@ impl TypeChecker {
             }
         }
         Ok(())
+    }
+
+    fn is_struct_or_class_type(&self, ty: TypeId) -> bool {
+        matches!(
+            self.type_table.get(ty),
+            Some(CompType::Struct(_)) | Some(CompType::Class(_))
+        )
+    }
+
+    fn check_object_literal_assignment(&mut self, obj: &ObjectExpression, expected_ty: TypeId) {
+        let (target_name, expected_fields): (String, Vec<FieldDef>) =
+            match self.type_table.get(expected_ty).cloned() {
+                Some(CompType::Struct(def)) => (def.name, def.fields),
+                Some(CompType::Class(def)) => (def.name, def.fields),
+                _ => return,
+            };
+
+        let mut provided_values: HashMap<String, TypeId> = HashMap::new();
+        for prop in &obj.properties {
+            match prop {
+                ObjectProperty::Property(p) => {
+                    if p.computed {
+                        self.errors.push(TypeError::Invalid {
+                            message: format!(
+                                "computed object keys are not supported when assigning to '{}'",
+                                target_name
+                            ),
+                        });
+                        continue;
+                    }
+
+                    let key = match &p.key {
+                        Expr::Identifier(id) => id.sym.clone(),
+                        Expr::Literal(Literal::String(s)) => s.value.clone(),
+                        _ => {
+                            self.errors.push(TypeError::Invalid {
+                                message: format!(
+                                    "unsupported object property key when assigning to '{}'",
+                                    target_name
+                                ),
+                            });
+                            continue;
+                        }
+                    };
+
+                    let value_ty = match &p.value {
+                        ExprOrSpread::Expr(e) => self.infer_expression(e),
+                        ExprOrSpread::Spread(_) => {
+                            self.errors.push(TypeError::Invalid {
+                                message: format!(
+                                    "spread properties are not supported when assigning to '{}'",
+                                    target_name
+                                ),
+                            });
+                            continue;
+                        }
+                    };
+                    provided_values.insert(key, value_ty);
+                }
+                ObjectProperty::Shorthand(id) => {
+                    let value_ty = self.infer_identifier(id);
+                    provided_values.insert(id.sym.clone(), value_ty);
+                }
+                ObjectProperty::Spread(_) => {
+                    self.errors.push(TypeError::Invalid {
+                        message: format!(
+                            "spread properties are not supported when assigning to '{}'",
+                            target_name
+                        ),
+                    });
+                }
+                ObjectProperty::Method(_)
+                | ObjectProperty::Getter(_)
+                | ObjectProperty::Setter(_) => {
+                    self.errors.push(TypeError::Invalid {
+                        message: format!(
+                            "method/getter/setter properties are not supported when assigning to '{}'",
+                            target_name
+                        ),
+                    });
+                }
+            }
+        }
+
+        for expected in expected_fields {
+            if let Some(found_ty) = provided_values.get(&expected.name).copied() {
+                self.unify(found_ty, expected.ty);
+            } else {
+                self.errors.push(TypeError::Invalid {
+                    message: format!(
+                        "missing field '{}' when assigning to '{}'",
+                        expected.name, target_name
+                    ),
+                });
+            }
+        }
     }
 
     fn check_function(&mut self, f: &FunctionDecl) -> Result<(), TypeError> {
@@ -1730,10 +1834,9 @@ impl TypeChecker {
                 }
                 self.unify(fs.return_type, es.return_type);
             }
-            (Some(CompType::Union(types)), _) | (_, Some(CompType::Union(types))) => {
-                let types_copy = types.clone();
-                for ty in types_copy {
-                    self.unify(ty, if found == ty { expected } else { found });
+            (Some(CompType::Union(_)), _) | (_, Some(CompType::Union(_))) => {
+                if !self.is_assignable(found, expected) {
+                    self.errors.push(TypeError::Mismatch { found, expected });
                 }
             }
             _ => {
