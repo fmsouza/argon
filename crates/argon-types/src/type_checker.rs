@@ -1,6 +1,9 @@
 //! Argon - Type checker
 
-use crate::types::{FunctionSig, StructDef, Type as CompType, TypeId, TypeInstantiator, TypeTable};
+use crate::types::{
+    ClassDef, FieldDef, FunctionSig, MethodDef, StructDef, Type as CompType, TypeId,
+    TypeInstantiator, TypeTable,
+};
 use argon_ast::*;
 use std::collections::HashMap;
 
@@ -24,9 +27,24 @@ struct GenericFunctionDef {
 }
 
 #[derive(Debug, Clone)]
+struct GenericStructDef {
+    def: StructDef,
+    type_params: Vec<argon_ast::TypeParam>,
+}
+
+#[derive(Debug, Clone)]
+struct GenericClassDef {
+    def: ClassDef,
+    type_params: Vec<argon_ast::TypeParam>,
+}
+
+#[derive(Debug, Clone)]
 pub struct TypeEnvironment {
     vars: HashMap<String, TypeId>,
     structs: HashMap<String, StructDef>,
+    generic_structs: HashMap<String, GenericStructDef>,
+    classes: HashMap<String, ClassDef>,
+    generic_classes: HashMap<String, GenericClassDef>,
     functions: HashMap<String, FunctionSig>,
     generic_functions: HashMap<String, GenericFunctionDef>,
     type_aliases: HashMap<String, TypeAliasDef>,
@@ -39,6 +57,9 @@ impl TypeEnvironment {
         Self {
             vars: HashMap::new(),
             structs: HashMap::new(),
+            generic_structs: HashMap::new(),
+            classes: HashMap::new(),
+            generic_classes: HashMap::new(),
             functions: HashMap::new(),
             generic_functions: HashMap::new(),
             type_aliases: HashMap::new(),
@@ -61,6 +82,42 @@ impl TypeEnvironment {
 
     pub fn add_struct(&mut self, name: String, def: StructDef) {
         self.structs.insert(name, def);
+    }
+
+    pub fn get_generic_struct(&self, name: &str) -> Option<&GenericStructDef> {
+        self.generic_structs.get(name)
+    }
+
+    pub fn add_generic_struct(
+        &mut self,
+        name: String,
+        def: StructDef,
+        type_params: Vec<argon_ast::TypeParam>,
+    ) {
+        self.generic_structs
+            .insert(name, GenericStructDef { def, type_params });
+    }
+
+    pub fn get_class(&self, name: &str) -> Option<&ClassDef> {
+        self.classes.get(name)
+    }
+
+    pub fn add_class(&mut self, name: String, def: ClassDef) {
+        self.classes.insert(name, def);
+    }
+
+    pub fn get_generic_class(&self, name: &str) -> Option<&GenericClassDef> {
+        self.generic_classes.get(name)
+    }
+
+    pub fn add_generic_class(
+        &mut self,
+        name: String,
+        def: ClassDef,
+        type_params: Vec<argon_ast::TypeParam>,
+    ) {
+        self.generic_classes
+            .insert(name, GenericClassDef { def, type_params });
     }
 
     pub fn get_function(&self, name: &str) -> Option<&FunctionSig> {
@@ -113,6 +170,9 @@ impl TypeEnvironment {
         Self {
             vars: self.vars.clone(),
             structs: self.structs.clone(),
+            generic_structs: self.generic_structs.clone(),
+            classes: self.classes.clone(),
+            generic_classes: self.generic_classes.clone(),
             functions: self.functions.clone(),
             generic_functions: self.generic_functions.clone(),
             type_aliases: self.type_aliases.clone(),
@@ -173,35 +233,147 @@ impl TypeChecker {
                     );
                 }
                 Stmt::Struct(s) => {
-                    self.env.add_struct(
-                        s.id.sym.clone(),
-                        StructDef {
-                            name: s.id.sym.clone(),
-                            fields: vec![],
-                        },
-                    );
+                    let mut local_env = self.env.child();
+                    for type_param in &s.type_params {
+                        let constraint = type_param.constraint.as_ref().map(|c| self.resolve_type(c));
+                        let default = type_param.default.as_ref().map(|d| self.resolve_type(d));
+
+                        let ty = self.type_table.type_param(crate::types::TypeParam {
+                            name: type_param.name.sym.clone(),
+                            constraint,
+                            default,
+                        });
+                        local_env.add_type_param(type_param.name.sym.clone(), ty);
+                    }
+
+                    let old_env = std::mem::replace(&mut self.env, local_env);
+                    let fields: Vec<FieldDef> = s
+                        .fields
+                        .iter()
+                        .map(|f| FieldDef {
+                            name: f.id.sym.clone(),
+                            ty: self.resolve_type(&f.type_annotation),
+                        })
+                        .collect();
+                    self.env = old_env;
+
+                    let struct_def = StructDef {
+                        name: s.id.sym.clone(),
+                        fields,
+                    };
+
+                    if s.type_params.is_empty() {
+                        self.env.add_struct(s.id.sym.clone(), struct_def);
+                    } else {
+                        self.env
+                            .add_generic_struct(s.id.sym.clone(), struct_def, s.type_params.clone());
+                    }
+                }
+                Stmt::Class(c) => {
+                    let mut local_env = self.env.child();
+                    for type_param in &c.type_params {
+                        let constraint = type_param.constraint.as_ref().map(|ct| self.resolve_type(ct));
+                        let default = type_param.default.as_ref().map(|d| self.resolve_type(d));
+
+                        let ty = self.type_table.type_param(crate::types::TypeParam {
+                            name: type_param.name.sym.clone(),
+                            constraint,
+                            default,
+                        });
+                        local_env.add_type_param(type_param.name.sym.clone(), ty);
+                    }
+
+                    let old_env = std::mem::replace(&mut self.env, local_env);
+
+                    let mut fields: Vec<FieldDef> = Vec::new();
+                    let mut methods: Vec<MethodDef> = Vec::new();
+
+                    for member in &c.body.body {
+                        match member {
+                            ClassMember::Field(f) => {
+                                let name = match &f.key {
+                                    Expr::Identifier(id) => id.sym.clone(),
+                                    _ => continue,
+                                };
+                                let ty = f
+                                    .type_annotation
+                                    .as_ref()
+                                    .map(|t| self.resolve_type(t))
+                                    .unwrap_or_else(|| self.type_table.unknown());
+                                fields.push(FieldDef { name, ty });
+                            }
+                            ClassMember::Method(m) => {
+                                let name = match &m.key {
+                                    Expr::Identifier(id) => id.sym.clone(),
+                                    _ => continue,
+                                };
+
+                                let sig = if m.value.type_params.is_empty() {
+                                    self.resolve_function_sig(&m.value)
+                                } else {
+                                    let mut method_env = self.env.child();
+                                    for tp in &m.value.type_params {
+                                        let constraint =
+                                            tp.constraint.as_ref().map(|c| self.resolve_type(c));
+                                        let default =
+                                            tp.default.as_ref().map(|d| self.resolve_type(d));
+                                        let ty = self.type_table.type_param(crate::types::TypeParam {
+                                            name: tp.name.sym.clone(),
+                                            constraint,
+                                            default,
+                                        });
+                                        method_env.add_type_param(tp.name.sym.clone(), ty);
+                                    }
+                                    let old = std::mem::replace(&mut self.env, method_env);
+                                    let sig = self.resolve_function_sig(&m.value);
+                                    self.env = old;
+                                    sig
+                                };
+
+                                methods.push(MethodDef { name, sig });
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    self.env = old_env;
+
+                    let class_def = ClassDef {
+                        name: c.id.sym.clone(),
+                        fields,
+                        methods,
+                    };
+
+                    if c.type_params.is_empty() {
+                        self.env.add_class(c.id.sym.clone(), class_def);
+                    } else {
+                        self.env
+                            .add_generic_class(c.id.sym.clone(), class_def, c.type_params.clone());
+                    }
                 }
                 Stmt::Function(f) | Stmt::AsyncFunction(f) => {
                     if let Some(id) = &f.id {
-                        let param_tys = f
-                            .params
-                            .iter()
-                            .map(|p| {
-                                p.ty.as_ref()
-                                    .map(|t| self.resolve_type(t))
-                                    .unwrap_or_else(|| self.type_table.unknown())
-                            })
-                            .collect();
-                        let return_ty = f
-                            .return_type
-                            .as_ref()
-                            .map(|t| self.resolve_type(t))
-                            .unwrap_or_else(|| self.type_table.void());
+                        let sig = if f.type_params.is_empty() {
+                            self.resolve_function_sig(f)
+                        } else {
+                            let mut local_env = self.env.child();
+                            for type_param in &f.type_params {
+                                let constraint =
+                                    type_param.constraint.as_ref().map(|c| self.resolve_type(c));
+                                let default =
+                                    type_param.default.as_ref().map(|d| self.resolve_type(d));
 
-                        let sig = FunctionSig {
-                            params: param_tys,
-                            return_type: return_ty,
-                            is_async: f.is_async,
+                                let ty = self.type_table.type_param(crate::types::TypeParam {
+                                    name: type_param.name.sym.clone(),
+                                    constraint,
+                                    default,
+                                });
+                                local_env.add_type_param(type_param.name.sym.clone(), ty);
+                            }
+                            let old_env = std::mem::replace(&mut self.env, local_env);
+                            let sig = self.resolve_function_sig(f);
+                            self.env = old_env;
+                            sig
                         };
 
                         if f.type_params.is_empty() {
@@ -217,6 +389,29 @@ impl TypeChecker {
                 }
                 _ => {}
             }
+        }
+    }
+
+    fn resolve_function_sig(&mut self, f: &FunctionDecl) -> FunctionSig {
+        let params = f
+            .params
+            .iter()
+            .map(|p| {
+                p.ty.as_ref()
+                    .map(|t| self.resolve_type(t))
+                    .unwrap_or_else(|| self.type_table.unknown())
+            })
+            .collect();
+        let return_type = f
+            .return_type
+            .as_ref()
+            .map(|t| self.resolve_type(t))
+            .unwrap_or_else(|| self.type_table.void());
+
+        FunctionSig {
+            params,
+            return_type,
+            is_async: f.is_async,
         }
     }
 
@@ -316,53 +511,38 @@ impl TypeChecker {
             let constraint = type_param.constraint.as_ref().map(|c| self.resolve_type(c));
             let default = type_param.default.as_ref().map(|d| self.resolve_type(d));
 
-            let ty = self
-                .type_table
-                .add(CompType::TypeParam(crate::types::TypeParam {
-                    name: type_param.name.sym.clone(),
-                    constraint,
-                    default,
-                }));
+            let ty = self.type_table.type_param(crate::types::TypeParam {
+                name: type_param.name.sym.clone(),
+                constraint,
+                default,
+            });
             local_env.add_type_param(type_param.name.sym.clone(), ty);
         }
 
-        let param_tys: Vec<TypeId> = f
-            .params
-            .iter()
-            .map(|p| {
-                let ty = match &p.ty {
-                    Some(t) => self.resolve_type(t),
-                    None => self.type_table.unknown(),
-                };
-                if let Pattern::Identifier(id) = &p.pat {
-                    local_env.add_var(id.name.sym.clone(), ty);
-                }
-                ty
-            })
-            .collect();
+        // Resolve param/return types with type params in scope.
+        let old_env = std::mem::replace(&mut self.env, local_env);
 
-        let return_ty = match &f.return_type {
-            Some(t) => self.resolve_type(t),
-            None => self.type_table.void(),
-        };
-
-        let func_sig = FunctionSig {
-            params: param_tys.clone(),
-            return_type: return_ty,
-            is_async: f.is_async,
-        };
-
-        if f.type_params.is_empty() {
-            self.env.add_function(func_name.clone(), func_sig);
-        } else {
-            self.env
-                .add_generic_function(func_name.clone(), func_sig, f.type_params.clone());
+        for p in &f.params {
+            let ty = p
+                .ty
+                .as_ref()
+                .map(|t| self.resolve_type(t))
+                .unwrap_or_else(|| self.type_table.unknown());
+            if let Pattern::Identifier(id) = &p.pat {
+                self.env.add_var(id.name.sym.clone(), ty);
+            }
         }
+
+        let return_ty = f
+            .return_type
+            .as_ref()
+            .map(|t| self.resolve_type(t))
+            .unwrap_or_else(|| self.type_table.void());
 
         if let Some(ref borrow) = f.borrow_annotation {
             if let Some(target) = &borrow.target {
-                if target.sym == "this" {
-                    local_env.set_this(Some(self.type_table.object()));
+                if target.sym == "this" && self.env.get_this().is_none() {
+                    self.env.set_this(Some(self.type_table.object()));
                 }
             }
         }
@@ -370,7 +550,6 @@ impl TypeChecker {
         let old_return = self.current_return_type;
         self.current_return_type = Some(return_ty);
 
-        let old_env = std::mem::replace(&mut self.env, local_env);
         for stmt in &f.body.statements {
             self.check_statement(stmt)?;
         }
@@ -396,33 +575,42 @@ impl TypeChecker {
     }
 
     fn check_struct(&mut self, s: &StructDecl) -> Result<(), TypeError> {
-        let fields: Vec<crate::types::FieldDef> = s
-            .fields
-            .iter()
-            .map(|f| crate::types::FieldDef {
-                name: f.id.sym.clone(),
-                ty: self.resolve_type(&f.type_annotation),
-            })
-            .collect();
-
-        let struct_def = StructDef {
-            name: s.id.sym.clone(),
-            fields,
-        };
-
-        self.env.add_struct(s.id.sym.clone(), struct_def);
         Ok(())
     }
 
     fn check_class(&mut self, c: &ClassDecl) -> Result<(), TypeError> {
+        let mut class_env = self.env.child();
+
+        for type_param in &c.type_params {
+            let constraint = type_param.constraint.as_ref().map(|ct| self.resolve_type(ct));
+            let default = type_param.default.as_ref().map(|d| self.resolve_type(d));
+            let ty = self.type_table.type_param(crate::types::TypeParam {
+                name: type_param.name.sym.clone(),
+                constraint,
+                default,
+            });
+            class_env.add_type_param(type_param.name.sym.clone(), ty);
+        }
+
+        let class_ty = self
+            .env
+            .get_class(&c.id.sym)
+            .map(|d| self.type_table.class_def(d.clone()))
+            .or_else(|| self.env.get_generic_class(&c.id.sym).map(|g| self.type_table.class_def(g.def.clone())))
+            .unwrap_or_else(|| self.type_table.object());
+
         for member in &c.body.body {
             match member {
                 ClassMember::Method(m) => {
+                    let mut local_env = class_env.child();
+                    local_env.set_this(Some(class_ty));
+                    let old_env = std::mem::replace(&mut self.env, local_env);
                     self.check_function(&m.value)?;
+                    self.env = old_env;
                 }
                 ClassMember::Constructor(constr) => {
-                    let mut local_env = self.env.child();
-                    local_env.set_this(Some(self.type_table.object()));
+                    let mut local_env = class_env.child();
+                    local_env.set_this(Some(class_ty));
 
                     for param in &constr.params {
                         if let Pattern::Identifier(id) = &param.pat {
@@ -683,6 +871,8 @@ impl TypeChecker {
                     self.infer_type_args(&generic_func, &arg_tys)
                 };
 
+                self.check_generic_constraints(&generic_func.type_params, &type_args);
+
                 let mut instantiator = TypeInstantiator::new();
                 for (param, arg) in generic_func.type_params.iter().zip(type_args.iter()) {
                     instantiator.add_substitution(param.name.sym.clone(), *arg);
@@ -745,13 +935,48 @@ impl TypeChecker {
     }
 
     fn infer_member(&mut self, m: &MemberExpr) -> TypeId {
-        let _obj_ty = self.infer_expression(&m.object);
+        let mut obj_ty = self.infer_expression(&m.object);
 
         if m.computed {
             self.infer_expression(&m.property);
+            return self.type_table.unknown();
         }
 
-        self.type_table.unknown()
+        // Unwrap reference-like shells.
+        loop {
+            match self.type_table.get(obj_ty).cloned() {
+                Some(CompType::Ref(inner))
+                | Some(CompType::MutRef(inner))
+                | Some(CompType::Shared(inner)) => obj_ty = inner,
+                _ => break,
+            }
+        }
+
+        let prop_name = match &*m.property {
+            Expr::Identifier(id) => id.sym.as_str(),
+            _ => return self.type_table.unknown(),
+        };
+
+        match self.type_table.get(obj_ty).cloned() {
+            Some(CompType::Struct(def)) => def
+                .fields
+                .iter()
+                .find(|f| f.name == prop_name)
+                .map(|f| f.ty)
+                .unwrap_or_else(|| self.type_table.unknown()),
+            Some(CompType::Class(def)) => {
+                if let Some(field) = def.fields.iter().find(|f| f.name == prop_name) {
+                    return field.ty;
+                }
+                if let Some(method) = def.methods.iter().find(|m| m.name == prop_name) {
+                    return self
+                        .type_table
+                        .add(CompType::Function(method.sig.clone()));
+                }
+                self.type_table.unknown()
+            }
+            _ => self.type_table.unknown(),
+        }
     }
 
     fn infer_assignment(&mut self, a: &AssignmentExpr) -> TypeId {
@@ -774,7 +999,138 @@ impl TypeChecker {
         right_ty
     }
 
-    fn infer_new(&mut self, n: &NewExpr) -> TypeId {
+    fn infer_new(&mut self, n: &argon_ast::NewExpr) -> TypeId {
+        let arg_tys: Vec<TypeId> = n
+            .arguments
+            .iter()
+            .filter_map(|arg| {
+                if let ExprOrSpread::Expr(e) = arg {
+                    Some(self.infer_expression(e))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if let Expr::Identifier(id) = &*n.callee {
+            if let Some(generic_struct) = self.env.get_generic_struct(&id.sym).cloned() {
+                let type_args: Vec<TypeId> = if !n.type_args.is_empty() {
+                    n.type_args.iter().map(|t| self.resolve_type(t)).collect()
+                } else {
+                    arg_tys.clone()
+                };
+
+                if type_args.len() != generic_struct.type_params.len() {
+                    self.errors.push(TypeError::Invalid {
+                        message: format!(
+                            "generic struct '{}' expects {} type arguments, got {}",
+                            id.sym,
+                            generic_struct.type_params.len(),
+                            type_args.len()
+                        ),
+                    });
+                    return self.type_table.unknown();
+                }
+
+                self.check_generic_constraints(&generic_struct.type_params, &type_args);
+
+                let mut instantiator = TypeInstantiator::new();
+                for (param, arg) in generic_struct.type_params.iter().zip(type_args.iter()) {
+                    instantiator.add_substitution(param.name.sym.clone(), *arg);
+                }
+
+                let instantiated_fields: Vec<FieldDef> = generic_struct
+                    .def
+                    .fields
+                    .iter()
+                    .map(|f| FieldDef {
+                        name: f.name.clone(),
+                        ty: instantiator.instantiate(&mut self.type_table, f.ty),
+                    })
+                    .collect();
+
+                let struct_def = StructDef {
+                    name: id.sym.clone(),
+                    fields: instantiated_fields,
+                };
+
+                return self.type_table.add(CompType::Struct(struct_def));
+            }
+
+            if let Some(struct_def) = self.env.get_struct(&id.sym).cloned() {
+                return self.type_table.add(CompType::Struct(struct_def));
+            }
+
+            if let Some(generic_class) = self.env.get_generic_class(&id.sym).cloned() {
+                let type_args: Vec<TypeId> = if !n.type_args.is_empty() {
+                    n.type_args.iter().map(|t| self.resolve_type(t)).collect()
+                } else {
+                    arg_tys.clone()
+                };
+
+                if type_args.len() != generic_class.type_params.len() {
+                    self.errors.push(TypeError::Invalid {
+                        message: format!(
+                            "generic class '{}' expects {} type arguments, got {}",
+                            id.sym,
+                            generic_class.type_params.len(),
+                            type_args.len()
+                        ),
+                    });
+                    return self.type_table.unknown();
+                }
+
+                self.check_generic_constraints(&generic_class.type_params, &type_args);
+
+                let mut instantiator = TypeInstantiator::new();
+                for (param, arg) in generic_class.type_params.iter().zip(type_args.iter()) {
+                    instantiator.add_substitution(param.name.sym.clone(), *arg);
+                }
+
+                let fields: Vec<FieldDef> = generic_class
+                    .def
+                    .fields
+                    .iter()
+                    .map(|f| FieldDef {
+                        name: f.name.clone(),
+                        ty: instantiator.instantiate(&mut self.type_table, f.ty),
+                    })
+                    .collect();
+
+                let methods: Vec<MethodDef> = generic_class
+                    .def
+                    .methods
+                    .iter()
+                    .map(|m| MethodDef {
+                        name: m.name.clone(),
+                        sig: FunctionSig {
+                            params: m
+                                .sig
+                                .params
+                                .iter()
+                                .map(|p| instantiator.instantiate(&mut self.type_table, *p))
+                                .collect(),
+                            return_type: instantiator
+                                .instantiate(&mut self.type_table, m.sig.return_type),
+                            is_async: m.sig.is_async,
+                        },
+                    })
+                    .collect();
+
+                let class_def = ClassDef {
+                    name: id.sym.clone(),
+                    fields,
+                    methods,
+                };
+
+                return self.type_table.add(CompType::Class(class_def));
+            }
+
+            if let Some(class_def) = self.env.get_class(&id.sym).cloned() {
+                return self.type_table.add(CompType::Class(class_def));
+            }
+        }
+
         for arg in &n.arguments {
             if let ExprOrSpread::Expr(e) = arg {
                 self.infer_expression(e);
@@ -993,6 +1349,115 @@ impl TypeChecker {
                         return ty;
                     }
 
+                    if !r.type_args.is_empty() {
+                        if let Some(generic_struct) = self.env.get_generic_struct(&id.sym).cloned() {
+                            let type_args: Vec<TypeId> =
+                                r.type_args.iter().map(|t| self.resolve_type(t)).collect();
+
+                            if type_args.len() != generic_struct.type_params.len() {
+                                self.errors.push(TypeError::Invalid {
+                                    message: format!(
+                                        "generic struct '{}' expects {} type arguments, got {}",
+                                        id.sym,
+                                        generic_struct.type_params.len(),
+                                        type_args.len()
+                                    ),
+                                });
+                                return self.type_table.unknown();
+                            }
+
+                            self.check_generic_constraints(&generic_struct.type_params, &type_args);
+
+                            let mut instantiator = TypeInstantiator::new();
+                            for (param, arg) in generic_struct
+                                .type_params
+                                .iter()
+                                .zip(type_args.iter())
+                            {
+                                instantiator.add_substitution(param.name.sym.clone(), *arg);
+                            }
+
+                            let fields: Vec<FieldDef> = generic_struct
+                                .def
+                                .fields
+                                .iter()
+                                .map(|f| FieldDef {
+                                    name: f.name.clone(),
+                                    ty: instantiator.instantiate(&mut self.type_table, f.ty),
+                                })
+                                .collect();
+
+                            return self.type_table.add(CompType::Struct(StructDef {
+                                name: id.sym.clone(),
+                                fields,
+                            }));
+                        }
+
+                        if let Some(generic_class) = self.env.get_generic_class(&id.sym).cloned() {
+                            let type_args: Vec<TypeId> =
+                                r.type_args.iter().map(|t| self.resolve_type(t)).collect();
+
+                            if type_args.len() != generic_class.type_params.len() {
+                                self.errors.push(TypeError::Invalid {
+                                    message: format!(
+                                        "generic class '{}' expects {} type arguments, got {}",
+                                        id.sym,
+                                        generic_class.type_params.len(),
+                                        type_args.len()
+                                    ),
+                                });
+                                return self.type_table.unknown();
+                            }
+
+                            self.check_generic_constraints(&generic_class.type_params, &type_args);
+
+                            let mut instantiator = TypeInstantiator::new();
+                            for (param, arg) in generic_class
+                                .type_params
+                                .iter()
+                                .zip(type_args.iter())
+                            {
+                                instantiator.add_substitution(param.name.sym.clone(), *arg);
+                            }
+
+                            let fields: Vec<FieldDef> = generic_class
+                                .def
+                                .fields
+                                .iter()
+                                .map(|f| FieldDef {
+                                    name: f.name.clone(),
+                                    ty: instantiator.instantiate(&mut self.type_table, f.ty),
+                                })
+                                .collect();
+
+                            let methods: Vec<MethodDef> = generic_class
+                                .def
+                                .methods
+                                .iter()
+                                .map(|m| MethodDef {
+                                    name: m.name.clone(),
+                                    sig: FunctionSig {
+                                        params: m
+                                            .sig
+                                            .params
+                                            .iter()
+                                            .map(|p| instantiator.instantiate(&mut self.type_table, *p))
+                                            .collect(),
+                                        return_type: instantiator
+                                            .instantiate(&mut self.type_table, m.sig.return_type),
+                                        is_async: m.sig.is_async,
+                                    },
+                                })
+                                .collect();
+
+                            return self.type_table.add(CompType::Class(ClassDef {
+                                name: id.sym.clone(),
+                                fields,
+                                methods,
+                            }));
+                        }
+                    }
+
                     if r.type_args.is_empty() {
                         if let Some(alias) = self.env.get_type_alias(&id.sym).cloned() {
                             return self.resolve_type_alias(&id.sym, &alias);
@@ -1018,6 +1483,9 @@ impl TypeChecker {
                     }
                     if let Some(struct_def) = self.env.get_struct(&id.sym) {
                         return self.type_table.add(CompType::Struct(struct_def.clone()));
+                    }
+                    if let Some(class_def) = self.env.get_class(&id.sym) {
+                        return self.type_table.add(CompType::Class(class_def.clone()));
                     }
                 }
                 self.type_table.unknown()
@@ -1127,6 +1595,16 @@ impl TypeChecker {
             (Some(CompType::String), Some(CompType::String)) => {}
             (Some(CompType::Boolean), Some(CompType::Boolean)) => {}
             (Some(CompType::Object), Some(CompType::Object)) => {}
+            (Some(CompType::Struct(fs)), Some(CompType::Struct(es))) => {
+                if fs.name != es.name {
+                    self.errors.push(TypeError::Mismatch { found, expected });
+                }
+            }
+            (Some(CompType::Class(fc)), Some(CompType::Class(ec))) => {
+                if fc.name != ec.name {
+                    self.errors.push(TypeError::Mismatch { found, expected });
+                }
+            }
             (Some(CompType::Array(f)), Some(CompType::Array(e))) => {
                 self.unify(f, e);
             }
@@ -1151,11 +1629,68 @@ impl TypeChecker {
             }
         }
     }
+
+    fn is_assignable(&self, found: TypeId, expected: TypeId) -> bool {
+        if found == expected {
+            return true;
+        }
+
+        // Treat `any` and `unknown` as permissive for now (matches existing unify behavior).
+        let any = self.type_table.get_by_name("any");
+        let unknown = self.type_table.get_by_name("unknown");
+
+        if any == Some(found) || any == Some(expected) {
+            return true;
+        }
+        if unknown == Some(found) || unknown == Some(expected) {
+            return true;
+        }
+
+        match (self.type_table.get(found), self.type_table.get(expected)) {
+            (Some(CompType::Number), Some(CompType::Number)) => true,
+            (Some(CompType::String), Some(CompType::String)) => true,
+            (Some(CompType::Boolean), Some(CompType::Boolean)) => true,
+            (Some(CompType::Null), Some(CompType::Null)) => true,
+            (Some(CompType::Undefined), Some(CompType::Undefined)) => true,
+            (Some(CompType::Void), Some(CompType::Void)) => true,
+            (Some(CompType::Array(f)), Some(CompType::Array(e))) => self.is_assignable(*f, *e),
+            (Some(CompType::Ref(f)), Some(CompType::Ref(e))) => self.is_assignable(*f, *e),
+            (Some(CompType::MutRef(f)), Some(CompType::MutRef(e))) => self.is_assignable(*f, *e),
+            (Some(CompType::Shared(f)), Some(CompType::Shared(e))) => self.is_assignable(*f, *e),
+            (Some(CompType::Struct(fs)), Some(CompType::Struct(es))) => fs.name == es.name,
+            (Some(CompType::Class(fc)), Some(CompType::Class(ec))) => fc.name == ec.name,
+            (Some(CompType::Union(types)), _) => {
+                types.iter().all(|t| self.is_assignable(*t, expected))
+            }
+            (_, Some(CompType::Union(types))) => types.iter().any(|t| self.is_assignable(found, *t)),
+            _ => false,
+        }
+    }
+
+    fn check_generic_constraints(&mut self, params: &[argon_ast::TypeParam], type_args: &[TypeId]) {
+        for (param, arg) in params.iter().zip(type_args.iter()) {
+            if let Some(constraint_ast) = &param.constraint {
+                let constraint = self.resolve_type(constraint_ast);
+                if !self.is_assignable(*arg, constraint) {
+                    self.errors.push(TypeError::ConstraintViolation {
+                        param: param.name.sym.clone(),
+                        found: *arg,
+                        constraint,
+                    });
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum TypeError {
     Mismatch { found: TypeId, expected: TypeId },
+    ConstraintViolation {
+        param: String,
+        found: TypeId,
+        constraint: TypeId,
+    },
     NotFound { name: String },
     Invalid { message: String },
     MissingReturn { func: String, expected: TypeId },
@@ -1167,6 +1702,15 @@ impl std::fmt::Display for TypeError {
             TypeError::Mismatch { found, expected } => {
                 write!(f, "Type mismatch: found {}, expected {}", found, expected)
             }
+            TypeError::ConstraintViolation {
+                param,
+                found,
+                constraint,
+            } => write!(
+                f,
+                "Type argument for '{}' does not satisfy constraint: found {}, expected {}",
+                param, found, constraint
+            ),
             TypeError::NotFound { name } => write!(f, "Type not found '{}'", name),
             TypeError::Invalid { message } => write!(f, "Invalid type: {}", message),
             TypeError::MissingReturn { func, expected } => {

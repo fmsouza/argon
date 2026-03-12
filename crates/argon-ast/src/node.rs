@@ -589,6 +589,7 @@ pub struct CallExpr {
 pub struct NewExpr {
     pub callee: Box<Expr>,
     pub arguments: Vec<ExprOrSpread>,
+    pub type_args: Vec<Type>,
     pub span: Span,
 }
 #[derive(Debug, Clone)]

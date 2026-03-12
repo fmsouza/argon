@@ -2124,6 +2124,49 @@ impl Parser {
                     computed: true,
                     span,
                 });
+            } else if self.check(&TokenKind::LessThan) {
+                // Potential generic call: `callee<T>(args)`.
+                // Must not consume `<` when this is actually a comparison (`a < b`), so we
+                // backtrack unless we can parse `<...>` and the next token is `(`.
+                let saved_pos = self.current;
+                let type_args = match self.parse_type_args_opt() {
+                    Ok(args) if !args.is_empty() => args,
+                    Ok(_) => {
+                        self.current = saved_pos;
+                        vec![]
+                    }
+                    Err(_) => {
+                        self.current = saved_pos;
+                        vec![]
+                    }
+                };
+
+                if !type_args.is_empty() && self.match_one(&[TokenKind::OpenParen]) {
+                    let mut args = Vec::new();
+                    let mut first = true;
+                    while !self.check(&TokenKind::CloseParen) && !self.is_at_end() {
+                        if !first {
+                            if !self.check(&TokenKind::CloseParen) {
+                                self.expect_comma()?;
+                            }
+                        } else {
+                            first = false;
+                        }
+                        args.push(ExprOrSpread::Expr(self.parse_expression()?));
+                    }
+                    self.expect(TokenKind::CloseParen)?;
+                    let span = expr.span().start..self.previous().span.end;
+                    expr = Expr::Call(CallExpr {
+                        callee: Box::new(expr),
+                        arguments: args,
+                        type_args,
+                        span,
+                    });
+                } else {
+                    // Not a generic call; restore cursor so `<` can be parsed as a binary operator.
+                    self.current = saved_pos;
+                    break;
+                }
             } else if self.match_one(&[TokenKind::OpenParen]) {
                 let mut args = Vec::new();
                 let mut first = true;
@@ -2197,6 +2240,7 @@ impl Parser {
                     expr = Expr::New(NewExpr {
                         callee: Box::new(expr),
                         arguments: vec![ExprOrSpread::Expr(obj_expr)],
+                        type_args: vec![],
                         span,
                     });
                 } else {
@@ -2522,6 +2566,8 @@ impl Parser {
             let ident = self.expect_identifier()?;
             let callee = argon_ast::Expr::Identifier(ident);
 
+            let type_args = self.parse_type_args_opt()?;
+
             let mut arguments = Vec::new();
             if self.match_one(&[TokenKind::OpenParen]) {
                 while !self.check(&TokenKind::CloseParen) && !self.is_at_end() {
@@ -2536,6 +2582,7 @@ impl Parser {
             return Ok(Expr::New(argon_ast::NewExpr {
                 callee: Box::new(callee),
                 arguments,
+                type_args,
                 span: start..end,
             }));
         }
@@ -2899,14 +2946,56 @@ impl Parser {
         }
 
         let mut args = Vec::new();
-        while !self.check(&TokenKind::GreaterThan) && !self.is_at_end() {
+        while !self.is_type_arg_close() && !self.is_at_end() {
             args.push(self.parse_type()?);
-            if !self.check(&TokenKind::GreaterThan) {
+            if !self.is_type_arg_close() {
                 self.expect_comma()?;
             }
         }
-        self.expect(TokenKind::GreaterThan)?;
+        self.consume_type_arg_close()?;
         Ok(args)
+    }
+
+    fn parse_type_args(&mut self) -> Result<Vec<argon_ast::Type>, ParseError> {
+        self.parse_type_args_opt()
+    }
+
+    fn is_type_arg_close(&self) -> bool {
+        self.check(&TokenKind::GreaterThan)
+            || self.check(&TokenKind::GreaterThanGreaterThan)
+            || self.check(&TokenKind::GreaterThanGreaterThanGreaterThan)
+    }
+
+    fn consume_type_arg_close(&mut self) -> Result<(), ParseError> {
+        if self.match_one(&[TokenKind::GreaterThan]) {
+            return Ok(());
+        }
+
+        // Split `>>` / `>>>` into individual `>` tokens when parsing type arguments.
+        let kind = self.peek().kind;
+        if matches!(
+            kind,
+            TokenKind::GreaterThanGreaterThan | TokenKind::GreaterThanGreaterThanGreaterThan
+        ) {
+            let span = self.peek().span.clone();
+            let split_count = match kind {
+                TokenKind::GreaterThanGreaterThan => 2,
+                TokenKind::GreaterThanGreaterThanGreaterThan => 3,
+                _ => 1,
+            };
+
+            // Replace the current token with a single `>`, then insert the remaining `>` tokens.
+            self.tokens[self.current].kind = TokenKind::GreaterThan;
+            for _ in 1..split_count {
+                self.tokens
+                    .insert(self.current + 1, LexerToken::new(TokenKind::GreaterThan, span.clone()));
+            }
+
+            self.advance();
+            return Ok(());
+        }
+
+        Err(self.parser_error_here("Expected '>'"))
     }
 
     fn expect(&mut self, kind: TokenKind) -> Result<(), ParseError> {

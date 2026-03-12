@@ -361,6 +361,77 @@ mod type_alias_checking {
     }
 }
 
+mod generics_and_members {
+    use super::*;
+
+    #[test]
+    fn type_checks_generic_class_instantiation_and_member_access() {
+        // Assign
+        let source = r#"
+class Container<T> {
+    value: T;
+    constructor(v: T) { this.value = v; }
+    get(): T { return this.value; }
+}
+const container = new Container<number>(42);
+const v: number = container.value;
+const g: number = container.get();
+"#;
+        let ast = parse(source).unwrap();
+        let mut checker = TypeChecker::new();
+
+        // Act
+        let output = checker.check_with_output(&ast);
+
+        // Assert
+        assert!(output.is_ok());
+        let output = output.unwrap();
+        let number_ty = output.type_table.get_by_name("number").unwrap();
+        assert_eq!(output.env.get_var("v"), Some(number_ty));
+        assert_eq!(output.env.get_var("g"), Some(number_ty));
+    }
+
+    #[test]
+    fn resolves_type_alias_to_instantiated_generic_type() {
+        // Assign
+        let source = r#"
+class Box<T> { value: T; constructor(v: T) { this.value = v; } }
+type NumBox = Box<number>;
+const b: NumBox = new Box<number>(1);
+"#;
+        let ast = parse(source).unwrap();
+        let mut checker = TypeChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok(), "type check error: {:?}", result.err());
+    }
+}
+
+mod generic_constraints {
+    use super::*;
+
+    #[test]
+    fn rejects_type_arguments_that_do_not_satisfy_extends_constraint() {
+        // Assign
+        let source = r#"
+function id<T extends number>(x: T): T { return x; }
+const a = id(1);
+const b = id("nope");
+"#;
+        let ast = parse(source).unwrap();
+        let mut checker = TypeChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_err());
+    }
+}
+
 mod reference_type_checking {
     use super::*;
 

@@ -317,6 +317,32 @@ mod jsx_vs_less_than {
         assert!(tokens.iter().any(|t| t.kind == TokenKind::GreaterThan));
         assert!(!tokens.iter().any(|t| t.kind == TokenKind::JsxElementOpen));
     }
+
+    #[test]
+    fn lexes_class_generic_params_and_new_type_args_not_jsx() {
+        // Assign
+        let source = r#"
+class Container<T> {
+    value: T;
+    constructor(v: T) { this.value = v; }
+    get(): T { return this.value; }
+}
+const x = new Container<number>(42);
+"#;
+
+        // Act
+        let result = tokenize(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::LessThan));
+        assert!(tokens.iter().any(|t| t.kind == TokenKind::GreaterThan));
+        assert!(
+            !tokens.iter().any(|t| matches!(t.kind, TokenKind::JsxElementOpen | TokenKind::JsxChild)),
+            "expected no JSX tokens when lexing generic params/type args"
+        );
+    }
 }
 
 mod operator_tokenization {

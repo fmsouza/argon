@@ -330,6 +330,18 @@ mod class_parsing {
         // Assert
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn parses_generic_class_with_method_returning_type_param() {
+        // Assign
+        let source = "class Container<T> { value: T; constructor(v: T) { this.value = v; } get(): T { return this.value; } }";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok(), "parse error: {:?}", result.err());
+    }
 }
 
 mod control_flow_parsing {
@@ -679,6 +691,46 @@ mod generic_declaration_parsing {
     fn parses_generic_struct_declaration() {
         // Assign
         let source = "struct Box<T> { value: T; }";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+}
+
+mod generic_instantiation_parsing {
+    use super::*;
+
+    #[test]
+    fn parses_generic_function_call_with_explicit_type_args() {
+        // Assign
+        let source = "function identity<T>(x: T): T { return x; }\nconst n = identity<number>(1);";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn parses_generic_new_expression_with_explicit_type_args() {
+        // Assign
+        let source = "struct Container<T> { value: T; }\nconst c = new Container<number>(42);";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn parses_nested_generic_type_arguments_with_double_greater_than() {
+        // Assign
+        let source = "type T = Map<string, Vec<number>>;";
 
         // Act
         let result = parse(source);
