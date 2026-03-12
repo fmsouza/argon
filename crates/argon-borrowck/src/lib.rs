@@ -5,7 +5,7 @@
 mod borrow_checker_tests;
 
 use argon_ast::*;
-use argon_types::TypeCheckOutput;
+use argon_types::{Type as CheckedType, TypeCheckOutput, TypeId as CheckedTypeId};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -64,6 +64,12 @@ struct FunctionBorrowContract {
     param_borrows: Vec<Option<BorrowKind>>,
 }
 
+#[derive(Debug, Clone)]
+struct FunctionBorrowContext {
+    return_borrow: Option<BorrowKind>,
+    param_borrows: HashMap<String, Option<BorrowKind>>,
+}
+
 #[allow(dead_code)]
 pub struct BorrowChecker {
     locals: HashMap<String, VariableState>,
@@ -80,6 +86,7 @@ pub struct BorrowChecker {
     thread_access: HashSet<String>,
     type_info: Option<TypeCheckOutput>,
     function_contracts: HashMap<String, FunctionBorrowContract>,
+    current_function_context: Option<FunctionBorrowContext>,
 }
 
 impl BorrowChecker {
@@ -99,6 +106,7 @@ impl BorrowChecker {
             thread_access: HashSet::new(),
             type_info: None,
             function_contracts: HashMap::new(),
+            current_function_context: None,
         }
     }
 
@@ -166,6 +174,15 @@ impl BorrowChecker {
 
     fn param_borrow_kind(&self, param: &Param) -> Option<BorrowKind> {
         let ty = param.ty.as_ref()?;
+        match ty.as_ref() {
+            Type::Ref(_) => Some(BorrowKind::Shared),
+            Type::MutRef(_) => Some(BorrowKind::Mutable),
+            _ => None,
+        }
+    }
+
+    fn return_borrow_kind(&self, return_type: &Option<Box<Type>>) -> Option<BorrowKind> {
+        let ty = return_type.as_ref()?;
         match ty.as_ref() {
             Type::Ref(_) => Some(BorrowKind::Shared),
             Type::MutRef(_) => Some(BorrowKind::Mutable),
@@ -377,6 +394,18 @@ impl BorrowChecker {
         let old_locals = std::mem::take(&mut self.locals);
         let old_borrows = std::mem::take(&mut self.active_borrows);
         let old_returned = std::mem::take(&mut self.returned_borrows);
+        let old_context = self.current_function_context.take();
+
+        let mut param_borrows = HashMap::new();
+        for param in &f.params {
+            if let Pattern::Identifier(id) = &param.pat {
+                param_borrows.insert(id.name.sym.clone(), self.param_borrow_kind(param));
+            }
+        }
+        self.current_function_context = Some(FunctionBorrowContext {
+            return_borrow: self.return_borrow_kind(&f.return_type),
+            param_borrows,
+        });
 
         for param in &f.params {
             if let Pattern::Identifier(id) = &param.pat {
@@ -404,6 +433,7 @@ impl BorrowChecker {
         self.locals = old_locals;
         self.active_borrows = old_borrows;
         self.returned_borrows = old_returned;
+        self.current_function_context = old_context;
         Ok(())
     }
 
@@ -507,6 +537,7 @@ impl BorrowChecker {
     fn check_return(&mut self, r: &ReturnStmt) -> Result<(), BorrowError> {
         if let Some(ref arg) = r.argument {
             self.check_expression(arg)?;
+            self.check_return_borrow(arg)?;
             self.check_return_clears_borrows();
         }
         Ok(())
@@ -736,6 +767,9 @@ impl BorrowChecker {
             None
         };
 
+        let mut temporary_borrow_counts: HashMap<String, usize> = HashMap::new();
+        let mut ownership_snapshots: HashMap<String, Ownership> = HashMap::new();
+
         for (arg_index, arg) in c.arguments.iter().enumerate() {
             if let ExprOrSpread::Expr(e) = arg {
                 let expected_borrow = param_contracts
@@ -745,12 +779,33 @@ impl BorrowChecker {
                     .flatten();
 
                 if let Some(kind) = expected_borrow {
+                    let borrow_name = self.borrowed_argument_name(e);
+                    let borrow_count_before = borrow_name
+                        .as_ref()
+                        .map(|name| self.active_borrows.get(name).map_or(0, Vec::len));
+
+                    if let Some(name) = borrow_name.as_ref() {
+                        if !ownership_snapshots.contains_key(name) {
+                            if let Some(state) = self.locals.get(name) {
+                                ownership_snapshots.insert(name.clone(), state.ownership.clone());
+                            }
+                        }
+                    }
+
                     self.check_borrow_argument(e, kind)?;
+
+                    if let (Some(name), Some(before_count)) = (borrow_name, borrow_count_before) {
+                        let after_count = self.active_borrows.get(&name).map_or(0, Vec::len);
+                        let added = after_count.saturating_sub(before_count);
+                        if added > 0 {
+                            *temporary_borrow_counts.entry(name).or_insert(0) += added;
+                        }
+                    }
                 } else {
+                    self.check_expression(e)?;
                     if let Expr::Identifier(id) = e {
                         self.move_identifier_if_needed(id)?;
                     }
-                    self.check_expression(e)?;
                 }
             }
         }
@@ -758,9 +813,41 @@ impl BorrowChecker {
         if let Expr::Identifier(id) = &*c.callee {
             if id.sym == "process" || id.sym == "thread" {
                 for arg in &c.arguments {
-                    if let ExprOrSpread::Expr(Expr::Identifier(id)) = arg {
-                        self.thread_access.insert(id.sym.clone());
+                    if let ExprOrSpread::Expr(e) = arg {
+                        if let Some(name) = self.borrowed_argument_name(e) {
+                            self.thread_access.insert(name.clone());
+                            let has_mutable_borrow = self
+                                .active_borrows
+                                .get(&name)
+                                .map(|borrows| {
+                                    borrows.iter().any(|b| b.kind == BorrowKind::Mutable)
+                                })
+                                .unwrap_or(false);
+                            if has_mutable_borrow {
+                                self.errors.push(BorrowError::DataRace { variable: name });
+                            }
+                        }
+                        self.check_thread_safe_argument(e)?;
                     }
+                }
+            }
+        }
+
+        for (name, count) in temporary_borrow_counts {
+            if let Some(borrows) = self.active_borrows.get_mut(&name) {
+                for _ in 0..count {
+                    if borrows.pop().is_none() {
+                        break;
+                    }
+                }
+                if borrows.is_empty() {
+                    self.active_borrows.remove(&name);
+                }
+            }
+
+            if let Some(ownership) = ownership_snapshots.get(&name) {
+                if let Some(state) = self.locals.get_mut(&name) {
+                    state.ownership = ownership.clone();
                 }
             }
         }
@@ -791,6 +878,21 @@ impl BorrowChecker {
                 });
                 Ok(())
             }
+        }
+    }
+
+    fn borrowed_argument_name(&self, expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Identifier(id) => Some(id.sym.clone()),
+            Expr::Ref(r) => match &*r.expr {
+                Expr::Identifier(id) => Some(id.sym.clone()),
+                _ => None,
+            },
+            Expr::MutRef(r) => match &*r.expr {
+                Expr::Identifier(id) => Some(id.sym.clone()),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -847,7 +949,18 @@ impl BorrowChecker {
                     }
                     state.ownership = Ownership::Borrowed(kind);
                 } else {
+                    if let Ownership::Borrowed(BorrowKind::Mutable) = &state.ownership {
+                        self.errors.push(BorrowError::BorrowConflict {
+                            variable: id.sym.clone(),
+                            location: id.span.clone(),
+                            message: "Cannot immutably borrow while mutable borrow exists"
+                                .to_string(),
+                        });
+                    }
                     if let Ownership::Owned = state.ownership {
+                        state.ownership = Ownership::Borrowed(kind);
+                    }
+                    if let Ownership::Copied = state.ownership {
                         state.ownership = Ownership::Borrowed(kind);
                     }
                 }
@@ -865,6 +978,98 @@ impl BorrowChecker {
                     .push(borrow);
             }
         }
+        Ok(())
+    }
+
+    fn check_return_borrow(&mut self, expr: &Expr) -> Result<(), BorrowError> {
+        let Some(ctx) = &self.current_function_context else {
+            return Ok(());
+        };
+        let Some(expected_kind) = ctx.return_borrow else {
+            return Ok(());
+        };
+
+        match expr {
+            Expr::Identifier(id) => {
+                let Some(found_kind) = ctx.param_borrows.get(&id.sym).copied().flatten() else {
+                    self.errors.push(BorrowError::LifetimeError(format!(
+                        "borrowed return value '{}' does not outlive function",
+                        id.sym
+                    )));
+                    return Ok(());
+                };
+
+                if !Self::borrow_kind_satisfies(found_kind, expected_kind) {
+                    self.errors.push(BorrowError::InvalidBorrow {
+                        variable: id.sym.clone(),
+                        location: id.span.clone(),
+                        message: "return borrow kind does not match function return type"
+                            .to_string(),
+                    });
+                }
+            }
+            Expr::Ref(r) => {
+                self.check_return_borrow_reference(&r.expr, BorrowKind::Shared, expected_kind)?;
+            }
+            Expr::MutRef(r) => {
+                self.check_return_borrow_reference(&r.expr, BorrowKind::Mutable, expected_kind)?;
+            }
+            _ => {
+                self.errors.push(BorrowError::LifetimeError(
+                    "borrowed return requires identifier/reference expression".to_string(),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn borrow_kind_satisfies(found: BorrowKind, expected: BorrowKind) -> bool {
+        found == expected || (found == BorrowKind::Mutable && expected == BorrowKind::Shared)
+    }
+
+    fn check_return_borrow_reference(
+        &mut self,
+        inner: &Expr,
+        found_kind: BorrowKind,
+        expected_kind: BorrowKind,
+    ) -> Result<(), BorrowError> {
+        if !Self::borrow_kind_satisfies(found_kind, expected_kind) {
+            self.errors.push(BorrowError::InvalidBorrow {
+                variable: "<return>".to_string(),
+                location: inner.span().clone(),
+                message: "return borrow kind does not match function return type".to_string(),
+            });
+            return Ok(());
+        }
+
+        let Some(ctx) = &self.current_function_context else {
+            return Ok(());
+        };
+
+        let Expr::Identifier(id) = inner else {
+            self.errors.push(BorrowError::LifetimeError(
+                "borrowed return must reference a function parameter".to_string(),
+            ));
+            return Ok(());
+        };
+
+        let Some(param_kind) = ctx.param_borrows.get(&id.sym).copied().flatten() else {
+            self.errors.push(BorrowError::LifetimeError(format!(
+                "borrowed return '{}' references non-borrowed parameter/local",
+                id.sym
+            )));
+            return Ok(());
+        };
+
+        if !Self::borrow_kind_satisfies(param_kind, found_kind) {
+            self.errors.push(BorrowError::InvalidBorrow {
+                variable: id.sym.clone(),
+                location: id.span.clone(),
+                message: "cannot reborrow with stronger mutability than parameter".to_string(),
+            });
+        }
+
         Ok(())
     }
 
@@ -958,6 +1163,123 @@ impl BorrowChecker {
 
         Ok(())
     }
+
+    fn check_thread_safe_argument(&mut self, expr: &Expr) -> Result<(), BorrowError> {
+        if self.is_thread_safe_expression(expr) {
+            return Ok(());
+        }
+
+        self.errors.push(BorrowError::ThreadSafetyViolation {
+            location: expr.span().clone(),
+            message: "value captured by thread/process is not thread-safe".to_string(),
+        });
+        Ok(())
+    }
+
+    fn is_thread_safe_expression(&self, expr: &Expr) -> bool {
+        if let Some(info) = &self.type_info {
+            if let Some(ty) = info.expr_types.get(expr.span()) {
+                let mut visited = HashSet::new();
+                return self.is_thread_safe_type(&info.type_table, *ty, &mut visited);
+            }
+        }
+
+        match expr {
+            Expr::Literal(lit) => matches!(
+                lit,
+                Literal::Number(_)
+                    | Literal::Boolean(_)
+                    | Literal::String(_)
+                    | Literal::BigInt(_)
+                    | Literal::Null(_)
+                    | Literal::Undefined(_)
+            ),
+            Expr::Array(arr) => arr.elements.iter().all(|elem| {
+                if let Some(ExprOrSpread::Expr(e)) = elem {
+                    self.is_thread_safe_expression(e)
+                } else {
+                    true
+                }
+            }),
+            Expr::Object(obj) => obj.properties.iter().all(|prop| match prop {
+                ObjectProperty::Property(p) => match &p.value {
+                    ExprOrSpread::Expr(e) => self.is_thread_safe_expression(e),
+                    _ => true,
+                },
+                ObjectProperty::Shorthand(id) => self
+                    .locals
+                    .get(&id.sym)
+                    .map(|v| v.is_copyable)
+                    .unwrap_or(false),
+                ObjectProperty::Spread(s) => self.is_thread_safe_expression(&s.argument),
+                _ => false,
+            }),
+            Expr::Ref(_) | Expr::MutRef(_) => false,
+            Expr::Identifier(id) => self
+                .locals
+                .get(&id.sym)
+                .map(|v| v.is_copyable)
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+
+    fn is_thread_safe_type(
+        &self,
+        type_table: &argon_types::TypeTable,
+        ty: CheckedTypeId,
+        visited: &mut HashSet<CheckedTypeId>,
+    ) -> bool {
+        if !visited.insert(ty) {
+            return true;
+        }
+
+        match type_table.get(ty) {
+            Some(
+                CheckedType::Never
+                | CheckedType::Boolean
+                | CheckedType::Number
+                | CheckedType::BigInt
+                | CheckedType::String
+                | CheckedType::Symbol
+                | CheckedType::Null
+                | CheckedType::Undefined
+                | CheckedType::Void
+                | CheckedType::Enum(_),
+            ) => true,
+            Some(CheckedType::Array(inner))
+            | Some(CheckedType::Option(inner))
+            | Some(CheckedType::Promise(inner))
+            | Some(CheckedType::Shared(inner)) => {
+                self.is_thread_safe_type(type_table, *inner, visited)
+            }
+            Some(CheckedType::Tuple(types))
+            | Some(CheckedType::Union(types))
+            | Some(CheckedType::Intersection(types)) => types
+                .iter()
+                .all(|inner| self.is_thread_safe_type(type_table, *inner, visited)),
+            Some(CheckedType::Result(ok, err)) => {
+                self.is_thread_safe_type(type_table, *ok, visited)
+                    && self.is_thread_safe_type(type_table, *err, visited)
+            }
+            Some(CheckedType::Struct(def)) => def
+                .fields
+                .iter()
+                .all(|field| self.is_thread_safe_type(type_table, field.ty, visited)),
+            Some(CheckedType::Ref(_))
+            | Some(CheckedType::MutRef(_))
+            | Some(CheckedType::Class(_))
+            | Some(CheckedType::Interface(_))
+            | Some(CheckedType::Function(_))
+            | Some(CheckedType::Object)
+            | Some(CheckedType::Any)
+            | Some(CheckedType::Unknown)
+            | Some(CheckedType::Generic(_))
+            | Some(CheckedType::TypeParam(_))
+            | Some(CheckedType::Error)
+            | None => false,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -995,6 +1317,10 @@ pub enum BorrowError {
     DropOfBorrowedValue {
         variable: String,
         location: Span,
+    },
+    ThreadSafetyViolation {
+        location: Span,
+        message: String,
     },
 }
 
@@ -1057,6 +1383,9 @@ impl std::fmt::Display for BorrowError {
                     "drop of borrowed value: '{}' at {:?}",
                     variable, location
                 )
+            }
+            BorrowError::ThreadSafetyViolation { location, message } => {
+                write!(f, "thread safety violation at {:?}: {}", location, message)
             }
         }
     }

@@ -505,7 +505,7 @@ impl TypeChecker {
     fn check_variable(&mut self, stmt: &VariableStmt) -> Result<(), TypeError> {
         for decl in &stmt.declarations {
             if let Pattern::Identifier(id) = &decl.id {
-                let ty = if let Some(ref ann) = id.type_annotation {
+                let declared_ty = if let Some(ref ann) = id.type_annotation {
                     self.resolve_type(ann)
                 } else {
                     self.type_table.unknown()
@@ -513,12 +513,16 @@ impl TypeChecker {
 
                 if let Some(init) = &decl.init {
                     let init_ty = self.infer_expression(init);
-                    if ty != self.type_table.unknown() && ty != self.type_table.any() {
-                        self.unify(init_ty, ty);
+                    if declared_ty != self.type_table.unknown()
+                        && declared_ty != self.type_table.any()
+                    {
+                        self.unify(init_ty, declared_ty);
+                        self.env.add_var(id.name.sym.clone(), declared_ty);
+                    } else {
+                        self.env.add_var(id.name.sym.clone(), init_ty);
                     }
-                    self.env.add_var(id.name.sym.clone(), ty);
                 } else {
-                    self.env.add_var(id.name.sym.clone(), ty);
+                    self.env.add_var(id.name.sym.clone(), declared_ty);
                 }
             }
         }

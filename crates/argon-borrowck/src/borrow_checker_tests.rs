@@ -4,6 +4,7 @@
 
 use crate::BorrowChecker;
 use argon_parser::parse;
+use argon_types::TypeChecker;
 
 mod ownership_tracking {
     use super::*;
@@ -871,5 +872,102 @@ mod move_and_race_regressions {
 
         // Assert
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn allows_reborrowing_mutable_argument_across_calls() {
+        // Assign
+        let source =
+            "function write(x: &mut i32): i32 { return 1; } function run(v: i32): i32 { write(v); write(v); return 0; }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+}
+
+mod cross_function_borrow_regressions {
+    use super::*;
+
+    #[test]
+    fn rejects_borrowed_return_of_local_value() {
+        // Assign
+        let source = "function leak(): &i32 { const x = 1; return &x; }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn allows_borrowed_return_from_borrowed_parameter() {
+        // Assign
+        let source = "function pass(x: &i32): &i32 { return x; }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rejects_mutable_borrow_return_from_shared_parameter() {
+        // Assign
+        let source = "function bad(x: &i32): &mut i32 { return x; }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_err());
+    }
+}
+
+mod thread_safety_regressions {
+    use super::*;
+
+    #[test]
+    fn rejects_thread_capture_of_non_thread_safe_class_value() {
+        // Assign
+        let source = "class Box { value: i32; } const b = new Box(); thread(b);";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+        let mut type_checker = TypeChecker::new();
+        let type_output = type_checker.check_with_output(&ast).unwrap();
+
+        // Act
+        let result = checker.check_typed(&ast, type_output);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn allows_thread_capture_of_thread_safe_array() {
+        // Assign
+        let source = "const data = [1, 2, 3]; thread(data);";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+        let mut type_checker = TypeChecker::new();
+        let type_output = type_checker.check_with_output(&ast).unwrap();
+
+        // Act
+        let result = checker.check_typed(&ast, type_output);
+
+        // Assert
+        assert!(result.is_ok(), "{result:?}");
     }
 }
