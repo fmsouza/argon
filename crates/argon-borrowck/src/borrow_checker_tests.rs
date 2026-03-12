@@ -844,4 +844,32 @@ mod move_and_race_regressions {
         // Assert
         assert!(result.is_err());
     }
+
+    #[test]
+    fn enforces_shared_borrow_parameter_contract_at_callsite() {
+        // Assign
+        let source = "function read(x: &i32): i32 { return 1; } const a = { v: 1 }; read(a);";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn enforces_mutable_borrow_parameter_contract_at_callsite() {
+        // Assign
+        let source = "function write(x: &mut i32): i32 { return 1; } write(&value);";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_err());
+    }
 }

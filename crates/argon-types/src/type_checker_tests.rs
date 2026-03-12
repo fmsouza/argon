@@ -63,6 +63,20 @@ mod type_inference {
         // Assert
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn infers_string_type_from_template_literal() {
+        // Assign
+        let source = "const name = 'argon'; const x = `hello ${name}`;";
+        let ast = parse(source).unwrap();
+        let mut checker = TypeChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok());
+    }
 }
 
 mod type_checking {

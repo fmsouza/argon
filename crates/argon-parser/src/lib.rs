@@ -2768,6 +2768,10 @@ impl Parser {
             })));
         }
 
+        if self.match_one(&[TokenKind::TemplateComplete]) {
+            return self.parse_template_literal();
+        }
+
         if self.match_one(&[TokenKind::Identifier]) {
             let span = self.previous().span.clone();
             let sym = self.source[span.clone()].to_string();
@@ -2884,6 +2888,166 @@ impl Parser {
         }
 
         Err(self.unexpected_here(format!("Unexpected token at position {}", self.current)))
+    }
+
+    fn parse_template_literal(&mut self) -> Result<argon_ast::Expr, ParseError> {
+        use argon_ast::*;
+
+        let span = self.previous().span.clone();
+        let raw = self.source[span.clone()].to_string();
+        if raw.len() < 2 || !raw.starts_with('`') || !raw.ends_with('`') {
+            return Err(self.parser_error_prev("Invalid template literal token"));
+        }
+
+        let inner = &raw[1..raw.len() - 1];
+        let (quasis, expressions) = self.split_template_parts(inner)?;
+
+        Ok(Expr::Template(TemplateLiteral {
+            quasis,
+            expressions,
+            span,
+        }))
+    }
+
+    fn split_template_parts(
+        &self,
+        inner: &str,
+    ) -> Result<(Vec<argon_ast::TemplateElement>, Vec<argon_ast::Expr>), ParseError> {
+        use argon_ast::*;
+
+        let mut quasis = Vec::new();
+        let mut expressions = Vec::new();
+
+        let bytes = inner.as_bytes();
+        let mut i = 0usize;
+        let mut last_quasi_start = 0usize;
+
+        while i < bytes.len() {
+            let ch = bytes[i] as char;
+
+            if ch == '\\' {
+                i = (i + 2).min(bytes.len());
+                continue;
+            }
+
+            if ch == '$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+                let quasi_value = inner[last_quasi_start..i].to_string();
+                quasis.push(TemplateElement {
+                    value: quasi_value,
+                    tail: false,
+                    span: 0..0,
+                });
+
+                i += 2;
+                let expr_start = i;
+                let mut depth = 1usize;
+                let mut escaped = false;
+                let mut in_single = false;
+                let mut in_double = false;
+                let mut in_backtick = false;
+
+                while i < bytes.len() {
+                    let c = bytes[i] as char;
+
+                    if escaped {
+                        escaped = false;
+                        i += 1;
+                        continue;
+                    }
+
+                    if c == '\\' {
+                        escaped = true;
+                        i += 1;
+                        continue;
+                    }
+
+                    if in_single {
+                        if c == '\'' {
+                            in_single = false;
+                        }
+                        i += 1;
+                        continue;
+                    }
+                    if in_double {
+                        if c == '"' {
+                            in_double = false;
+                        }
+                        i += 1;
+                        continue;
+                    }
+                    if in_backtick {
+                        if c == '`' {
+                            in_backtick = false;
+                        }
+                        i += 1;
+                        continue;
+                    }
+
+                    match c {
+                        '\'' => in_single = true,
+                        '"' => in_double = true,
+                        '`' => in_backtick = true,
+                        '{' => depth += 1,
+                        '}' => {
+                            depth = depth.saturating_sub(1);
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+
+                if depth != 0 || i >= bytes.len() {
+                    return Err(
+                        self.parser_error_prev("Unterminated template interpolation expression")
+                    );
+                }
+
+                let expr_src = inner[expr_start..i].trim();
+                let expr = self.parse_template_expression(expr_src)?;
+                expressions.push(expr);
+
+                i += 1; // Skip closing `}`.
+                last_quasi_start = i;
+                continue;
+            }
+
+            i += 1;
+        }
+
+        quasis.push(TemplateElement {
+            value: inner[last_quasi_start..].to_string(),
+            tail: true,
+            span: 0..0,
+        });
+
+        Ok((quasis, expressions))
+    }
+
+    fn parse_template_expression(&self, expr_src: &str) -> Result<argon_ast::Expr, ParseError> {
+        if expr_src.is_empty() {
+            return Err(self.parser_error_prev("Empty template interpolation expression"));
+        }
+
+        let mut lexer = argon_lexer::Lexer::new(expr_src);
+        let tokens = lexer.tokenize().map_err(|e| {
+            self.parser_error_prev(format!("Invalid template interpolation expression: {}", e))
+        })?;
+
+        let mut parser = Parser::new(tokens, expr_src.to_string());
+        let expr = parser.parse_expression().map_err(|e| {
+            self.parser_error_prev(format!("Invalid template interpolation expression: {}", e))
+        })?;
+
+        if !parser.is_at_end() && !parser.check(&TokenKind::Eof) {
+            return Err(
+                self.parser_error_prev("Template interpolation expression has trailing tokens")
+            );
+        }
+
+        Ok(expr)
     }
 
     fn parse_type(&mut self) -> Result<argon_ast::Type, ParseError> {

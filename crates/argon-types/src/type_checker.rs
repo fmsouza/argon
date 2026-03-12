@@ -802,6 +802,7 @@ impl TypeChecker {
             Expr::Logical(l) => self.infer_logical(l),
             Expr::Object(o) => self.infer_object(o),
             Expr::Array(a) => self.infer_array(a),
+            Expr::Template(t) => self.infer_template(t),
             Expr::Function(f) => self.infer_function_expr(f),
             Expr::ArrowFunction(a) => self.infer_arrow_function(a),
             Expr::Await(a) => self.infer_await(a),
@@ -1293,6 +1294,13 @@ impl TypeChecker {
         }
 
         self.type_table.add(CompType::Array(element_ty))
+    }
+
+    fn infer_template(&mut self, t: &TemplateLiteral) -> TypeId {
+        for expr in &t.expressions {
+            self.infer_expression(expr);
+        }
+        self.type_table.string()
     }
 
     fn infer_function_expr(&mut self, _f: &FunctionExpr) -> TypeId {

@@ -59,6 +59,11 @@ struct LifetimeScope {
     children: Vec<usize>,
 }
 
+#[derive(Debug, Clone)]
+struct FunctionBorrowContract {
+    param_borrows: Vec<Option<BorrowKind>>,
+}
+
 #[allow(dead_code)]
 pub struct BorrowChecker {
     locals: HashMap<String, VariableState>,
@@ -74,6 +79,7 @@ pub struct BorrowChecker {
     in_unsafe: bool,
     thread_access: HashSet<String>,
     type_info: Option<TypeCheckOutput>,
+    function_contracts: HashMap<String, FunctionBorrowContract>,
 }
 
 impl BorrowChecker {
@@ -92,6 +98,7 @@ impl BorrowChecker {
             in_unsafe: false,
             thread_access: HashSet::new(),
             type_info: None,
+            function_contracts: HashMap::new(),
         }
     }
 
@@ -110,6 +117,9 @@ impl BorrowChecker {
     }
 
     fn check_impl(&mut self, source: &SourceFile) -> Result<(), BorrowError> {
+        self.function_contracts.clear();
+        self.collect_function_contracts(source);
+
         for stmt in &source.statements {
             self.check_statement(stmt)?;
         }
@@ -121,6 +131,46 @@ impl BorrowChecker {
         }
 
         Ok(())
+    }
+
+    fn collect_function_contracts(&mut self, source: &SourceFile) {
+        for stmt in &source.statements {
+            self.collect_function_contracts_from_stmt(stmt);
+        }
+    }
+
+    fn collect_function_contracts_from_stmt(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Function(f) | Stmt::AsyncFunction(f) => {
+                if let Some(id) = &f.id {
+                    self.function_contracts.insert(
+                        id.sym.clone(),
+                        FunctionBorrowContract {
+                            param_borrows: f
+                                .params
+                                .iter()
+                                .map(|p| self.param_borrow_kind(p))
+                                .collect(),
+                        },
+                    );
+                }
+            }
+            Stmt::Block(b) => {
+                for nested in &b.statements {
+                    self.collect_function_contracts_from_stmt(nested);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn param_borrow_kind(&self, param: &Param) -> Option<BorrowKind> {
+        let ty = param.ty.as_ref()?;
+        match ty.as_ref() {
+            Type::Ref(_) => Some(BorrowKind::Shared),
+            Type::MutRef(_) => Some(BorrowKind::Mutable),
+            _ => None,
+        }
     }
 
     fn generate_lifetime(&mut self) -> Lifetime {
@@ -678,12 +728,30 @@ impl BorrowChecker {
     fn check_call(&mut self, c: &CallExpr) -> Result<(), BorrowError> {
         self.check_expression(&c.callee)?;
 
-        for arg in &c.arguments {
+        let param_contracts = if let Expr::Identifier(id) = &*c.callee {
+            self.function_contracts
+                .get(&id.sym)
+                .map(|contract| contract.param_borrows.clone())
+        } else {
+            None
+        };
+
+        for (arg_index, arg) in c.arguments.iter().enumerate() {
             if let ExprOrSpread::Expr(e) = arg {
-                if let Expr::Identifier(id) = e {
-                    self.move_identifier_if_needed(id)?;
+                let expected_borrow = param_contracts
+                    .as_ref()
+                    .and_then(|params| params.get(arg_index))
+                    .copied()
+                    .flatten();
+
+                if let Some(kind) = expected_borrow {
+                    self.check_borrow_argument(e, kind)?;
+                } else {
+                    if let Expr::Identifier(id) = e {
+                        self.move_identifier_if_needed(id)?;
+                    }
+                    self.check_expression(e)?;
                 }
-                self.check_expression(e)?;
             }
         }
 
@@ -698,6 +766,32 @@ impl BorrowChecker {
         }
 
         Ok(())
+    }
+
+    fn check_borrow_argument(&mut self, expr: &Expr, kind: BorrowKind) -> Result<(), BorrowError> {
+        match expr {
+            Expr::Identifier(id) => self.check_borrow(&Expr::Identifier(id.clone()), kind),
+            Expr::Ref(_) => {
+                if kind == BorrowKind::Mutable {
+                    self.errors.push(BorrowError::InvalidBorrow {
+                        variable: "<arg>".to_string(),
+                        location: expr.span().clone(),
+                        message: "expected mutable borrow argument".to_string(),
+                    });
+                    return Ok(());
+                }
+                self.check_expression(expr)
+            }
+            Expr::MutRef(_) => self.check_expression(expr),
+            _ => {
+                self.errors.push(BorrowError::InvalidBorrow {
+                    variable: "<arg>".to_string(),
+                    location: expr.span().clone(),
+                    message: "borrowed parameter expects identifier/reference argument".to_string(),
+                });
+                Ok(())
+            }
+        }
     }
 
     fn move_identifier_if_needed(&mut self, id: &Ident) -> Result<(), BorrowError> {

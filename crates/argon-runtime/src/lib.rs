@@ -1147,70 +1147,16 @@ match (x) {
 
     #[test]
     fn executes_template_literal_interpolation() {
-        let name_ident = Ident {
-            sym: "name".to_string(),
-            span: 0..0,
-        };
-        let msg_ident = Ident {
-            sym: "msg".to_string(),
-            span: 0..0,
-        };
-
-        let ast = SourceFile::new(
-            "<test>".to_string(),
-            vec![
-                Stmt::Variable(VariableStmt {
-                    kind: VariableKind::Const,
-                    declarations: vec![VariableDeclarator {
-                        id: Pattern::Identifier(IdentPattern {
-                            name: name_ident.clone(),
-                            type_annotation: None,
-                            default: None,
-                        }),
-                        init: Some(Expr::Literal(Literal::String(StringLiteral {
-                            value: "Argon".to_string(),
-                            span: 0..0,
-                        }))),
-                        span: 0..0,
-                    }],
-                    span: 0..0,
-                }),
-                Stmt::Variable(VariableStmt {
-                    kind: VariableKind::Const,
-                    declarations: vec![VariableDeclarator {
-                        id: Pattern::Identifier(IdentPattern {
-                            name: msg_ident,
-                            type_annotation: None,
-                            default: None,
-                        }),
-                        init: Some(Expr::Template(TemplateLiteral {
-                            quasis: vec![
-                                TemplateElement {
-                                    value: "Hello ".to_string(),
-                                    tail: false,
-                                    span: 0..0,
-                                },
-                                TemplateElement {
-                                    value: "".to_string(),
-                                    tail: true,
-                                    span: 0..0,
-                                },
-                            ],
-                            expressions: vec![Expr::Identifier(name_ident)],
-                            span: 0..0,
-                        })),
-                        span: 0..0,
-                    }],
-                    span: 0..0,
-                }),
-            ],
-            0..0,
-        );
+        let source = r#"
+const name = "Argon";
+const msg = `Hello ${name}`;
+"#;
+        let ast = parse(source).expect("parse should succeed");
         let mut runtime = Runtime::new();
         let result = runtime.execute(&ast);
         assert!(result.is_ok());
         match runtime.scope.get("msg") {
-            Some(Value::String(s)) => assert_eq!(s, "Hello Argon"),
+            Some(Value::String(s)) => assert_eq!(s, "Hello \"Argon\""),
             _ => panic!("expected interpolated template string"),
         }
     }

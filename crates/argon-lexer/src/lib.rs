@@ -673,12 +673,11 @@ impl<'a> Lexer<'a> {
     }
 
     fn make_template_literal_token(&mut self) -> Token {
+        // Opening backtick.
         self.advance();
 
         let mut escaped = false;
-        let mut has_interpolation = false;
-        let mut brace_count = 0;
-        let start = self.start;
+        let mut interpolation_depth = 0usize;
 
         while let Some(&ch) = self.chars.peek() {
             self.advance();
@@ -693,32 +692,24 @@ impl<'a> Lexer<'a> {
                 continue;
             }
 
+            // `${ ... }` interpolation start.
+            if ch == '$' && self.chars.peek() == Some(&'{') {
+                self.advance();
+                interpolation_depth += 1;
+                continue;
+            }
+
+            if interpolation_depth > 0 {
+                if ch == '{' {
+                    interpolation_depth += 1;
+                } else if ch == '}' {
+                    interpolation_depth = interpolation_depth.saturating_sub(1);
+                }
+                continue;
+            }
+
             if ch == '`' {
-                if has_interpolation {
-                    return Token::new(TokenKind::TemplateComplete, self.start..self.position + 1);
-                }
-                return Token::new(TokenKind::TemplateComplete, self.start..self.position + 1);
-            }
-
-            if ch == '{' && !has_interpolation {
-                has_interpolation = true;
-                brace_count += 1;
-                let interp_start = self.position.saturating_sub(1);
-                let text_before = &self.source[start..interp_start];
-                if text_before.is_empty() {
-                    return Token::new(TokenKind::TemplateStart, start..interp_start);
-                } else {
-                    return Token::new(TokenKind::TemplateStart, start..self.position);
-                }
-            } else if ch == '}' && has_interpolation {
-                brace_count -= 1;
-                if brace_count == 0 {
-                    return Token::new(TokenKind::TemplateMiddle, self.start..self.position + 1);
-                }
-            }
-
-            if ch == '\n' && brace_count == 0 {
-                return Token::new(TokenKind::UnterminatedTemplate, self.start..self.position);
+                return Token::new(TokenKind::TemplateComplete, self.start..self.position);
             }
         }
 

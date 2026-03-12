@@ -1033,4 +1033,32 @@ mod completion_frontend_parsing {
         let ast = result.unwrap();
         assert!(matches!(ast.statements[0], Stmt::Module(_)));
     }
+
+    #[test]
+    fn parses_template_literal_with_interpolation() {
+        // Assign
+        let source = "const msg = `Hello ${name}`;";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let ast = result.unwrap();
+        let var = match &ast.statements[0] {
+            Stmt::Variable(v) => v,
+            _ => panic!("expected variable statement"),
+        };
+        let init = var.declarations[0]
+            .init
+            .as_ref()
+            .expect("expected initializer");
+        match init {
+            Expr::Template(t) => {
+                assert_eq!(t.expressions.len(), 1);
+                assert_eq!(t.quasis.len(), 2);
+            }
+            _ => panic!("expected template literal expression"),
+        }
+    }
 }
