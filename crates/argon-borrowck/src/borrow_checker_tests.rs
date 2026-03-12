@@ -978,6 +978,62 @@ mod nll_like_regressions {
         // Assert
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn allows_mutable_borrow_after_switch_when_shared_binding_consumed_on_all_paths() {
+        // Assign
+        let source = "function f(a: i32): i32 { const r = &a; switch (flag) { case 0: console.log(r); break; default: console.log(r); } const m = &mut a; return 0; }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rejects_mutable_borrow_after_switch_without_default_when_binding_may_survive() {
+        // Assign
+        let source = "function f(a: i32): i32 { const r = &a; switch (flag) { case 0: console.log(r); break; } const m = &mut a; console.log(r); return 0; }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn allows_mutable_borrow_after_match_with_wildcard_consuming_binding_on_all_paths() {
+        // Assign
+        let source = "function f(a: i32): i32 { const r = &a; match (flag) { 0 => console.log(r), _ => console.log(r), } const m = &mut a; return 0; }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rejects_mutable_borrow_after_match_without_wildcard_when_binding_may_survive() {
+        // Assign
+        let source = "function f(a: i32): i32 { const r = &a; match (flag) { 0 => console.log(r), } const m = &mut a; console.log(r); return 0; }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_err());
+    }
 }
 
 mod cross_function_borrow_regressions {
