@@ -65,6 +65,12 @@ struct FunctionBorrowContract {
 }
 
 #[derive(Debug, Clone)]
+struct BorrowBinding {
+    source: String,
+    kind: BorrowKind,
+}
+
+#[derive(Debug, Clone)]
 struct FunctionBorrowContext {
     return_borrow: Option<BorrowKind>,
     param_borrows: HashMap<String, Option<BorrowKind>>,
@@ -87,6 +93,9 @@ pub struct BorrowChecker {
     type_info: Option<TypeCheckOutput>,
     function_contracts: HashMap<String, FunctionBorrowContract>,
     current_function_context: Option<FunctionBorrowContext>,
+    scope_stack: Vec<Vec<String>>,
+    remaining_identifier_uses: Vec<HashMap<String, usize>>,
+    borrow_bindings: HashMap<String, BorrowBinding>,
 }
 
 impl BorrowChecker {
@@ -107,6 +116,9 @@ impl BorrowChecker {
             type_info: None,
             function_contracts: HashMap::new(),
             current_function_context: None,
+            scope_stack: vec![Vec::new()],
+            remaining_identifier_uses: Vec::new(),
+            borrow_bindings: HashMap::new(),
         }
     }
 
@@ -127,6 +139,12 @@ impl BorrowChecker {
     fn check_impl(&mut self, source: &SourceFile) -> Result<(), BorrowError> {
         self.function_contracts.clear();
         self.collect_function_contracts(source);
+        self.scope_stack.clear();
+        self.scope_stack.push(Vec::new());
+        self.borrow_bindings.clear();
+        self.remaining_identifier_uses.clear();
+        self.remaining_identifier_uses
+            .push(self.count_identifier_uses_in_statements(&source.statements));
 
         for stmt in &source.statements {
             self.check_statement(stmt)?;
@@ -187,6 +205,478 @@ impl BorrowChecker {
             Type::Ref(_) => Some(BorrowKind::Shared),
             Type::MutRef(_) => Some(BorrowKind::Mutable),
             _ => None,
+        }
+    }
+
+    fn record_scope_local(&mut self, name: String) {
+        if let Some(scope) = self.scope_stack.last_mut() {
+            scope.push(name);
+        }
+    }
+
+    fn cleanup_local(&mut self, name: &str) -> Result<(), BorrowError> {
+        self.release_borrow_binding(name)?;
+
+        if let Some(state) = self.locals.remove(name) {
+            self.check_drop(name, &state)?;
+        }
+
+        Ok(())
+    }
+
+    fn register_borrow_binding(&mut self, binding_name: &str, init: &Option<Expr>) {
+        let binding = match init {
+            Some(Expr::Ref(r)) => match &*r.expr {
+                Expr::Identifier(id) => Some(BorrowBinding {
+                    source: id.sym.clone(),
+                    kind: BorrowKind::Shared,
+                }),
+                _ => None,
+            },
+            Some(Expr::MutRef(r)) => match &*r.expr {
+                Expr::Identifier(id) => Some(BorrowBinding {
+                    source: id.sym.clone(),
+                    kind: BorrowKind::Mutable,
+                }),
+                _ => None,
+            },
+            _ => None,
+        };
+
+        if let Some(binding) = binding {
+            self.borrow_bindings
+                .insert(binding_name.to_string(), binding);
+        } else {
+            self.borrow_bindings.remove(binding_name);
+        }
+    }
+
+    fn release_dead_borrow_binding(&mut self, binding_name: &str) -> Result<(), BorrowError> {
+        if !self.has_remaining_identifier_uses(binding_name) {
+            self.release_borrow_binding(binding_name)?;
+        }
+        Ok(())
+    }
+
+    fn has_remaining_identifier_uses(&self, name: &str) -> bool {
+        self.remaining_identifier_uses
+            .last()
+            .and_then(|uses| uses.get(name))
+            .copied()
+            .unwrap_or(0)
+            > 0
+    }
+
+    fn consume_identifier_use(&mut self, name: &str) -> Result<(), BorrowError> {
+        let mut reached_zero = false;
+        if let Some(remaining) = self.remaining_identifier_uses.last_mut() {
+            if let Some(count) = remaining.get_mut(name) {
+                if *count > 0 {
+                    *count -= 1;
+                }
+                if *count == 0 {
+                    remaining.remove(name);
+                    reached_zero = true;
+                }
+            }
+        }
+
+        if reached_zero {
+            self.release_borrow_binding(name)?;
+        }
+
+        Ok(())
+    }
+
+    fn release_borrow_binding(&mut self, binding_name: &str) -> Result<(), BorrowError> {
+        let Some(binding) = self.borrow_bindings.remove(binding_name) else {
+            return Ok(());
+        };
+
+        self.release_source_borrow(&binding.source, binding.kind)
+    }
+
+    fn release_source_borrow(&mut self, source: &str, kind: BorrowKind) -> Result<(), BorrowError> {
+        let mut has_remaining_borrow = false;
+
+        if let Some(borrows) = self.active_borrows.get_mut(source) {
+            if let Some(index) = borrows.iter().rposition(|b| b.kind == kind) {
+                borrows.remove(index);
+            }
+            has_remaining_borrow = !borrows.is_empty();
+        }
+
+        if !has_remaining_borrow {
+            self.active_borrows.remove(source);
+        }
+
+        if let Some(state) = self.locals.get_mut(source) {
+            if has_remaining_borrow {
+                if let Some(kind) = self
+                    .active_borrows
+                    .get(source)
+                    .and_then(|borrows| borrows.last().map(|borrow| borrow.kind))
+                {
+                    state.ownership = Ownership::Borrowed(kind);
+                }
+            } else if matches!(state.ownership, Ownership::Borrowed(_)) {
+                state.ownership = if state.is_copyable {
+                    Ownership::Copied
+                } else {
+                    Ownership::Owned
+                };
+            }
+        }
+
+        Ok(())
+    }
+
+    fn count_identifier_uses_in_statements(&self, statements: &[Stmt]) -> HashMap<String, usize> {
+        let mut uses = HashMap::new();
+        for stmt in statements {
+            self.count_identifier_uses_in_statement(stmt, &mut uses);
+        }
+        uses
+    }
+
+    fn count_identifier_uses_in_statement(&self, stmt: &Stmt, uses: &mut HashMap<String, usize>) {
+        match stmt {
+            Stmt::Variable(v) => {
+                for decl in &v.declarations {
+                    if let Some(init) = &decl.init {
+                        self.count_identifier_uses_in_expr(init, uses);
+                    }
+                }
+            }
+            Stmt::Expr(e) => self.count_identifier_uses_in_expr(&e.expr, uses),
+            Stmt::Return(r) => {
+                if let Some(arg) = &r.argument {
+                    self.count_identifier_uses_in_expr(arg, uses);
+                }
+            }
+            Stmt::Throw(t) => self.count_identifier_uses_in_expr(&t.argument, uses),
+            Stmt::If(i) => {
+                self.count_identifier_uses_in_expr(&i.condition, uses);
+                self.count_identifier_uses_in_statement(&i.consequent, uses);
+                if let Some(alt) = &i.alternate {
+                    self.count_identifier_uses_in_statement(alt, uses);
+                }
+            }
+            Stmt::While(w) => {
+                self.count_identifier_uses_in_expr(&w.condition, uses);
+                self.count_identifier_uses_in_statement(&w.body, uses);
+            }
+            Stmt::Loop(l) => self.count_identifier_uses_in_statement(&l.body, uses),
+            Stmt::DoWhile(d) => {
+                self.count_identifier_uses_in_statement(&d.body, uses);
+                self.count_identifier_uses_in_expr(&d.condition, uses);
+            }
+            Stmt::For(f) => {
+                if let Some(init) = &f.init {
+                    match init {
+                        ForInit::Variable(v) => {
+                            for decl in &v.declarations {
+                                if let Some(init) = &decl.init {
+                                    self.count_identifier_uses_in_expr(init, uses);
+                                }
+                            }
+                        }
+                        ForInit::Expr(e) => self.count_identifier_uses_in_expr(e, uses),
+                    }
+                }
+                if let Some(test) = &f.test {
+                    self.count_identifier_uses_in_expr(test, uses);
+                }
+                if let Some(update) = &f.update {
+                    self.count_identifier_uses_in_expr(update, uses);
+                }
+                self.count_identifier_uses_in_statement(&f.body, uses);
+            }
+            Stmt::ForIn(f) => {
+                if let ForInLeft::Variable(v) = &f.left {
+                    if let Some(init) = &v.init {
+                        self.count_identifier_uses_in_expr(init, uses);
+                    }
+                }
+                self.count_identifier_uses_in_expr(&f.right, uses);
+                self.count_identifier_uses_in_statement(&f.body, uses);
+            }
+            Stmt::Switch(s) => {
+                self.count_identifier_uses_in_expr(&s.discriminant, uses);
+                for case in &s.cases {
+                    if let Some(test) = &case.test {
+                        self.count_identifier_uses_in_expr(test, uses);
+                    }
+                    for stmt in &case.consequent {
+                        self.count_identifier_uses_in_statement(stmt, uses);
+                    }
+                }
+            }
+            Stmt::Try(t) => {
+                self.count_identifier_uses_in_block(&t.block, uses);
+                if let Some(handler) = &t.handler {
+                    self.count_identifier_uses_in_block(&handler.body, uses);
+                }
+                if let Some(finalizer) = &t.finalizer {
+                    self.count_identifier_uses_in_block(finalizer, uses);
+                }
+            }
+            Stmt::Match(m) => {
+                self.count_identifier_uses_in_expr(&m.discriminant, uses);
+                for case in &m.cases {
+                    self.count_identifier_uses_in_expr(&case.pattern, uses);
+                    if let Some(guard) = &case.guard {
+                        self.count_identifier_uses_in_expr(guard, uses);
+                    }
+                    self.count_identifier_uses_in_statement(&case.consequent, uses);
+                }
+            }
+            Stmt::Block(b) => self.count_identifier_uses_in_block(b, uses),
+            Stmt::With(w) => {
+                self.count_identifier_uses_in_expr(&w.object, uses);
+                self.count_identifier_uses_in_statement(&w.body, uses);
+            }
+            Stmt::Labeled(l) => self.count_identifier_uses_in_statement(&l.body, uses),
+            Stmt::Function(_)
+            | Stmt::AsyncFunction(_)
+            | Stmt::Class(_)
+            | Stmt::Struct(_)
+            | Stmt::Trait(_)
+            | Stmt::Impl(_)
+            | Stmt::Interface(_)
+            | Stmt::TypeAlias(_)
+            | Stmt::Enum(_)
+            | Stmt::Module(_)
+            | Stmt::Import(_)
+            | Stmt::Export(_)
+            | Stmt::Break(_)
+            | Stmt::Continue(_)
+            | Stmt::Empty(_)
+            | Stmt::Debugger(_) => {}
+        }
+    }
+
+    fn count_identifier_uses_in_block(&self, block: &BlockStmt, uses: &mut HashMap<String, usize>) {
+        for stmt in &block.statements {
+            self.count_identifier_uses_in_statement(stmt, uses);
+        }
+    }
+
+    fn count_identifier_uses_in_expr(&self, expr: &Expr, uses: &mut HashMap<String, usize>) {
+        match expr {
+            Expr::Identifier(id) => {
+                *uses.entry(id.sym.clone()).or_insert(0) += 1;
+            }
+            Expr::Assignment(a) => {
+                self.count_identifier_uses_in_assignment_target(&a.left, uses);
+                self.count_identifier_uses_in_expr(&a.right, uses);
+            }
+            Expr::Call(c) => {
+                self.count_identifier_uses_in_expr(&c.callee, uses);
+                for arg in &c.arguments {
+                    match arg {
+                        ExprOrSpread::Expr(e) => self.count_identifier_uses_in_expr(e, uses),
+                        ExprOrSpread::Spread(s) => {
+                            self.count_identifier_uses_in_expr(&s.argument, uses)
+                        }
+                    }
+                }
+            }
+            Expr::Binary(b) => {
+                self.count_identifier_uses_in_expr(&b.left, uses);
+                self.count_identifier_uses_in_expr(&b.right, uses);
+            }
+            Expr::Unary(u) => self.count_identifier_uses_in_expr(&u.argument, uses),
+            Expr::Member(m) => {
+                self.count_identifier_uses_in_expr(&m.object, uses);
+                if m.computed {
+                    self.count_identifier_uses_in_expr(&m.property, uses);
+                }
+            }
+            Expr::Ref(r) => self.count_identifier_uses_in_expr(&r.expr, uses),
+            Expr::MutRef(r) => self.count_identifier_uses_in_expr(&r.expr, uses),
+            Expr::New(n) => {
+                self.count_identifier_uses_in_expr(&n.callee, uses);
+                for arg in &n.arguments {
+                    match arg {
+                        ExprOrSpread::Expr(e) => self.count_identifier_uses_in_expr(e, uses),
+                        ExprOrSpread::Spread(s) => {
+                            self.count_identifier_uses_in_expr(&s.argument, uses)
+                        }
+                    }
+                }
+            }
+            Expr::Conditional(c) => {
+                self.count_identifier_uses_in_expr(&c.test, uses);
+                self.count_identifier_uses_in_expr(&c.consequent, uses);
+                self.count_identifier_uses_in_expr(&c.alternate, uses);
+            }
+            Expr::Logical(l) => {
+                self.count_identifier_uses_in_expr(&l.left, uses);
+                self.count_identifier_uses_in_expr(&l.right, uses);
+            }
+            Expr::Object(o) => {
+                for prop in &o.properties {
+                    match prop {
+                        ObjectProperty::Property(p) => {
+                            if p.computed {
+                                self.count_identifier_uses_in_expr(&p.key, uses);
+                            }
+                            match &p.value {
+                                ExprOrSpread::Expr(e) => {
+                                    self.count_identifier_uses_in_expr(e, uses)
+                                }
+                                ExprOrSpread::Spread(s) => {
+                                    self.count_identifier_uses_in_expr(&s.argument, uses)
+                                }
+                            }
+                        }
+                        ObjectProperty::Shorthand(id) => {
+                            *uses.entry(id.sym.clone()).or_insert(0) += 1;
+                        }
+                        ObjectProperty::Spread(s) => {
+                            self.count_identifier_uses_in_expr(&s.argument, uses)
+                        }
+                        ObjectProperty::Method(_)
+                        | ObjectProperty::Getter(_)
+                        | ObjectProperty::Setter(_) => {}
+                    }
+                }
+            }
+            Expr::Array(a) => {
+                for elem in &a.elements {
+                    if let Some(elem) = elem {
+                        match elem {
+                            ExprOrSpread::Expr(e) => self.count_identifier_uses_in_expr(e, uses),
+                            ExprOrSpread::Spread(s) => {
+                                self.count_identifier_uses_in_expr(&s.argument, uses)
+                            }
+                        }
+                    }
+                }
+            }
+            Expr::Function(_)
+            | Expr::ArrowFunction(_)
+            | Expr::This(_)
+            | Expr::Literal(_)
+            | Expr::Super(_) => {}
+            Expr::Spread(s) => self.count_identifier_uses_in_expr(&s.argument, uses),
+            Expr::Await(a) | Expr::AwaitPromised(a) => {
+                self.count_identifier_uses_in_expr(&a.argument, uses)
+            }
+            Expr::Yield(y) => {
+                if let Some(arg) = &y.argument {
+                    self.count_identifier_uses_in_expr(arg, uses);
+                }
+            }
+            Expr::Update(u) => self.count_identifier_uses_in_expr(&u.argument, uses),
+            Expr::Chain(c) => {
+                for elem in &c.expressions {
+                    match elem {
+                        ChainElement::Call(call) => {
+                            self.count_identifier_uses_in_expr(&call.callee, uses);
+                            for arg in &call.arguments {
+                                match arg {
+                                    ExprOrSpread::Expr(e) => {
+                                        self.count_identifier_uses_in_expr(e, uses)
+                                    }
+                                    ExprOrSpread::Spread(s) => {
+                                        self.count_identifier_uses_in_expr(&s.argument, uses)
+                                    }
+                                }
+                            }
+                        }
+                        ChainElement::Member(m) => {
+                            self.count_identifier_uses_in_expr(&m.object, uses);
+                            if m.computed {
+                                self.count_identifier_uses_in_expr(&m.property, uses);
+                            }
+                        }
+                        ChainElement::OptionalCall(c) => {
+                            self.count_identifier_uses_in_expr(&c.callee, uses);
+                            for arg in &c.arguments {
+                                match arg {
+                                    ExprOrSpread::Expr(e) => {
+                                        self.count_identifier_uses_in_expr(e, uses)
+                                    }
+                                    ExprOrSpread::Spread(s) => {
+                                        self.count_identifier_uses_in_expr(&s.argument, uses)
+                                    }
+                                }
+                            }
+                        }
+                        ChainElement::OptionalMember(m) => {
+                            self.count_identifier_uses_in_expr(&m.object, uses);
+                            if m.computed {
+                                self.count_identifier_uses_in_expr(&m.property, uses);
+                            }
+                        }
+                    }
+                }
+            }
+            Expr::OptionalCall(c) => {
+                self.count_identifier_uses_in_expr(&c.callee, uses);
+                for arg in &c.arguments {
+                    match arg {
+                        ExprOrSpread::Expr(e) => self.count_identifier_uses_in_expr(e, uses),
+                        ExprOrSpread::Spread(s) => {
+                            self.count_identifier_uses_in_expr(&s.argument, uses)
+                        }
+                    }
+                }
+            }
+            Expr::OptionalMember(m) => {
+                self.count_identifier_uses_in_expr(&m.object, uses);
+                if m.computed {
+                    self.count_identifier_uses_in_expr(&m.property, uses);
+                }
+            }
+            Expr::Template(t) => {
+                for expr in &t.expressions {
+                    self.count_identifier_uses_in_expr(expr, uses);
+                }
+            }
+            Expr::TypeAssertion(t) => self.count_identifier_uses_in_expr(&t.expression, uses),
+            Expr::AsType(a) => self.count_identifier_uses_in_expr(&a.expression, uses),
+            Expr::NonNull(n) => self.count_identifier_uses_in_expr(&n.expression, uses),
+            Expr::Parenthesized(p) => self.count_identifier_uses_in_expr(&p.expression, uses),
+            Expr::Import(i) => self.count_identifier_uses_in_expr(&i.source, uses),
+            Expr::TaggedTemplate(t) => {
+                self.count_identifier_uses_in_expr(&t.tag, uses);
+                for expr in &t.template.expressions {
+                    self.count_identifier_uses_in_expr(expr, uses);
+                }
+            }
+            Expr::JsxElement(_)
+            | Expr::JsxFragment(_)
+            | Expr::Class(_)
+            | Expr::MetaProperty(_)
+            | Expr::Regex(_)
+            | Expr::AssignmentTargetPattern(_) => {}
+        }
+    }
+
+    fn count_identifier_uses_in_assignment_target(
+        &self,
+        target: &AssignmentTarget,
+        uses: &mut HashMap<String, usize>,
+    ) {
+        match target {
+            AssignmentTarget::Simple(expr) => {
+                if let Expr::Member(m) = &**expr {
+                    self.count_identifier_uses_in_expr(&m.object, uses);
+                    if m.computed {
+                        self.count_identifier_uses_in_expr(&m.property, uses);
+                    }
+                }
+            }
+            AssignmentTarget::Member(member) => {
+                self.count_identifier_uses_in_expr(&member.object, uses);
+                if member.computed {
+                    self.count_identifier_uses_in_expr(&member.property, uses);
+                }
+            }
+            AssignmentTarget::Pattern(_) => {}
         }
     }
 
@@ -275,27 +765,15 @@ impl BorrowChecker {
 
     fn check_block(&mut self, b: &BlockStmt) -> Result<(), BorrowError> {
         self.scope_depth += 1;
-
-        let initial_locals = self.locals.clone();
+        self.scope_stack.push(Vec::new());
 
         for stmt in &b.statements {
             self.check_statement(stmt)?;
         }
 
-        let current_scope = self.scope_depth;
-        self.locals.retain(|_name, state| {
-            if state.drop_scope > current_scope {
-                false
-            } else {
-                true
-            }
-        });
-
-        if self.locals.len() < initial_locals.len() {
-            for (name, state) in initial_locals {
-                if !self.locals.contains_key(&name) {
-                    self.check_drop(&name, &state)?;
-                }
+        if let Some(scope_names) = self.scope_stack.pop() {
+            for name in scope_names {
+                self.cleanup_local(&name)?;
             }
         }
 
@@ -351,6 +829,9 @@ impl BorrowChecker {
                         drop_scope: self.scope_depth,
                     },
                 );
+                self.record_scope_local(id.name.sym.clone());
+                self.register_borrow_binding(&id.name.sym, &decl.init);
+                self.release_dead_borrow_binding(&id.name.sym)?;
             }
         }
         Ok(())
@@ -395,6 +876,9 @@ impl BorrowChecker {
         let old_borrows = std::mem::take(&mut self.active_borrows);
         let old_returned = std::mem::take(&mut self.returned_borrows);
         let old_context = self.current_function_context.take();
+        let old_scopes = std::mem::take(&mut self.scope_stack);
+        let old_remaining_uses = std::mem::take(&mut self.remaining_identifier_uses);
+        let old_borrow_bindings = std::mem::take(&mut self.borrow_bindings);
 
         let mut param_borrows = HashMap::new();
         for param in &f.params {
@@ -406,6 +890,9 @@ impl BorrowChecker {
             return_borrow: self.return_borrow_kind(&f.return_type),
             param_borrows,
         });
+        self.scope_stack = vec![Vec::new()];
+        self.remaining_identifier_uses =
+            vec![self.count_identifier_uses_in_statements(&f.body.statements)];
 
         for param in &f.params {
             if let Pattern::Identifier(id) = &param.pat {
@@ -421,6 +908,7 @@ impl BorrowChecker {
                         drop_scope: 0,
                     },
                 );
+                self.record_scope_local(id.name.sym.clone());
             }
         }
 
@@ -434,6 +922,9 @@ impl BorrowChecker {
         self.active_borrows = old_borrows;
         self.returned_borrows = old_returned;
         self.current_function_context = old_context;
+        self.scope_stack = old_scopes;
+        self.remaining_identifier_uses = old_remaining_uses;
+        self.borrow_bindings = old_borrow_bindings;
         Ok(())
     }
 
@@ -519,6 +1010,7 @@ impl BorrowChecker {
                             drop_scope: self.scope_depth,
                         },
                     );
+                    self.record_scope_local(id.name.sym.clone());
                 }
             }
             ForInLeft::Variable(v) => {
@@ -721,6 +1213,7 @@ impl BorrowChecker {
                 }
             }
         }
+        self.consume_identifier_use(&id.sym)?;
         Ok(())
     }
 
@@ -977,6 +1470,7 @@ impl BorrowChecker {
                     .or_insert_with(Vec::new)
                     .push(borrow);
             }
+            self.consume_identifier_use(&id.sym)?;
         }
         Ok(())
     }

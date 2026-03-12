@@ -835,7 +835,7 @@ mod move_and_race_regressions {
     #[test]
     fn rejects_move_while_value_is_borrowed() {
         // Assign
-        let source = "const a = { x: 1 }; const r = &a; const b = a;";
+        let source = "const a = { x: 1 }; const r = &a; const b = a; console.log(r);";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
 
@@ -887,6 +887,54 @@ mod move_and_race_regressions {
 
         // Assert
         assert!(result.is_ok());
+    }
+}
+
+mod nll_like_regressions {
+    use super::*;
+
+    #[test]
+    fn allows_mutable_borrow_after_last_use_of_shared_borrow_binding() {
+        // Assign
+        let source =
+            "function f(a: i32): i32 { const r = &a; console.log(r); const m = &mut a; return 0; }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn allows_mutable_borrow_when_shared_borrow_binding_is_never_used() {
+        // Assign
+        let source = "function f(a: i32): i32 { const r = &a; const m = &mut a; return 0; }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rejects_mutable_borrow_when_shared_binding_is_used_later() {
+        // Assign
+        let source =
+            "function f(a: i32): i32 { const r = &a; const m = &mut a; console.log(r); return 0; }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_err());
     }
 }
 
