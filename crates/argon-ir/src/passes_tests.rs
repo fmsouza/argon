@@ -239,10 +239,13 @@ mod constant_folding {
 
         let stats = passes::constant_fold_function(&mut func);
         assert_eq!(stats.folded, 1);
-        assert!(func.body[0]
-            .instructions
-            .iter()
-            .any(|i| matches!(i, Instruction::Const { dest: 1, value: ConstValue::Bool(false) })));
+        assert!(func.body[0].instructions.iter().any(|i| matches!(
+            i,
+            Instruction::Const {
+                dest: 1,
+                value: ConstValue::Bool(false)
+            }
+        )));
     }
 }
 

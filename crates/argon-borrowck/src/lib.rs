@@ -114,6 +114,8 @@ impl BorrowChecker {
             self.check_statement(stmt)?;
         }
 
+        self.check_data_race()?;
+
         if !self.errors.is_empty() {
             return Err(self.errors.remove(0));
         }
@@ -251,11 +253,19 @@ impl BorrowChecker {
     fn check_variable(&mut self, v: &VariableStmt) -> Result<(), BorrowError> {
         for decl in &v.declarations {
             if let Pattern::Identifier(id) = &decl.id {
+                if let Some(ref init) = decl.init {
+                    self.check_expression(init)?;
+                }
+
                 let mut ownership = if let Some(ref init) = decl.init {
                     self.check_moveable(init)?
                 } else {
                     Ownership::Owned
                 };
+
+                if let Some(Expr::Identifier(src)) = &decl.init {
+                    self.move_identifier_if_needed(src)?;
+                }
 
                 let is_copyable = self.is_copyable_variable(&id.name.sym, &decl.init);
                 if is_copyable && matches!(ownership, Ownership::Owned) {
@@ -640,6 +650,10 @@ impl BorrowChecker {
     ) -> Result<(), BorrowError> {
         self.check_expression(value)?;
 
+        if let Expr::Identifier(src) = value {
+            self.move_identifier_if_needed(src)?;
+        }
+
         match target {
             AssignmentTarget::Simple(expr) => {
                 if let Expr::Identifier(id) = &**expr {
@@ -666,6 +680,9 @@ impl BorrowChecker {
 
         for arg in &c.arguments {
             if let ExprOrSpread::Expr(e) = arg {
+                if let Expr::Identifier(id) = e {
+                    self.move_identifier_if_needed(id)?;
+                }
                 self.check_expression(e)?;
             }
         }
@@ -680,6 +697,33 @@ impl BorrowChecker {
             }
         }
 
+        Ok(())
+    }
+
+    fn move_identifier_if_needed(&mut self, id: &Ident) -> Result<(), BorrowError> {
+        if let Some(state) = self.locals.get_mut(&id.sym) {
+            if state.is_copyable {
+                return Ok(());
+            }
+
+            match state.ownership {
+                Ownership::Moved => {
+                    self.errors.push(BorrowError::UseAfterMove {
+                        variable: id.sym.clone(),
+                        location: id.span.clone(),
+                    });
+                }
+                Ownership::Borrowed(_) => {
+                    self.errors.push(BorrowError::CannotMove {
+                        variable: id.sym.clone(),
+                        location: id.span.clone(),
+                    });
+                }
+                _ => {
+                    state.ownership = Ownership::Moved;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -761,7 +805,7 @@ impl BorrowChecker {
                     if state.is_copyable {
                         Ok(Ownership::Copied)
                     } else {
-                    Ok(state.ownership.clone())
+                        Ok(state.ownership.clone())
                     }
                 } else {
                     Ok(Ownership::Copied)

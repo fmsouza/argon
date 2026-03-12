@@ -233,7 +233,8 @@ mod ir_codegen {
 
     #[test]
     fn generates_match_via_ir_cfg() {
-        let source = "function f(x: i32): void { match (x) { 1 => const a = 1, 2 => const b = 2, } }";
+        let source =
+            "function f(x: i32): void { match (x) { 1 => const a = 1, 2 => const b = 2, } }";
         let ast = parse(source).unwrap();
         let mut builder = IrBuilder::new();
         let ir = builder.build(&ast).unwrap();

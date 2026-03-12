@@ -279,3 +279,86 @@ impl std::fmt::Display for InteropError {
 }
 
 impl std::error::Error for InteropError {}
+
+#[cfg(test)]
+mod interop_tests {
+    use super::*;
+    use argon_parser::parse;
+
+    #[test]
+    fn processes_named_import_alias() {
+        // Assign
+        let source = r#"import { useState as state } from "react";"#;
+        let ast = parse(source).expect("parse should succeed");
+        let import = match &ast.statements[0] {
+            Stmt::Import(i) => i,
+            _ => panic!("expected import statement"),
+        };
+        let mut generator = InteropGenerator::new();
+
+        // Act
+        let js_import = generator
+            .process_import(import)
+            .expect("import processing should succeed");
+
+        // Assert
+        assert!(js_import.module.contains("react"));
+        assert_eq!(js_import.name, "useState");
+        assert_eq!(js_import.local_name, "state");
+    }
+
+    #[test]
+    fn processes_exported_function_declaration() {
+        // Assign
+        let source = r#"
+            export function greet(name: string): string {
+                return name;
+            }
+        "#;
+        let ast = parse(source).expect("parse should succeed");
+        let export = match &ast.statements[0] {
+            Stmt::Export(e) => e,
+            _ => panic!("expected export statement"),
+        };
+        let decl = export
+            .declaration
+            .as_deref()
+            .expect("export should contain declaration");
+        let mut generator = InteropGenerator::new();
+
+        // Act
+        let js_export = generator
+            .process_export(export, decl)
+            .expect("export processing should succeed");
+
+        // Assert
+        assert_eq!(js_export.name, "greet");
+        assert_eq!(generator.map_argon_to_js(&js_export.ty), "Function");
+    }
+
+    #[test]
+    fn generates_declaration_file_from_exports() {
+        // Assign
+        let source = r#"export function ping(): string { return "ok"; }"#;
+        let ast = parse(source).expect("parse should succeed");
+        let export = match &ast.statements[0] {
+            Stmt::Export(e) => e,
+            _ => panic!("expected export statement"),
+        };
+        let decl = export
+            .declaration
+            .as_deref()
+            .expect("export should contain declaration");
+        let mut generator = InteropGenerator::new();
+        generator
+            .process_export(export, decl)
+            .expect("export processing should succeed");
+
+        // Act
+        let dts = generator.generate_declaration_file();
+
+        // Assert
+        assert!(dts.contains("Generated type declarations"));
+        assert!(dts.contains("export function ping: Function;"));
+    }
+}

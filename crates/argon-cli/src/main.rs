@@ -428,15 +428,15 @@ fn collect_test_files(
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-            if path.is_file() {
-                if let Some(ext) = path.extension() {
-                    if ext == "arg" || ext == "ss" {
-                        files.push(path);
-                    }
+        if path.is_file() {
+            if let Some(ext) = path.extension() {
+                if ext == "arg" || ext == "ss" {
+                    files.push(path);
                 }
-            } else if path.is_dir() {
-                collect_test_files(&path, files)?;
             }
+        } else if path.is_dir() {
+            collect_test_files(&path, files)?;
+        }
     }
     Ok(())
 }
@@ -482,8 +482,12 @@ fn run_test_file_with_pipeline(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let temp_file = std::env::temp_dir()
-        .join(format!("argon_test_{}_{}.{}", std::process::id(), unique, ext));
+    let temp_file = std::env::temp_dir().join(format!(
+        "argon_test_{}_{}.{}",
+        std::process::id(),
+        unique,
+        ext
+    ));
     fs::write(&temp_file, &js)?;
 
     let output = std::process::Command::new("node")
@@ -661,7 +665,15 @@ fn watch(
     if check_only {
         let _ = check(input);
     } else {
-        let _ = compile(input, output, target, source_map, opt, declarations, pipeline);
+        let _ = compile(
+            input,
+            output,
+            target,
+            source_map,
+            opt,
+            declarations,
+            pipeline,
+        );
     }
 
     loop {
@@ -675,8 +687,15 @@ fn watch(
             if let Err(e) = check(input) {
                 eprintln!("{}", e);
             }
-        } else if let Err(e) = compile(input, output, target, source_map, opt, declarations, pipeline)
-        {
+        } else if let Err(e) = compile(
+            input,
+            output,
+            target,
+            source_map,
+            opt,
+            declarations,
+            pipeline,
+        ) {
             eprintln!("{}", e);
         }
     }

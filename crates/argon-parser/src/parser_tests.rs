@@ -943,3 +943,94 @@ mod span_parsing {
         assert_eq!(&source[jsx.span().clone()], "<div>Hello</div>");
     }
 }
+
+mod completion_frontend_parsing {
+    use super::*;
+
+    #[test]
+    fn parses_loop_statement() {
+        // Assign
+        let source = "loop { break; }";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let ast = result.unwrap();
+        assert!(matches!(ast.statements[0], Stmt::Loop(_)));
+    }
+
+    #[test]
+    fn parses_for_of_statement() {
+        // Assign
+        let source = "for (const item of items) { console.log(item); }";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let ast = result.unwrap();
+        assert!(matches!(ast.statements[0], Stmt::ForIn(_)));
+    }
+
+    #[test]
+    fn parses_struct_with_method() {
+        // Assign
+        let source = "struct Point { x: f64; getX(): f64 with &this { return this.x; } }";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let ast = result.unwrap();
+        let s = match &ast.statements[0] {
+            Stmt::Struct(s) => s,
+            _ => panic!("expected struct statement"),
+        };
+        assert_eq!(s.methods.len(), 1);
+    }
+
+    #[test]
+    fn parses_object_literal_in_initializer() {
+        // Assign
+        let source = "const data = { value: 42 };";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn parses_export_decorator() {
+        // Assign
+        let source = "@export function f(): i32 { return 1; }";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let ast = result.unwrap();
+        assert!(matches!(ast.statements[0], Stmt::Export(_)));
+    }
+
+    #[test]
+    fn parses_js_interop_declare_module_block() {
+        // Assign
+        let source =
+            "@js-interop declare module \"axios\" { function get<T>(url: string): string; }";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let ast = result.unwrap();
+        assert!(matches!(ast.statements[0], Stmt::Module(_)));
+    }
+}

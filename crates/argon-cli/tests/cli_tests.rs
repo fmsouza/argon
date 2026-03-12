@@ -4,6 +4,7 @@ use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 #[allow(dead_code)]
 fn test_dir() -> PathBuf {
@@ -389,4 +390,146 @@ fn test_compile_example_esm_import() {
     let output = fs::read_to_string(temp_dir.path().join("out.js")).unwrap();
     assert!(output.contains("import y from \"test\";"));
     assert!(output.contains("const x = 1"));
+}
+
+#[test]
+fn test_check_readme_interop_annotations() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("interop.arg");
+    fs::write(
+        &source_file,
+        r#"
+@js-interop
+declare module "axios" {
+    function get<T>(url: string): string;
+}
+
+@export
+function processImage(data: i32, width: i32, height: i32): i32 {
+    return data + width + height;
+}
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("check").arg(&source_file).assert().success();
+}
+
+#[test]
+fn test_compile_ir_and_execute_for_of_snippet() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("for_of.arg");
+    let output_file = temp_dir.path().join("output.js");
+    fs::write(
+        &source_file,
+        r#"
+function renderAll(items: i32[]): i32 {
+    let sum = 0;
+    for (const item of items) {
+        sum = sum + item;
+    }
+    return sum;
+}
+
+console.log(renderAll([1, 2, 3]));
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(&output_file)
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
+        .success();
+
+    let node_output = Command::new("node").arg(&output_file).output().unwrap();
+    assert!(node_output.status.success());
+    let stdout = String::from_utf8_lossy(&node_output.stdout);
+    assert!(stdout.contains("6"));
+}
+
+#[test]
+fn test_run_executes_for_of_runtime_snippet() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("run_for_of.arg");
+    fs::write(
+        &source_file,
+        r#"
+const items = [1, 2, 3];
+let sum = 0;
+for (const item of items) {
+    sum = sum + item;
+}
+console.log(sum);
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("run")
+        .arg(&source_file)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("6"));
+}
+
+#[test]
+fn test_compile_wasm_subset_and_execute() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("subset.arg");
+    let output_file = temp_dir.path().join("subset.wasm");
+    fs::write(
+        &source_file,
+        r#"
+function sumTo(n: i32): i32 {
+    let acc = 0;
+    let i = 0;
+    while (i <= n) {
+        acc = acc + i;
+        i = i + 1;
+    }
+    return acc;
+}
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(&output_file)
+        .arg("--target")
+        .arg("wasm")
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Generating WebAssembly"));
+
+    let script = r#"
+const fs = require('fs');
+const wasmPath = process.argv[1];
+const bytes = fs.readFileSync(wasmPath);
+WebAssembly.instantiate(bytes, {}).then(({ instance }) => {
+  console.log(String(instance.exports.sumTo(5)));
+}).catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+"#;
+    let node_output = Command::new("node")
+        .arg("-e")
+        .arg(script)
+        .arg(&output_file)
+        .output()
+        .unwrap();
+    assert!(node_output.status.success());
+    let stdout = String::from_utf8_lossy(&node_output.stdout);
+    assert!(stdout.contains("15"));
 }

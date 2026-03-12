@@ -21,3 +21,4 @@ thiserror.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 insta.workspace = true
+wasmparser.workspace = true

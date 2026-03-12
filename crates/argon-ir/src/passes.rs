@@ -17,11 +17,7 @@ pub struct Cfg {
 }
 
 pub fn build_cfg(func: &Function) -> Cfg {
-    let entry = func
-        .body
-        .first()
-        .map(|b| b.id)
-        .unwrap_or(0);
+    let entry = func.body.first().map(|b| b.id).unwrap_or(0);
 
     let mut preds: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
     let mut succs: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
@@ -198,12 +194,7 @@ fn constant_fold_block(block: &mut BasicBlock) -> usize {
                     }
                 }
             }
-            Instruction::BinOp {
-                op,
-                lhs,
-                rhs,
-                dest,
-            } => {
+            Instruction::BinOp { op, lhs, rhs, dest } => {
                 let l = consts.get(&lhs).cloned();
                 let r = consts.get(&rhs).cloned();
                 if let (Some(l), Some(r)) = (l, r) {
@@ -315,12 +306,7 @@ fn const_prop_and_fold_block_with_seed(
                     }
                 }
             }
-            Instruction::BinOp {
-                op,
-                lhs,
-                rhs,
-                dest,
-            } => {
+            Instruction::BinOp { op, lhs, rhs, dest } => {
                 let l = consts.get(&lhs).cloned();
                 let r = consts.get(&rhs).cloned();
                 if let (Some(l), Some(r)) = (l, r) {
@@ -351,11 +337,21 @@ fn fold_unop(op: UnOp, v: ConstValue) -> Option<ConstValue> {
 
 fn fold_binop(op: BinOp, l: ConstValue, r: ConstValue) -> Option<ConstValue> {
     match (op, l, r) {
-        (BinOp::Add, ConstValue::Number(a), ConstValue::Number(b)) => Some(ConstValue::Number(a + b)),
-        (BinOp::Sub, ConstValue::Number(a), ConstValue::Number(b)) => Some(ConstValue::Number(a - b)),
-        (BinOp::Mul, ConstValue::Number(a), ConstValue::Number(b)) => Some(ConstValue::Number(a * b)),
-        (BinOp::Div, ConstValue::Number(a), ConstValue::Number(b)) => Some(ConstValue::Number(a / b)),
-        (BinOp::Mod, ConstValue::Number(a), ConstValue::Number(b)) => Some(ConstValue::Number(a % b)),
+        (BinOp::Add, ConstValue::Number(a), ConstValue::Number(b)) => {
+            Some(ConstValue::Number(a + b))
+        }
+        (BinOp::Sub, ConstValue::Number(a), ConstValue::Number(b)) => {
+            Some(ConstValue::Number(a - b))
+        }
+        (BinOp::Mul, ConstValue::Number(a), ConstValue::Number(b)) => {
+            Some(ConstValue::Number(a * b))
+        }
+        (BinOp::Div, ConstValue::Number(a), ConstValue::Number(b)) => {
+            Some(ConstValue::Number(a / b))
+        }
+        (BinOp::Mod, ConstValue::Number(a), ConstValue::Number(b)) => {
+            Some(ConstValue::Number(a % b))
+        }
         (BinOp::Eq, a, b) => Some(ConstValue::Bool(const_eq(&a, &b))),
         (BinOp::Ne, a, b) => Some(ConstValue::Bool(!const_eq(&a, &b))),
         (BinOp::Lt, ConstValue::Number(a), ConstValue::Number(b)) => Some(ConstValue::Bool(a < b)),

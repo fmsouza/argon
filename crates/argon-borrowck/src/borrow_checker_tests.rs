@@ -813,3 +813,35 @@ mod error_messages {
         assert!(result.is_ok());
     }
 }
+
+mod move_and_race_regressions {
+    use super::*;
+
+    #[test]
+    fn rejects_use_after_move_for_non_copy_identifier() {
+        // Assign
+        let source = "const a = { x: 1 }; const b = a; const c = a;";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_move_while_value_is_borrowed() {
+        // Assign
+        let source = "const a = { x: 1 }; const r = &a; const b = a;";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_err());
+    }
+}

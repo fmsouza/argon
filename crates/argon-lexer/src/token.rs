@@ -32,6 +32,7 @@ pub enum TokenKind {
     Dot,
     DotDot,
     DotDotDot,
+    At,
     Question,
     QuestionDot,
     QuestionQuestion,
@@ -179,6 +180,7 @@ pub enum TokenKind {
     Copy,   // copy trait
     Mut,    // mutable borrow
     Constructor,
+    Loop,
     // Numeric types
     I8,
     I16,
@@ -222,6 +224,7 @@ impl TokenKind {
             "copy" => TokenKind::Copy,
             "mut" => TokenKind::Mut,
             "constructor" => TokenKind::Constructor,
+            "loop" => TokenKind::Loop,
 
             // Numeric types
             "i8" => TokenKind::I8,
@@ -325,6 +328,7 @@ impl TokenKind {
                 | TokenKind::Move
                 | TokenKind::Copy
                 | TokenKind::Constructor
+                | TokenKind::Loop
                 | TokenKind::Abstract
                 | TokenKind::Any
                 | TokenKind::As

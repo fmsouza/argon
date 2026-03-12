@@ -52,6 +52,7 @@ insta = "1.34"
 # Codegen - WASM
 wasm-encoder = "0.41"
 wasmprinter = "0.224"
+wasmparser = "0.224"
 sourcemap = "7.0"
 
 # Serialization

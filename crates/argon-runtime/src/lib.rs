@@ -1,7 +1,9 @@
 //! Argon Runtime - Direct execution of Argon code
 
 use argon_ast::*;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -12,7 +14,7 @@ pub enum Value {
     Undefined,
     Function(RcFunction),
     NativeFunction(NativeFunction),
-    Object(HashMap<String, Value>),
+    Object(Rc<RefCell<HashMap<String, Value>>>),
     Array(Vec<Value>),
 }
 
@@ -26,6 +28,19 @@ pub struct RcFunction {
 #[derive(Debug, Clone)]
 pub struct NativeFunction {
     pub name: String,
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeStructDef {
+    fields: Vec<String>,
+    methods: HashMap<String, FunctionDecl>,
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeClassDef {
+    fields: Vec<String>,
+    methods: HashMap<String, FunctionDecl>,
+    constructor: Option<Constructor>,
 }
 
 #[derive(Debug, Clone)]
@@ -53,9 +68,18 @@ impl Scope {
     }
 }
 
+enum ExecOutcome {
+    Normal(Value),
+    Return(Value),
+    Break,
+    Continue,
+}
+
 pub struct Runtime {
     scope: Scope,
     globals: HashMap<String, Value>,
+    struct_defs: HashMap<String, RuntimeStructDef>,
+    class_defs: HashMap<String, RuntimeClassDef>,
 }
 
 impl Runtime {
@@ -69,7 +93,10 @@ impl Runtime {
                 name: "console.log".to_string(),
             }),
         );
-        globals.insert("console".to_string(), Value::Object(console_obj));
+        globals.insert(
+            "console".to_string(),
+            Value::Object(Rc::new(RefCell::new(console_obj))),
+        );
 
         let mut math_obj = HashMap::new();
         math_obj.insert(
@@ -120,22 +147,40 @@ impl Runtime {
                 name: "Math.min".to_string(),
             }),
         );
-        globals.insert("Math".to_string(), Value::Object(math_obj));
+        globals.insert(
+            "Math".to_string(),
+            Value::Object(Rc::new(RefCell::new(math_obj))),
+        );
 
         Self {
             scope: Scope::new(),
             globals,
+            struct_defs: HashMap::new(),
+            class_defs: HashMap::new(),
         }
     }
 
     pub fn execute(&mut self, source: &SourceFile) -> Result<Value, RuntimeError> {
         for stmt in &source.statements {
-            self.execute_statement(stmt)?;
+            match self.execute_statement(stmt)? {
+                ExecOutcome::Normal(_) => {}
+                ExecOutcome::Return(value) => return Ok(value),
+                ExecOutcome::Break => {
+                    return Err(RuntimeError::InvalidControlFlow(
+                        "break outside loop".to_string(),
+                    ))
+                }
+                ExecOutcome::Continue => {
+                    return Err(RuntimeError::InvalidControlFlow(
+                        "continue outside loop".to_string(),
+                    ))
+                }
+            }
         }
         Ok(Value::Undefined)
     }
 
-    fn execute_statement(&mut self, stmt: &Stmt) -> Result<Value, RuntimeError> {
+    fn execute_statement(&mut self, stmt: &Stmt) -> Result<ExecOutcome, RuntimeError> {
         match stmt {
             Stmt::Variable(v) => {
                 for decl in &v.declarations {
@@ -147,60 +192,220 @@ impl Runtime {
                         self.scope.define(id.name.sym.clone(), value);
                     }
                 }
-                Ok(Value::Undefined)
+                Ok(ExecOutcome::Normal(Value::Undefined))
             }
-            Stmt::Function(f) => {
+            Stmt::Function(f) | Stmt::AsyncFunction(f) => {
                 if let Some(id) = &f.id {
                     let func = RcFunction {
-                        params: f
-                            .params
-                            .iter()
-                            .filter_map(|p| {
-                                if let Pattern::Identifier(id) = &p.pat {
-                                    Some(id.name.sym.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect(),
+                        params: function_params(f),
                         body: f.body.statements.clone(),
                         closure: self.scope.clone(),
                     };
                     self.scope.define(id.sym.clone(), Value::Function(func));
                 }
-                Ok(Value::Undefined)
+                Ok(ExecOutcome::Normal(Value::Undefined))
             }
-            Stmt::Expr(e) => self.evaluate_expression(&e.expr),
+            Stmt::Struct(s) => {
+                self.register_struct(s);
+                Ok(ExecOutcome::Normal(Value::Undefined))
+            }
+            Stmt::Class(c) => {
+                self.register_class(c);
+                Ok(ExecOutcome::Normal(Value::Undefined))
+            }
+            Stmt::Expr(e) => Ok(ExecOutcome::Normal(self.evaluate_expression(&e.expr)?)),
             Stmt::Return(r) => match &r.argument {
-                Some(expr) => self.evaluate_expression(expr),
-                None => Ok(Value::Undefined),
+                Some(expr) => Ok(ExecOutcome::Return(self.evaluate_expression(expr)?)),
+                None => Ok(ExecOutcome::Return(Value::Undefined)),
             },
             Stmt::If(i) => {
                 let cond = self.evaluate_expression(&i.condition)?;
                 if self.is_truthy(&cond) {
-                    self.execute_statement(&i.consequent)?;
+                    self.execute_statement(&i.consequent)
                 } else if let Some(alt) = &i.alternate {
-                    self.execute_statement(alt)?;
+                    self.execute_statement(alt)
+                } else {
+                    Ok(ExecOutcome::Normal(Value::Undefined))
                 }
-                Ok(Value::Undefined)
             }
             Stmt::While(w) => {
-                while self.is_truthy(&self.evaluate_expression(&w.condition)?) {
-                    self.execute_statement(&w.body)?;
+                loop {
+                    let condition = self.evaluate_expression(&w.condition)?;
+                    if !self.is_truthy(&condition) {
+                        break;
+                    }
+
+                    match self.execute_statement(&w.body)? {
+                        ExecOutcome::Normal(_) => {}
+                        ExecOutcome::Break => break,
+                        ExecOutcome::Continue => continue,
+                        ExecOutcome::Return(v) => return Ok(ExecOutcome::Return(v)),
+                    }
                 }
-                Ok(Value::Undefined)
+                Ok(ExecOutcome::Normal(Value::Undefined))
+            }
+            Stmt::Loop(l) => {
+                loop {
+                    match self.execute_statement(&l.body)? {
+                        ExecOutcome::Normal(_) => {}
+                        ExecOutcome::Break => break,
+                        ExecOutcome::Continue => continue,
+                        ExecOutcome::Return(v) => return Ok(ExecOutcome::Return(v)),
+                    }
+                }
+                Ok(ExecOutcome::Normal(Value::Undefined))
+            }
+            Stmt::For(f) => {
+                if let Some(init) = &f.init {
+                    match init {
+                        ForInit::Variable(v) => {
+                            let _ = self.execute_statement(&Stmt::Variable(v.clone()))?;
+                        }
+                        ForInit::Expr(e) => {
+                            let _ = self.evaluate_expression(e)?;
+                        }
+                    }
+                }
+
+                loop {
+                    if let Some(test) = &f.test {
+                        let test_value = self.evaluate_expression(test)?;
+                        if !self.is_truthy(&test_value) {
+                            break;
+                        }
+                    }
+
+                    match self.execute_statement(&f.body)? {
+                        ExecOutcome::Normal(_) => {}
+                        ExecOutcome::Break => break,
+                        ExecOutcome::Continue => {}
+                        ExecOutcome::Return(v) => return Ok(ExecOutcome::Return(v)),
+                    }
+
+                    if let Some(update) = &f.update {
+                        let _ = self.evaluate_expression(update)?;
+                    }
+                }
+                Ok(ExecOutcome::Normal(Value::Undefined))
+            }
+            Stmt::ForIn(f) => {
+                let iterable = self.evaluate_expression(&f.right)?;
+                let values = self.to_iter_values(&iterable)?;
+                for value in values {
+                    match &f.left {
+                        ForInLeft::Pattern(Pattern::Identifier(id)) => {
+                            self.scope.set(id.name.sym.clone(), value);
+                        }
+                        ForInLeft::Variable(v) => {
+                            if let Pattern::Identifier(id) = &v.id {
+                                self.scope.set(id.name.sym.clone(), value);
+                            }
+                        }
+                        _ => {
+                            return Err(RuntimeError::Unsupported(
+                                "unsupported for..of binding pattern".to_string(),
+                            ));
+                        }
+                    }
+
+                    match self.execute_statement(&f.body)? {
+                        ExecOutcome::Normal(_) => {}
+                        ExecOutcome::Break => break,
+                        ExecOutcome::Continue => continue,
+                        ExecOutcome::Return(v) => return Ok(ExecOutcome::Return(v)),
+                    }
+                }
+                Ok(ExecOutcome::Normal(Value::Undefined))
             }
             Stmt::Block(b) => {
                 for stmt in &b.statements {
-                    self.execute_statement(stmt)?;
+                    match self.execute_statement(stmt)? {
+                        ExecOutcome::Normal(_) => {}
+                        non_normal => return Ok(non_normal),
+                    }
                 }
-                Ok(Value::Undefined)
+                Ok(ExecOutcome::Normal(Value::Undefined))
             }
-            _ => Ok(Value::Undefined),
+            Stmt::Break(_) => Ok(ExecOutcome::Break),
+            Stmt::Continue(_) => Ok(ExecOutcome::Continue),
+            Stmt::Match(m) => {
+                let disc = self.evaluate_expression(&m.discriminant)?;
+                for case in &m.cases {
+                    let pat = self.evaluate_expression(&case.pattern)?;
+                    if self.values_equal(&disc, &pat) {
+                        return self.execute_statement(&case.consequent);
+                    }
+                }
+                Ok(ExecOutcome::Normal(Value::Undefined))
+            }
+            Stmt::Switch(s) => {
+                let disc = self.evaluate_expression(&s.discriminant)?;
+                let mut matched = false;
+                for case in &s.cases {
+                    if !matched {
+                        matched = if let Some(test) = &case.test {
+                            let test_value = self.evaluate_expression(test)?;
+                            self.values_equal(&disc, &test_value)
+                        } else {
+                            true
+                        };
+                    }
+                    if matched {
+                        for stmt in &case.consequent {
+                            match self.execute_statement(stmt)? {
+                                ExecOutcome::Normal(_) => {}
+                                ExecOutcome::Break => {
+                                    return Ok(ExecOutcome::Normal(Value::Undefined))
+                                }
+                                non_normal => return Ok(non_normal),
+                            }
+                        }
+                    }
+                }
+                Ok(ExecOutcome::Normal(Value::Undefined))
+            }
+            Stmt::Throw(t) => {
+                let value = self.evaluate_expression(&t.argument)?;
+                Err(RuntimeError::Thrown(self.value_to_string(&value)))
+            }
+            Stmt::Try(t) => {
+                let try_result = self.execute_statement(&Stmt::Block(t.block.clone()));
+                let outcome = match try_result {
+                    Ok(outcome) => outcome,
+                    Err(err) => {
+                        if let Some(handler) = &t.handler {
+                            if let Some(Pattern::Identifier(id)) = &handler.param {
+                                self.scope
+                                    .set(id.name.sym.clone(), Value::String(err.to_string()));
+                            }
+                            self.execute_statement(&Stmt::Block(handler.body.clone()))?
+                        } else {
+                            return Err(err);
+                        }
+                    }
+                };
+
+                if let Some(finalizer) = &t.finalizer {
+                    let _ = self.execute_statement(&Stmt::Block(finalizer.clone()))?;
+                }
+                Ok(outcome)
+            }
+            Stmt::Import(_)
+            | Stmt::Export(_)
+            | Stmt::Interface(_)
+            | Stmt::Enum(_)
+            | Stmt::TypeAlias(_)
+            | Stmt::Module(_)
+            | Stmt::Empty(_)
+            | Stmt::Debugger(_) => Ok(ExecOutcome::Normal(Value::Undefined)),
+            _ => Err(RuntimeError::Unsupported(format!(
+                "unsupported statement at runtime: {:?}",
+                stmt
+            ))),
         }
     }
 
-    fn evaluate_expression(&self, expr: &Expr) -> Result<Value, RuntimeError> {
+    fn evaluate_expression(&mut self, expr: &Expr) -> Result<Value, RuntimeError> {
         match expr {
             Expr::Literal(lit) => match lit {
                 Literal::Number(n) => Ok(Value::Number(n.value)),
@@ -209,153 +414,438 @@ impl Runtime {
                 Literal::Null(_) => Ok(Value::Null),
                 _ => Ok(Value::Undefined),
             },
+            Expr::This(_) => Ok(self.scope.get("this").unwrap_or(Value::Undefined)),
             Expr::Identifier(id) => self
                 .scope
                 .get(&id.sym)
                 .or_else(|| self.globals.get(&id.sym).cloned())
                 .ok_or_else(|| RuntimeError::UndefinedVariable(id.sym.clone())),
+            Expr::Template(t) => {
+                let mut out = String::new();
+                for (idx, quasi) in t.quasis.iter().enumerate() {
+                    out.push_str(&quasi.value);
+                    if let Some(expr) = t.expressions.get(idx) {
+                        let value = self.evaluate_expression(expr)?;
+                        out.push_str(&self.value_to_string(&value));
+                    }
+                }
+                Ok(Value::String(out))
+            }
+            Expr::Object(o) => {
+                let mut map = HashMap::new();
+                for prop in &o.properties {
+                    match prop {
+                        ObjectProperty::Property(p) => {
+                            let key = self.property_key(&p.key)?;
+                            let value = match &p.value {
+                                ExprOrSpread::Expr(e) => self.evaluate_expression(e)?,
+                                ExprOrSpread::Spread(_) => {
+                                    return Err(RuntimeError::Unsupported(
+                                        "spread in object literals is not supported".to_string(),
+                                    ))
+                                }
+                            };
+                            map.insert(key, value);
+                        }
+                        ObjectProperty::Shorthand(id) => {
+                            let value = self
+                                .scope
+                                .get(&id.sym)
+                                .or_else(|| self.globals.get(&id.sym).cloned())
+                                .unwrap_or(Value::Undefined);
+                            map.insert(id.sym.clone(), value);
+                        }
+                        _ => {
+                            return Err(RuntimeError::Unsupported(
+                                "unsupported object literal property".to_string(),
+                            ))
+                        }
+                    }
+                }
+                Ok(Value::Object(Rc::new(RefCell::new(map))))
+            }
+            Expr::Array(a) => {
+                let mut values = Vec::new();
+                for el in &a.elements {
+                    match el {
+                        Some(ExprOrSpread::Expr(e)) => values.push(self.evaluate_expression(e)?),
+                        Some(ExprOrSpread::Spread(_)) => {
+                            return Err(RuntimeError::Unsupported(
+                                "array spread is not supported".to_string(),
+                            ))
+                        }
+                        None => values.push(Value::Undefined),
+                    }
+                }
+                Ok(Value::Array(values))
+            }
+            Expr::Member(m) => {
+                let object = self.evaluate_expression(&m.object)?;
+                let property = if m.computed {
+                    let key = self.evaluate_expression(&m.property)?;
+                    self.value_to_string(&key)
+                } else {
+                    self.property_key(&m.property)?
+                };
+
+                if let Value::Object(map) = object {
+                    Ok(map
+                        .borrow()
+                        .get(&property)
+                        .cloned()
+                        .unwrap_or(Value::Undefined))
+                } else {
+                    Err(RuntimeError::TypeError(
+                        "member access on non-object value".to_string(),
+                    ))
+                }
+            }
+            Expr::Assignment(a) => {
+                let value = self.evaluate_expression(&a.right)?;
+                match &*a.left {
+                    AssignmentTarget::Simple(target) => match &**target {
+                        Expr::Identifier(id) => {
+                            self.scope.set(id.sym.clone(), value.clone());
+                            Ok(value)
+                        }
+                        _ => Err(RuntimeError::Unsupported(
+                            "unsupported assignment target".to_string(),
+                        )),
+                    },
+                    AssignmentTarget::Member(member) => {
+                        let object = self.evaluate_expression(&member.object)?;
+                        let property = if member.computed {
+                            let key = self.evaluate_expression(&member.property)?;
+                            self.value_to_string(&key)
+                        } else {
+                            self.property_key(&member.property)?
+                        };
+                        if let Value::Object(map) = object {
+                            map.borrow_mut().insert(property, value.clone());
+                            Ok(value)
+                        } else {
+                            Err(RuntimeError::TypeError(
+                                "member assignment on non-object value".to_string(),
+                            ))
+                        }
+                    }
+                    AssignmentTarget::Pattern(_) => Err(RuntimeError::Unsupported(
+                        "pattern assignment is not supported".to_string(),
+                    )),
+                }
+            }
             Expr::Binary(b) => {
                 let left = self.evaluate_expression(&b.left)?;
                 let right = self.evaluate_expression(&b.right)?;
-                match b.operator {
-                    BinaryOperator::Plus => match (&left, &right) {
-                        (Value::String(s), v) => {
-                            Ok(Value::String(s.clone() + &self.value_to_string(v)))
-                        }
-                        (v, Value::String(s)) => Ok(Value::String(self.value_to_string(v) + s)),
-                        (Value::Number(a), Value::Number(b)) => Ok(Value::Number(a + b)),
-                        _ => Ok(Value::Undefined),
-                    },
-                    BinaryOperator::Minus => {
-                        if let (Value::Number(a), Value::Number(b)) = (&left, &right) {
-                            Ok(Value::Number(a - b))
-                        } else {
-                            Ok(Value::Undefined)
-                        }
-                    }
-                    BinaryOperator::Multiply => {
-                        if let (Value::Number(a), Value::Number(b)) = (&left, &right) {
-                            Ok(Value::Number(a * b))
-                        } else {
-                            Ok(Value::Undefined)
-                        }
-                    }
-                    BinaryOperator::Divide => {
-                        if let (Value::Number(a), Value::Number(b)) = (&left, &right) {
-                            Ok(Value::Number(a / b))
-                        } else {
-                            Ok(Value::Undefined)
-                        }
-                    }
-                    BinaryOperator::Equal => Ok(Value::Boolean(false)),
-                    BinaryOperator::NotEqual => Ok(Value::Boolean(true)),
-                    BinaryOperator::LessThan => {
-                        if let (Value::Number(a), Value::Number(b)) = (&left, &right) {
-                            Ok(Value::Boolean(a < b))
-                        } else {
-                            Ok(Value::Boolean(false))
-                        }
-                    }
-                    BinaryOperator::LessThanOrEqual => {
-                        if let (Value::Number(a), Value::Number(b)) = (&left, &right) {
-                            Ok(Value::Boolean(a <= b))
-                        } else {
-                            Ok(Value::Boolean(false))
-                        }
-                    }
-                    BinaryOperator::GreaterThan => {
-                        if let (Value::Number(a), Value::Number(b)) = (&left, &right) {
-                            Ok(Value::Boolean(a > b))
-                        } else {
-                            Ok(Value::Boolean(false))
-                        }
-                    }
-                    BinaryOperator::GreaterThanOrEqual => {
-                        if let (Value::Number(a), Value::Number(b)) = (&left, &right) {
-                            Ok(Value::Boolean(a >= b))
-                        } else {
-                            Ok(Value::Boolean(false))
-                        }
-                    }
-                    _ => Ok(Value::Undefined),
-                }
+                self.eval_binary(b.operator.clone(), left, right)
             }
             Expr::Unary(u) => {
                 let value = self.evaluate_expression(&u.argument)?;
                 match u.operator {
-                    UnaryOperator::Minus => {
-                        if let Value::Number(n) = value {
-                            Ok(Value::Number(-n))
-                        } else {
-                            Ok(Value::Undefined)
-                        }
-                    }
+                    UnaryOperator::Minus => match value {
+                        Value::Number(n) => Ok(Value::Number(-n)),
+                        _ => Err(RuntimeError::TypeError(
+                            "unary '-' expects a number".to_string(),
+                        )),
+                    },
                     UnaryOperator::LogicalNot => Ok(Value::Boolean(!self.is_truthy(&value))),
-                    _ => Ok(Value::Undefined),
+                    UnaryOperator::Plus => match value {
+                        Value::Number(n) => Ok(Value::Number(n)),
+                        _ => Err(RuntimeError::TypeError(
+                            "unary '+' expects a number".to_string(),
+                        )),
+                    },
+                    _ => Err(RuntimeError::Unsupported(
+                        "unsupported unary operator".to_string(),
+                    )),
                 }
             }
             Expr::Call(c) => {
                 let callee = self.evaluate_expression(&c.callee)?;
-                let args: Result<Vec<_>, _> = c
-                    .arguments
-                    .iter()
-                    .filter_map(|a| {
-                        if let ExprOrSpread::Expr(e) = a {
-                            Some(self.evaluate_expression(e))
-                        } else {
-                            None
+                let mut args = Vec::new();
+                for arg in &c.arguments {
+                    match arg {
+                        ExprOrSpread::Expr(e) => args.push(self.evaluate_expression(e)?),
+                        ExprOrSpread::Spread(_) => {
+                            return Err(RuntimeError::Unsupported(
+                                "spread arguments are not supported".to_string(),
+                            ))
                         }
-                    })
-                    .collect();
-                let args = args?;
-
-                match callee {
-                    Value::Function(func) => {
-                        let mut call_scope = Scope::new();
-                        for (i, param) in func.params.iter().enumerate() {
-                            call_scope.define(
-                                param.clone(),
-                                args.get(i).cloned().unwrap_or(Value::Undefined),
-                            );
-                        }
-                        let mut rt = Runtime {
-                            scope: call_scope,
-                            globals: self.globals.clone(),
-                        };
-                        rt.execute_function_body(&func.body)
                     }
-                    Value::NativeFunction(nf) => self.execute_native_function(&nf.name, &args),
-                    _ => Ok(Value::Undefined),
+                }
+                self.call_value(callee, &args)
+            }
+            Expr::New(n) => {
+                if let Expr::Identifier(id) = &*n.callee {
+                    if self.struct_defs.contains_key(&id.sym) {
+                        return self.instantiate_struct(&id.sym, &n.arguments);
+                    }
+                    if self.class_defs.contains_key(&id.sym) {
+                        return self.instantiate_class(&id.sym, &n.arguments);
+                    }
+                }
+
+                Err(RuntimeError::Unsupported(
+                    "unsupported constructor target".to_string(),
+                ))
+            }
+            Expr::Conditional(c) => {
+                let test = self.evaluate_expression(&c.test)?;
+                if self.is_truthy(&test) {
+                    self.evaluate_expression(&c.consequent)
+                } else {
+                    self.evaluate_expression(&c.alternate)
                 }
             }
-            Expr::Member(m) => {
-                let obj = self.evaluate_expression(&m.object)?;
-                if let Value::Object(map) = obj {
-                    match &*m.property {
-                        Expr::Identifier(id) => {
-                            Ok(map.get(&id.sym).cloned().unwrap_or(Value::Undefined))
+            Expr::Logical(l) => {
+                let left = self.evaluate_expression(&l.left)?;
+                match l.operator {
+                    LogicalOperator::And => {
+                        if self.is_truthy(&left) {
+                            self.evaluate_expression(&l.right)
+                        } else {
+                            Ok(left)
                         }
-                        _ => Ok(Value::Undefined),
+                    }
+                    LogicalOperator::Or => {
+                        if self.is_truthy(&left) {
+                            Ok(left)
+                        } else {
+                            self.evaluate_expression(&l.right)
+                        }
+                    }
+                    LogicalOperator::NullishCoalescing => {
+                        if matches!(left, Value::Null | Value::Undefined) {
+                            self.evaluate_expression(&l.right)
+                        } else {
+                            Ok(left)
+                        }
+                    }
+                }
+            }
+            Expr::Update(u) => {
+                if let Expr::Identifier(id) = &*u.argument {
+                    let current = self.scope.get(&id.sym).unwrap_or(Value::Undefined);
+                    let Value::Number(n) = current else {
+                        return Err(RuntimeError::TypeError(
+                            "update operator expects numeric identifier".to_string(),
+                        ));
+                    };
+                    let next = match u.operator {
+                        UpdateOperator::Increment => n + 1.0,
+                        UpdateOperator::Decrement => n - 1.0,
+                    };
+                    self.scope.set(id.sym.clone(), Value::Number(next));
+                    if u.prefix {
+                        Ok(Value::Number(next))
+                    } else {
+                        Ok(Value::Number(n))
                     }
                 } else {
-                    Ok(Value::Undefined)
+                    Err(RuntimeError::Unsupported(
+                        "update target must be an identifier".to_string(),
+                    ))
                 }
             }
-            _ => Ok(Value::Undefined),
+            Expr::Await(a) | Expr::AwaitPromised(a) => self.evaluate_expression(&a.argument),
+            Expr::Ref(r) => self.evaluate_expression(&r.expr),
+            Expr::MutRef(r) => self.evaluate_expression(&r.expr),
+            _ => Err(RuntimeError::Unsupported(format!(
+                "unsupported expression at runtime: {:?}",
+                expr
+            ))),
         }
+    }
+
+    fn call_value(&mut self, callee: Value, args: &[Value]) -> Result<Value, RuntimeError> {
+        match callee {
+            Value::Function(func) => {
+                let mut call_scope = func.closure.clone();
+                for (i, param) in func.params.iter().enumerate() {
+                    call_scope.define(
+                        param.clone(),
+                        args.get(i).cloned().unwrap_or(Value::Undefined),
+                    );
+                }
+
+                let mut rt = Runtime {
+                    scope: call_scope,
+                    globals: self.globals.clone(),
+                    struct_defs: self.struct_defs.clone(),
+                    class_defs: self.class_defs.clone(),
+                };
+                rt.execute_function_body(&func.body)
+            }
+            Value::NativeFunction(nf) => self.execute_native_function(&nf.name, args),
+            _ => Err(RuntimeError::TypeError(
+                "attempted to call a non-function value".to_string(),
+            )),
+        }
+    }
+
+    fn register_struct(&mut self, s: &StructDecl) {
+        let fields = s.fields.iter().map(|f| f.id.sym.clone()).collect();
+        let methods = s
+            .methods
+            .iter()
+            .filter_map(|m| match &m.key {
+                Expr::Identifier(id) => Some((id.sym.clone(), m.value.clone())),
+                _ => None,
+            })
+            .collect();
+        self.struct_defs
+            .insert(s.id.sym.clone(), RuntimeStructDef { fields, methods });
+    }
+
+    fn register_class(&mut self, c: &ClassDecl) {
+        let mut fields = Vec::new();
+        let mut methods = HashMap::new();
+        let mut constructor = None;
+
+        for member in &c.body.body {
+            match member {
+                ClassMember::Field(f) => {
+                    if let Expr::Identifier(id) = &f.key {
+                        fields.push(id.sym.clone());
+                    }
+                }
+                ClassMember::Method(m) => {
+                    if let Expr::Identifier(id) = &m.key {
+                        methods.insert(id.sym.clone(), m.value.clone());
+                    }
+                }
+                ClassMember::Constructor(cons) => {
+                    constructor = Some(cons.clone());
+                }
+                _ => {}
+            }
+        }
+
+        self.class_defs.insert(
+            c.id.sym.clone(),
+            RuntimeClassDef {
+                fields,
+                methods,
+                constructor,
+            },
+        );
+    }
+
+    fn instantiate_struct(
+        &mut self,
+        name: &str,
+        args: &[ExprOrSpread],
+    ) -> Result<Value, RuntimeError> {
+        let def = self
+            .struct_defs
+            .get(name)
+            .cloned()
+            .ok_or_else(|| RuntimeError::UndefinedVariable(name.to_string()))?;
+        let obj = Rc::new(RefCell::new(HashMap::new()));
+
+        if let Some(ExprOrSpread::Expr(init_expr)) = args.first() {
+            let init = self.evaluate_expression(init_expr)?;
+            if let Value::Object(init_map) = init {
+                for (k, v) in init_map.borrow().iter() {
+                    obj.borrow_mut().insert(k.clone(), v.clone());
+                }
+            }
+        }
+
+        for field in def.fields {
+            obj.borrow_mut().entry(field).or_insert(Value::Undefined);
+        }
+        for (method_name, method_decl) in def.methods {
+            let method_fn = self.bound_method_function(&method_decl, obj.clone());
+            obj.borrow_mut().insert(method_name, method_fn);
+        }
+
+        Ok(Value::Object(obj))
+    }
+
+    fn instantiate_class(
+        &mut self,
+        name: &str,
+        args: &[ExprOrSpread],
+    ) -> Result<Value, RuntimeError> {
+        let def = self
+            .class_defs
+            .get(name)
+            .cloned()
+            .ok_or_else(|| RuntimeError::UndefinedVariable(name.to_string()))?;
+        let obj = Rc::new(RefCell::new(HashMap::new()));
+
+        for field in def.fields {
+            obj.borrow_mut().entry(field).or_insert(Value::Undefined);
+        }
+        for (method_name, method_decl) in def.methods {
+            let method_fn = self.bound_method_function(&method_decl, obj.clone());
+            obj.borrow_mut().insert(method_name, method_fn);
+        }
+
+        if let Some(constructor) = def.constructor {
+            let mut ctor_scope = Scope::new();
+            ctor_scope.define("this".to_string(), Value::Object(obj.clone()));
+            for (idx, param) in constructor.params.iter().enumerate() {
+                if let Pattern::Identifier(id) = &param.pat {
+                    let value = match args.get(idx) {
+                        Some(ExprOrSpread::Expr(e)) => self.evaluate_expression(e)?,
+                        _ => Value::Undefined,
+                    };
+                    ctor_scope.define(id.name.sym.clone(), value);
+                }
+            }
+
+            let mut ctor_rt = Runtime {
+                scope: ctor_scope,
+                globals: self.globals.clone(),
+                struct_defs: self.struct_defs.clone(),
+                class_defs: self.class_defs.clone(),
+            };
+            for stmt in &constructor.body.statements {
+                match ctor_rt.execute_statement(stmt)? {
+                    ExecOutcome::Normal(_) => {}
+                    ExecOutcome::Return(_) => break,
+                    ExecOutcome::Break | ExecOutcome::Continue => {
+                        return Err(RuntimeError::InvalidControlFlow(
+                            "break/continue inside constructor".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok(Value::Object(obj))
+    }
+
+    fn bound_method_function(
+        &self,
+        decl: &FunctionDecl,
+        this_obj: Rc<RefCell<HashMap<String, Value>>>,
+    ) -> Value {
+        let mut closure = Scope::new();
+        closure.define("this".to_string(), Value::Object(this_obj));
+        Value::Function(RcFunction {
+            params: function_params(decl),
+            body: decl.body.statements.clone(),
+            closure,
+        })
     }
 
     fn execute_function_body(&mut self, body: &[Stmt]) -> Result<Value, RuntimeError> {
         for stmt in body {
-            match stmt {
-                Stmt::Return(r) => {
-                    return match &r.argument {
-                        Some(expr) => self.evaluate_expression(expr),
-                        None => Ok(Value::Undefined),
-                    };
+            match self.execute_statement(stmt)? {
+                ExecOutcome::Normal(_) => {}
+                ExecOutcome::Return(v) => return Ok(v),
+                ExecOutcome::Break => {
+                    return Err(RuntimeError::InvalidControlFlow(
+                        "break outside loop".to_string(),
+                    ))
                 }
-                _ => {
-                    self.execute_statement(stmt)?;
+                ExecOutcome::Continue => {
+                    return Err(RuntimeError::InvalidControlFlow(
+                        "continue outside loop".to_string(),
+                    ))
                 }
             }
         }
@@ -369,66 +859,83 @@ impl Runtime {
                 println!("{}", output.join(" "));
                 Ok(Value::Undefined)
             }
-            "Math.abs" => {
-                if let Some(Value::Number(n)) = args.get(0) {
-                    Ok(Value::Number(n.abs()))
-                } else {
-                    Ok(Value::Undefined)
-                }
-            }
-            "Math.floor" => {
-                if let Some(Value::Number(n)) = args.get(0) {
-                    Ok(Value::Number(n.floor()))
-                } else {
-                    Ok(Value::Undefined)
-                }
-            }
-            "Math.ceil" => {
-                if let Some(Value::Number(n)) = args.get(0) {
-                    Ok(Value::Number(n.ceil()))
-                } else {
-                    Ok(Value::Undefined)
-                }
-            }
-            "Math.round" => {
-                if let Some(Value::Number(n)) = args.get(0) {
-                    Ok(Value::Number(n.round()))
-                } else {
-                    Ok(Value::Undefined)
-                }
-            }
-            "Math.sqrt" => {
-                if let Some(Value::Number(n)) = args.get(0) {
-                    Ok(Value::Number(n.sqrt()))
-                } else {
-                    Ok(Value::Undefined)
-                }
-            }
-            "Math.pow" => {
-                if let (Some(Value::Number(a)), Some(Value::Number(b))) = (args.get(0), args.get(1))
-                {
-                    Ok(Value::Number(a.powf(*b)))
-                } else {
-                    Ok(Value::Undefined)
-                }
-            }
-            "Math.max" => {
-                if let (Some(Value::Number(a)), Some(Value::Number(b))) = (args.get(0), args.get(1))
-                {
-                    Ok(Value::Number(a.max(*b)))
-                } else {
-                    Ok(Value::Undefined)
-                }
-            }
-            "Math.min" => {
-                if let (Some(Value::Number(a)), Some(Value::Number(b))) = (args.get(0), args.get(1))
-                {
-                    Ok(Value::Number(a.min(*b)))
-                } else {
-                    Ok(Value::Undefined)
-                }
-            }
+            "Math.abs" => one_number(args, |n| Value::Number(n.abs())),
+            "Math.floor" => one_number(args, |n| Value::Number(n.floor())),
+            "Math.ceil" => one_number(args, |n| Value::Number(n.ceil())),
+            "Math.round" => one_number(args, |n| Value::Number(n.round())),
+            "Math.sqrt" => one_number(args, |n| Value::Number(n.sqrt())),
+            "Math.pow" => two_numbers(args, |a, b| Value::Number(a.powf(b))),
+            "Math.max" => two_numbers(args, |a, b| Value::Number(a.max(b))),
+            "Math.min" => two_numbers(args, |a, b| Value::Number(a.min(b))),
             _ => Ok(Value::Undefined),
+        }
+    }
+
+    fn eval_binary(
+        &self,
+        operator: BinaryOperator,
+        left: Value,
+        right: Value,
+    ) -> Result<Value, RuntimeError> {
+        match operator {
+            BinaryOperator::Plus => match (&left, &right) {
+                (Value::String(s), v) => Ok(Value::String(s.clone() + &self.value_to_string(v))),
+                (v, Value::String(s)) => Ok(Value::String(self.value_to_string(v) + s)),
+                (Value::Number(a), Value::Number(b)) => Ok(Value::Number(a + b)),
+                _ => Err(RuntimeError::TypeError(
+                    "operator '+' expects numbers or strings".to_string(),
+                )),
+            },
+            BinaryOperator::Minus => numeric_binop(left, right, |a, b| Value::Number(a - b)),
+            BinaryOperator::Multiply => numeric_binop(left, right, |a, b| Value::Number(a * b)),
+            BinaryOperator::Divide => numeric_binop(left, right, |a, b| Value::Number(a / b)),
+            BinaryOperator::Modulo => numeric_binop(left, right, |a, b| Value::Number(a % b)),
+            BinaryOperator::Equal | BinaryOperator::StrictEqual => {
+                Ok(Value::Boolean(self.values_equal(&left, &right)))
+            }
+            BinaryOperator::NotEqual | BinaryOperator::StrictNotEqual => {
+                Ok(Value::Boolean(!self.values_equal(&left, &right)))
+            }
+            BinaryOperator::LessThan => compare_numbers(left, right, |a, b| a < b),
+            BinaryOperator::LessThanOrEqual => compare_numbers(left, right, |a, b| a <= b),
+            BinaryOperator::GreaterThan => compare_numbers(left, right, |a, b| a > b),
+            BinaryOperator::GreaterThanOrEqual => compare_numbers(left, right, |a, b| a >= b),
+            _ => Err(RuntimeError::Unsupported(
+                "unsupported binary operator".to_string(),
+            )),
+        }
+    }
+
+    fn to_iter_values(&self, value: &Value) -> Result<Vec<Value>, RuntimeError> {
+        match value {
+            Value::Array(values) => Ok(values.clone()),
+            Value::Object(map) => Ok(map.borrow().values().cloned().collect()),
+            _ => Err(RuntimeError::TypeError(
+                "for..of expects an array or object value".to_string(),
+            )),
+        }
+    }
+
+    fn property_key(&mut self, expr: &Expr) -> Result<String, RuntimeError> {
+        match expr {
+            Expr::Identifier(id) => Ok(id.sym.clone()),
+            Expr::Literal(Literal::String(s)) => Ok(s.value.clone()),
+            Expr::Literal(Literal::Number(n)) => Ok(n.value.to_string()),
+            _ => {
+                let value = self.evaluate_expression(expr)?;
+                Ok(self.value_to_string(&value))
+            }
+        }
+    }
+
+    fn values_equal(&self, left: &Value, right: &Value) -> bool {
+        match (left, right) {
+            (Value::Number(a), Value::Number(b)) => (a - b).abs() < f64::EPSILON,
+            (Value::String(a), Value::String(b)) => a == b,
+            (Value::Boolean(a), Value::Boolean(b)) => a == b,
+            (Value::Null, Value::Null) => true,
+            (Value::Undefined, Value::Undefined) => true,
+            _ => false,
         }
     }
 
@@ -437,9 +944,10 @@ impl Runtime {
             Value::Boolean(b) => *b,
             Value::Number(n) => *n != 0.0,
             Value::String(s) => !s.is_empty(),
-            Value::Null => false,
-            Value::Undefined => false,
-            _ => true,
+            Value::Null | Value::Undefined => false,
+            Value::Object(_) | Value::Array(_) | Value::Function(_) | Value::NativeFunction(_) => {
+                true
+            }
         }
     }
 
@@ -461,10 +969,78 @@ impl Runtime {
     }
 }
 
+fn function_params(f: &FunctionDecl) -> Vec<String> {
+    f.params
+        .iter()
+        .filter_map(|p| {
+            if let Pattern::Identifier(id) = &p.pat {
+                Some(id.name.sym.clone())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn one_number<F>(args: &[Value], f: F) -> Result<Value, RuntimeError>
+where
+    F: Fn(f64) -> Value,
+{
+    if let Some(Value::Number(n)) = args.first() {
+        Ok(f(*n))
+    } else {
+        Err(RuntimeError::TypeError(
+            "expected a numeric argument".to_string(),
+        ))
+    }
+}
+
+fn two_numbers<F>(args: &[Value], f: F) -> Result<Value, RuntimeError>
+where
+    F: Fn(f64, f64) -> Value,
+{
+    if let (Some(Value::Number(a)), Some(Value::Number(b))) = (args.first(), args.get(1)) {
+        Ok(f(*a, *b))
+    } else {
+        Err(RuntimeError::TypeError(
+            "expected two numeric arguments".to_string(),
+        ))
+    }
+}
+
+fn numeric_binop<F>(left: Value, right: Value, f: F) -> Result<Value, RuntimeError>
+where
+    F: Fn(f64, f64) -> Value,
+{
+    if let (Value::Number(a), Value::Number(b)) = (&left, &right) {
+        Ok(f(*a, *b))
+    } else {
+        Err(RuntimeError::TypeError(
+            "numeric binary operator expects numbers".to_string(),
+        ))
+    }
+}
+
+fn compare_numbers<F>(left: Value, right: Value, f: F) -> Result<Value, RuntimeError>
+where
+    F: Fn(f64, f64) -> bool,
+{
+    if let (Value::Number(a), Value::Number(b)) = (&left, &right) {
+        Ok(Value::Boolean(f(*a, *b)))
+    } else {
+        Err(RuntimeError::TypeError(
+            "comparison operator expects numbers".to_string(),
+        ))
+    }
+}
+
 #[derive(Debug)]
 pub enum RuntimeError {
     UndefinedVariable(String),
     TypeError(String),
+    Unsupported(String),
+    Thrown(String),
+    InvalidControlFlow(String),
 }
 
 impl std::fmt::Display for RuntimeError {
@@ -472,6 +1048,9 @@ impl std::fmt::Display for RuntimeError {
         match self {
             RuntimeError::UndefinedVariable(name) => write!(f, "Undefined variable: {}", name),
             RuntimeError::TypeError(msg) => write!(f, "Type error: {}", msg),
+            RuntimeError::Unsupported(msg) => write!(f, "Unsupported runtime feature: {}", msg),
+            RuntimeError::Thrown(msg) => write!(f, "Thrown value: {}", msg),
+            RuntimeError::InvalidControlFlow(msg) => write!(f, "Invalid control flow: {}", msg),
         }
     }
 }
@@ -481,4 +1060,158 @@ impl std::error::Error for RuntimeError {}
 pub fn execute_ast(ast: &SourceFile) -> Result<Value, RuntimeError> {
     let mut runtime = Runtime::new();
     runtime.execute(ast)
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+    use argon_parser::parse;
+
+    #[test]
+    fn executes_struct_method_call() {
+        let source = r#"
+struct Greeter {
+    name: string;
+    greet(): string with &this { return "Hello"; }
+}
+const g = Greeter { name: "World" };
+const out = g.greet();
+"#;
+        let ast = parse(source).expect("parse should succeed");
+        let mut runtime = Runtime::new();
+        let result = runtime.execute(&ast);
+        assert!(result.is_ok());
+        assert!(matches!(runtime.scope.get("out"), Some(Value::String(_))));
+    }
+
+    #[test]
+    fn executes_for_of_loop() {
+        let source = r#"
+const items = [1, 2, 3];
+let sum = 0;
+for (const item of items) {
+    sum = sum + item;
+}
+"#;
+        let ast = parse(source).expect("parse should succeed");
+        let mut runtime = Runtime::new();
+        let result = runtime.execute(&ast);
+        assert!(result.is_ok());
+        match runtime.scope.get("sum") {
+            Some(Value::Number(n)) => assert_eq!(n, 6.0),
+            _ => panic!("expected numeric sum"),
+        }
+    }
+
+    #[test]
+    fn executes_loop_with_break_and_continue() {
+        let source = r#"
+let i = 0;
+let sum = 0;
+loop {
+    if (i >= 3) { break; }
+    i = i + 1;
+    if (i == 2) { continue; }
+    sum = sum + i;
+}
+"#;
+        let ast = parse(source).expect("parse should succeed");
+        let mut runtime = Runtime::new();
+        let result = runtime.execute(&ast);
+        assert!(result.is_ok());
+        match runtime.scope.get("sum") {
+            Some(Value::Number(n)) => assert_eq!(n, 4.0),
+            _ => panic!("expected numeric sum"),
+        }
+    }
+
+    #[test]
+    fn executes_match_statement() {
+        let source = r#"
+const x = 2;
+let out = 0;
+match (x) {
+    1 => out = 10,
+    2 => out = 20,
+}
+"#;
+        let ast = parse(source).expect("parse should succeed");
+        let mut runtime = Runtime::new();
+        let result = runtime.execute(&ast);
+        assert!(result.is_ok());
+        match runtime.scope.get("out") {
+            Some(Value::Number(n)) => assert_eq!(n, 20.0),
+            _ => panic!("expected numeric match output"),
+        }
+    }
+
+    #[test]
+    fn executes_template_literal_interpolation() {
+        let name_ident = Ident {
+            sym: "name".to_string(),
+            span: 0..0,
+        };
+        let msg_ident = Ident {
+            sym: "msg".to_string(),
+            span: 0..0,
+        };
+
+        let ast = SourceFile::new(
+            "<test>".to_string(),
+            vec![
+                Stmt::Variable(VariableStmt {
+                    kind: VariableKind::Const,
+                    declarations: vec![VariableDeclarator {
+                        id: Pattern::Identifier(IdentPattern {
+                            name: name_ident.clone(),
+                            type_annotation: None,
+                            default: None,
+                        }),
+                        init: Some(Expr::Literal(Literal::String(StringLiteral {
+                            value: "Argon".to_string(),
+                            span: 0..0,
+                        }))),
+                        span: 0..0,
+                    }],
+                    span: 0..0,
+                }),
+                Stmt::Variable(VariableStmt {
+                    kind: VariableKind::Const,
+                    declarations: vec![VariableDeclarator {
+                        id: Pattern::Identifier(IdentPattern {
+                            name: msg_ident,
+                            type_annotation: None,
+                            default: None,
+                        }),
+                        init: Some(Expr::Template(TemplateLiteral {
+                            quasis: vec![
+                                TemplateElement {
+                                    value: "Hello ".to_string(),
+                                    tail: false,
+                                    span: 0..0,
+                                },
+                                TemplateElement {
+                                    value: "".to_string(),
+                                    tail: true,
+                                    span: 0..0,
+                                },
+                            ],
+                            expressions: vec![Expr::Identifier(name_ident)],
+                            span: 0..0,
+                        })),
+                        span: 0..0,
+                    }],
+                    span: 0..0,
+                }),
+            ],
+            0..0,
+        );
+        let mut runtime = Runtime::new();
+        let result = runtime.execute(&ast);
+        assert!(result.is_ok());
+        match runtime.scope.get("msg") {
+            Some(Value::String(s)) => assert_eq!(s, "Hello Argon"),
+            _ => panic!("expected interpolated template string"),
+        }
+    }
 }

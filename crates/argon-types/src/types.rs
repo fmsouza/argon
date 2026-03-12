@@ -157,6 +157,7 @@ impl fmt::Display for FunctionSig {
 pub struct StructDef {
     pub name: String,
     pub fields: Vec<FieldDef>,
+    pub methods: Vec<MethodDef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

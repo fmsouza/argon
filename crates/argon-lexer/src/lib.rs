@@ -134,9 +134,7 @@ impl<'a> Lexer<'a> {
                         self.make_token(TokenKind::OpenBrace)
                     }
                 }
-                '}' => {
-                    self.make_token(TokenKind::CloseBrace)
-                }
+                '}' => self.make_token(TokenKind::CloseBrace),
                 '(' => self.make_token(TokenKind::OpenParen),
                 ')' => self.make_token(TokenKind::CloseParen),
                 '[' => self.make_token(TokenKind::OpenBracket),
@@ -144,6 +142,7 @@ impl<'a> Lexer<'a> {
                 ';' => self.make_token(TokenKind::Semi),
                 ',' => self.make_token(TokenKind::Comma),
                 '.' => self.make_dot_token(),
+                '@' => self.make_token(TokenKind::At),
                 '?' => self.make_question_token(),
                 ':' => self.make_token(TokenKind::Colon),
                 '~' => self.make_token(TokenKind::Tilde),
@@ -679,7 +678,7 @@ impl<'a> Lexer<'a> {
         let mut escaped = false;
         let mut has_interpolation = false;
         let mut brace_count = 0;
-        let mut start = self.start;
+        let start = self.start;
 
         while let Some(&ch) = self.chars.peek() {
             self.advance();
@@ -704,8 +703,8 @@ impl<'a> Lexer<'a> {
             if ch == '{' && !has_interpolation {
                 has_interpolation = true;
                 brace_count += 1;
-                let interp_start = self.start;
-                let text_before = &self.source[start..interp_start - 1];
+                let interp_start = self.position.saturating_sub(1);
+                let text_before = &self.source[start..interp_start];
                 if text_before.is_empty() {
                     return Token::new(TokenKind::TemplateStart, start..interp_start);
                 } else {

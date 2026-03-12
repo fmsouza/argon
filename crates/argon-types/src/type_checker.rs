@@ -235,7 +235,8 @@ impl TypeChecker {
                 Stmt::Struct(s) => {
                     let mut local_env = self.env.child();
                     for type_param in &s.type_params {
-                        let constraint = type_param.constraint.as_ref().map(|c| self.resolve_type(c));
+                        let constraint =
+                            type_param.constraint.as_ref().map(|c| self.resolve_type(c));
                         let default = type_param.default.as_ref().map(|d| self.resolve_type(d));
 
                         let ty = self.type_table.type_param(crate::types::TypeParam {
@@ -255,24 +256,45 @@ impl TypeChecker {
                             ty: self.resolve_type(&f.type_annotation),
                         })
                         .collect();
+                    let methods: Vec<MethodDef> = s
+                        .methods
+                        .iter()
+                        .filter_map(|m| {
+                            let name = match &m.key {
+                                Expr::Identifier(id) => id.sym.clone(),
+                                _ => return None,
+                            };
+                            Some(MethodDef {
+                                name,
+                                sig: self.resolve_function_sig(&m.value),
+                            })
+                        })
+                        .collect();
                     self.env = old_env;
 
                     let struct_def = StructDef {
                         name: s.id.sym.clone(),
                         fields,
+                        methods,
                     };
 
                     if s.type_params.is_empty() {
                         self.env.add_struct(s.id.sym.clone(), struct_def);
                     } else {
-                        self.env
-                            .add_generic_struct(s.id.sym.clone(), struct_def, s.type_params.clone());
+                        self.env.add_generic_struct(
+                            s.id.sym.clone(),
+                            struct_def,
+                            s.type_params.clone(),
+                        );
                     }
                 }
                 Stmt::Class(c) => {
                     let mut local_env = self.env.child();
                     for type_param in &c.type_params {
-                        let constraint = type_param.constraint.as_ref().map(|ct| self.resolve_type(ct));
+                        let constraint = type_param
+                            .constraint
+                            .as_ref()
+                            .map(|ct| self.resolve_type(ct));
                         let default = type_param.default.as_ref().map(|d| self.resolve_type(d));
 
                         let ty = self.type_table.type_param(crate::types::TypeParam {
@@ -317,11 +339,12 @@ impl TypeChecker {
                                             tp.constraint.as_ref().map(|c| self.resolve_type(c));
                                         let default =
                                             tp.default.as_ref().map(|d| self.resolve_type(d));
-                                        let ty = self.type_table.type_param(crate::types::TypeParam {
-                                            name: tp.name.sym.clone(),
-                                            constraint,
-                                            default,
-                                        });
+                                        let ty =
+                                            self.type_table.type_param(crate::types::TypeParam {
+                                                name: tp.name.sym.clone(),
+                                                constraint,
+                                                default,
+                                            });
                                         method_env.add_type_param(tp.name.sym.clone(), ty);
                                     }
                                     let old = std::mem::replace(&mut self.env, method_env);
@@ -347,8 +370,11 @@ impl TypeChecker {
                     if c.type_params.is_empty() {
                         self.env.add_class(c.id.sym.clone(), class_def);
                     } else {
-                        self.env
-                            .add_generic_class(c.id.sym.clone(), class_def, c.type_params.clone());
+                        self.env.add_generic_class(
+                            c.id.sym.clone(),
+                            class_def,
+                            c.type_params.clone(),
+                        );
                     }
                 }
                 Stmt::Function(f) | Stmt::AsyncFunction(f) => {
@@ -523,11 +549,10 @@ impl TypeChecker {
         let old_env = std::mem::replace(&mut self.env, local_env);
 
         for p in &f.params {
-            let ty = p
-                .ty
-                .as_ref()
-                .map(|t| self.resolve_type(t))
-                .unwrap_or_else(|| self.type_table.unknown());
+            let ty =
+                p.ty.as_ref()
+                    .map(|t| self.resolve_type(t))
+                    .unwrap_or_else(|| self.type_table.unknown());
             if let Pattern::Identifier(id) = &p.pat {
                 self.env.add_var(id.name.sym.clone(), ty);
             }
@@ -575,6 +600,29 @@ impl TypeChecker {
     }
 
     fn check_struct(&mut self, s: &StructDecl) -> Result<(), TypeError> {
+        if s.methods.is_empty() {
+            return Ok(());
+        }
+
+        let struct_ty = self
+            .env
+            .get_struct(&s.id.sym)
+            .map(|d| self.type_table.struct_def(d.clone()))
+            .or_else(|| {
+                self.env
+                    .get_generic_struct(&s.id.sym)
+                    .map(|g| self.type_table.struct_def(g.def.clone()))
+            })
+            .unwrap_or_else(|| self.type_table.object());
+
+        for method in &s.methods {
+            let mut method_env = self.env.child();
+            method_env.set_this(Some(struct_ty));
+            let old_env = std::mem::replace(&mut self.env, method_env);
+            self.check_function(&method.value)?;
+            self.env = old_env;
+        }
+
         Ok(())
     }
 
@@ -582,7 +630,10 @@ impl TypeChecker {
         let mut class_env = self.env.child();
 
         for type_param in &c.type_params {
-            let constraint = type_param.constraint.as_ref().map(|ct| self.resolve_type(ct));
+            let constraint = type_param
+                .constraint
+                .as_ref()
+                .map(|ct| self.resolve_type(ct));
             let default = type_param.default.as_ref().map(|d| self.resolve_type(d));
             let ty = self.type_table.type_param(crate::types::TypeParam {
                 name: type_param.name.sym.clone(),
@@ -596,7 +647,11 @@ impl TypeChecker {
             .env
             .get_class(&c.id.sym)
             .map(|d| self.type_table.class_def(d.clone()))
-            .or_else(|| self.env.get_generic_class(&c.id.sym).map(|g| self.type_table.class_def(g.def.clone())))
+            .or_else(|| {
+                self.env
+                    .get_generic_class(&c.id.sym)
+                    .map(|g| self.type_table.class_def(g.def.clone()))
+            })
             .unwrap_or_else(|| self.type_table.object());
 
         for member in &c.body.body {
@@ -963,15 +1018,19 @@ impl TypeChecker {
                 .iter()
                 .find(|f| f.name == prop_name)
                 .map(|f| f.ty)
+                .or_else(|| {
+                    def.methods
+                        .iter()
+                        .find(|m| m.name == prop_name)
+                        .map(|m| self.type_table.add(CompType::Function(m.sig.clone())))
+                })
                 .unwrap_or_else(|| self.type_table.unknown()),
             Some(CompType::Class(def)) => {
                 if let Some(field) = def.fields.iter().find(|f| f.name == prop_name) {
                     return field.ty;
                 }
                 if let Some(method) = def.methods.iter().find(|m| m.name == prop_name) {
-                    return self
-                        .type_table
-                        .add(CompType::Function(method.sig.clone()));
+                    return self.type_table.add(CompType::Function(method.sig.clone()));
                 }
                 self.type_table.unknown()
             }
@@ -1048,10 +1107,30 @@ impl TypeChecker {
                         ty: instantiator.instantiate(&mut self.type_table, f.ty),
                     })
                     .collect();
+                let instantiated_methods: Vec<MethodDef> = generic_struct
+                    .def
+                    .methods
+                    .iter()
+                    .map(|m| MethodDef {
+                        name: m.name.clone(),
+                        sig: FunctionSig {
+                            params: m
+                                .sig
+                                .params
+                                .iter()
+                                .map(|p| instantiator.instantiate(&mut self.type_table, *p))
+                                .collect(),
+                            return_type: instantiator
+                                .instantiate(&mut self.type_table, m.sig.return_type),
+                            is_async: m.sig.is_async,
+                        },
+                    })
+                    .collect();
 
                 let struct_def = StructDef {
                     name: id.sym.clone(),
                     fields: instantiated_fields,
+                    methods: instantiated_methods,
                 };
 
                 return self.type_table.add(CompType::Struct(struct_def));
@@ -1350,7 +1429,8 @@ impl TypeChecker {
                     }
 
                     if !r.type_args.is_empty() {
-                        if let Some(generic_struct) = self.env.get_generic_struct(&id.sym).cloned() {
+                        if let Some(generic_struct) = self.env.get_generic_struct(&id.sym).cloned()
+                        {
                             let type_args: Vec<TypeId> =
                                 r.type_args.iter().map(|t| self.resolve_type(t)).collect();
 
@@ -1369,10 +1449,8 @@ impl TypeChecker {
                             self.check_generic_constraints(&generic_struct.type_params, &type_args);
 
                             let mut instantiator = TypeInstantiator::new();
-                            for (param, arg) in generic_struct
-                                .type_params
-                                .iter()
-                                .zip(type_args.iter())
+                            for (param, arg) in
+                                generic_struct.type_params.iter().zip(type_args.iter())
                             {
                                 instantiator.add_substitution(param.name.sym.clone(), *arg);
                             }
@@ -1386,10 +1464,32 @@ impl TypeChecker {
                                     ty: instantiator.instantiate(&mut self.type_table, f.ty),
                                 })
                                 .collect();
+                            let methods: Vec<MethodDef> = generic_struct
+                                .def
+                                .methods
+                                .iter()
+                                .map(|m| MethodDef {
+                                    name: m.name.clone(),
+                                    sig: FunctionSig {
+                                        params: m
+                                            .sig
+                                            .params
+                                            .iter()
+                                            .map(|p| {
+                                                instantiator.instantiate(&mut self.type_table, *p)
+                                            })
+                                            .collect(),
+                                        return_type: instantiator
+                                            .instantiate(&mut self.type_table, m.sig.return_type),
+                                        is_async: m.sig.is_async,
+                                    },
+                                })
+                                .collect();
 
                             return self.type_table.add(CompType::Struct(StructDef {
                                 name: id.sym.clone(),
                                 fields,
+                                methods,
                             }));
                         }
 
@@ -1412,10 +1512,8 @@ impl TypeChecker {
                             self.check_generic_constraints(&generic_class.type_params, &type_args);
 
                             let mut instantiator = TypeInstantiator::new();
-                            for (param, arg) in generic_class
-                                .type_params
-                                .iter()
-                                .zip(type_args.iter())
+                            for (param, arg) in
+                                generic_class.type_params.iter().zip(type_args.iter())
                             {
                                 instantiator.add_substitution(param.name.sym.clone(), *arg);
                             }
@@ -1441,7 +1539,9 @@ impl TypeChecker {
                                             .sig
                                             .params
                                             .iter()
-                                            .map(|p| instantiator.instantiate(&mut self.type_table, *p))
+                                            .map(|p| {
+                                                instantiator.instantiate(&mut self.type_table, *p)
+                                            })
                                             .collect(),
                                         return_type: instantiator
                                             .instantiate(&mut self.type_table, m.sig.return_type),
@@ -1662,7 +1762,9 @@ impl TypeChecker {
             (Some(CompType::Union(types)), _) => {
                 types.iter().all(|t| self.is_assignable(*t, expected))
             }
-            (_, Some(CompType::Union(types))) => types.iter().any(|t| self.is_assignable(found, *t)),
+            (_, Some(CompType::Union(types))) => {
+                types.iter().any(|t| self.is_assignable(found, *t))
+            }
             _ => false,
         }
     }
@@ -1685,15 +1787,25 @@ impl TypeChecker {
 
 #[derive(Debug, Clone)]
 pub enum TypeError {
-    Mismatch { found: TypeId, expected: TypeId },
+    Mismatch {
+        found: TypeId,
+        expected: TypeId,
+    },
     ConstraintViolation {
         param: String,
         found: TypeId,
         constraint: TypeId,
     },
-    NotFound { name: String },
-    Invalid { message: String },
-    MissingReturn { func: String, expected: TypeId },
+    NotFound {
+        name: String,
+    },
+    Invalid {
+        message: String,
+    },
+    MissingReturn {
+        func: String,
+        expected: TypeId,
+    },
 }
 
 impl std::fmt::Display for TypeError {

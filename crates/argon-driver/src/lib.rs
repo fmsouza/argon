@@ -69,7 +69,10 @@ pub struct Diagnostics {
 #[derive(thiserror::Error, Debug)]
 pub enum DriverError {
     #[error("{message}")]
-    WithDiagnostics { message: String, diagnostics: Diagnostics },
+    WithDiagnostics {
+        message: String,
+        diagnostics: Diagnostics,
+    },
 }
 
 impl DriverError {
@@ -238,9 +241,9 @@ impl Compiler {
             Pipeline::Ast => codegen.generate_from_ast(ast),
             Pipeline::Ir => {
                 let mut builder = IrBuilder::new();
-                let mut ir = builder
-                    .build(ast)
-                    .map_err(|e| self.simple_error_to_driver(source, source_name, "ir error", &e))?;
+                let mut ir = builder.build(ast).map_err(|e| {
+                    self.simple_error_to_driver(source, source_name, "ir error", &e)
+                })?;
                 if options.optimize {
                     let _ = argon_ir::passes::optimize_module(&mut ir);
                 }
@@ -275,9 +278,9 @@ impl Compiler {
             Pipeline::Ast => codegen.generate_from_ast(ast),
             Pipeline::Ir => {
                 let mut builder = IrBuilder::new();
-                let mut ir = builder
-                    .build(ast)
-                    .map_err(|e| self.simple_error_to_driver(source, source_name, "ir error", &e))?;
+                let mut ir = builder.build(ast).map_err(|e| {
+                    self.simple_error_to_driver(source, source_name, "ir error", &e)
+                })?;
                 if options.optimize {
                     let _ = argon_ir::passes::optimize_module(&mut ir);
                 }
@@ -345,7 +348,10 @@ impl Compiler {
         .with_code("E000".to_string());
 
         let mut bag = DiagnosticBag::new();
-        bag.add_error(Diagnostic { severity: Severity::Error, ..diagnostic });
+        bag.add_error(Diagnostic {
+            severity: Severity::Error,
+            ..diagnostic
+        });
         let rendered = engine.render(&bag);
 
         DriverError::WithDiagnostics {

@@ -174,6 +174,12 @@ impl Parser {
     }
 
     fn parse_statement(&mut self) -> Result<argon_ast::Stmt, ParseError> {
+        if self.match_one(&[TokenKind::At]) {
+            return self.parse_decorated_statement();
+        }
+        if self.match_one(&[TokenKind::Declare]) {
+            return self.parse_declare();
+        }
         if self.match_one(&[TokenKind::Const, TokenKind::Let, TokenKind::Var]) {
             return self.parse_variable();
         }
@@ -191,6 +197,9 @@ impl Parser {
         }
         if self.match_one(&[TokenKind::While]) {
             return self.parse_while();
+        }
+        if self.match_one(&[TokenKind::Loop]) {
+            return self.parse_loop();
         }
         if self.match_one(&[TokenKind::For]) {
             return self.parse_for();
@@ -249,6 +258,90 @@ impl Parser {
             expr,
             span: start..end,
         }))
+    }
+
+    fn parse_decorated_statement(&mut self) -> Result<argon_ast::Stmt, ParseError> {
+        use argon_ast::*;
+
+        let start = self.previous().span.start;
+        let decorator = self.parse_decorator_name()?;
+
+        match decorator.as_str() {
+            "export" => {
+                let declaration = self.parse_statement()?;
+                let end = self.previous().span.end;
+                Ok(Stmt::Export(ExportStmt {
+                    declaration: Some(Box::new(declaration)),
+                    specifiers: vec![],
+                    source: None,
+                    is_type_only: false,
+                    span: start..end,
+                }))
+            }
+            "js-interop" => {
+                if self.match_one(&[TokenKind::Declare]) {
+                    self.parse_declare()
+                } else {
+                    Err(self.parser_error_here("Expected 'declare' after '@js-interop' decorator"))
+                }
+            }
+            other => Err(self.parser_error_prev(format!("Unsupported decorator '@{}'", other))),
+        }
+    }
+
+    fn parse_decorator_name(&mut self) -> Result<String, ParseError> {
+        let mut parts = Vec::new();
+        parts.push(self.parse_decorator_part()?);
+
+        while self.match_one(&[TokenKind::Minus]) {
+            parts.push(self.parse_decorator_part()?);
+        }
+
+        Ok(parts.join("-"))
+    }
+
+    fn parse_decorator_part(&mut self) -> Result<String, ParseError> {
+        if self.is_at_end() {
+            return Err(self.parser_error_here("Expected decorator name"));
+        }
+
+        let token = self.peek();
+        if token.kind == TokenKind::Identifier || token.kind.is_keyword() {
+            let span = token.span.clone();
+            self.advance();
+            return Ok(self.source[span].to_string());
+        }
+
+        Err(self.parser_error_here("Expected decorator name"))
+    }
+
+    fn parse_declare(&mut self) -> Result<argon_ast::Stmt, ParseError> {
+        use argon_ast::*;
+
+        let start = self.previous().span.start;
+        if self.match_one(&[TokenKind::Module]) {
+            // `declare module "name" { ... }` declarations are currently metadata-only.
+            let _module_name = self.parse_literal_string()?;
+            self.expect(TokenKind::OpenBrace)?;
+            let mut depth: usize = 1;
+            while depth > 0 && !self.is_at_end() {
+                if self.match_one(&[TokenKind::OpenBrace]) {
+                    depth += 1;
+                } else if self.match_one(&[TokenKind::CloseBrace]) {
+                    depth = depth.saturating_sub(1);
+                } else {
+                    self.advance();
+                }
+            }
+
+            let end = self.previous().span.end;
+            return Ok(Stmt::Module(ModuleStmt {
+                body: vec![],
+                span: start..end,
+            }));
+        }
+
+        Err(self.parser_error_here("Only 'declare module \"...\" { ... }' is supported"))
     }
 
     fn parse_pattern(&mut self) -> Result<argon_ast::Pattern, ParseError> {
@@ -764,45 +857,154 @@ impl Parser {
         }))
     }
 
+    fn parse_loop(&mut self) -> Result<argon_ast::Stmt, ParseError> {
+        use argon_ast::*;
+
+        let start = self.previous().span.start;
+        let body = Box::new(self.parse_statement()?);
+        let end = self.previous().span.end;
+
+        Ok(Stmt::Loop(LoopStmt {
+            body,
+            span: start..end,
+        }))
+    }
+
     fn parse_for(&mut self) -> Result<argon_ast::Stmt, ParseError> {
         use argon_ast::*;
 
         let start = self.previous().span.start;
         self.expect(TokenKind::OpenParen)?;
+        if self.match_one(&[TokenKind::Const, TokenKind::Let, TokenKind::Var]) {
+            let kind = match self.previous().kind {
+                TokenKind::Const => VariableKind::Const,
+                TokenKind::Var => VariableKind::Var,
+                _ => VariableKind::Let,
+            };
 
-        let init = if self.match_one(&[TokenKind::Semi]) {
-            None
-        } else if self.match_one(&[TokenKind::Const, TokenKind::Let, TokenKind::Var]) {
-            let var_stmt = self.parse_variable()?;
-            match var_stmt {
-                argon_ast::Stmt::Variable(v) => Some(ForInit::Variable(v)),
-                _ => None,
+            let decl_start = self.peek().span.start;
+            let id = self.parse_pattern()?;
+            let init = if self.match_one(&[TokenKind::Equal]) {
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
+            let decl_end = self.previous().span.end;
+
+            let decl = VariableDeclarator {
+                id: id.clone(),
+                init: init.clone(),
+                span: decl_start..decl_end,
+            };
+
+            if self.match_one(&[TokenKind::Of]) {
+                let right = self.parse_expression()?;
+                self.expect(TokenKind::CloseParen)?;
+                let body = Box::new(self.parse_statement()?);
+                let end = self.previous().span.end;
+                return Ok(Stmt::ForIn(ForInStmt {
+                    left: ForInLeft::Variable(decl),
+                    right,
+                    body,
+                    span: start..end,
+                }));
             }
-        } else {
-            let expr = self.parse_expression()?;
-            self.match_one(&[TokenKind::Semi]);
-            Some(ForInit::Expr(expr))
-        };
 
+            self.expect(TokenKind::Semi)?;
+            let test = if !self.check(&TokenKind::Semi) {
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
+            self.expect(TokenKind::Semi)?;
+
+            let update = if !self.check(&TokenKind::CloseParen) {
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
+            self.expect(TokenKind::CloseParen)?;
+
+            let body = Box::new(self.parse_statement()?);
+            let end = self.previous().span.end;
+
+            return Ok(Stmt::For(ForStmt {
+                init: Some(ForInit::Variable(VariableStmt {
+                    kind,
+                    declarations: vec![decl],
+                    span: decl_start..decl_end,
+                })),
+                test,
+                update,
+                body,
+                span: start..end,
+            }));
+        }
+
+        if self.match_one(&[TokenKind::Semi]) {
+            let test = if !self.check(&TokenKind::Semi) {
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
+            self.expect(TokenKind::Semi)?;
+            let update = if !self.check(&TokenKind::CloseParen) {
+                Some(self.parse_expression()?)
+            } else {
+                None
+            };
+            self.expect(TokenKind::CloseParen)?;
+            let body = Box::new(self.parse_statement()?);
+            let end = self.previous().span.end;
+            return Ok(Stmt::For(ForStmt {
+                init: None,
+                test,
+                update,
+                body,
+                span: start..end,
+            }));
+        }
+
+        let expr = self.parse_expression()?;
+        if self.match_one(&[TokenKind::Of]) {
+            let left = match expr {
+                Expr::Identifier(id) => ForInLeft::Pattern(Pattern::Identifier(IdentPattern {
+                    name: id,
+                    type_annotation: None,
+                    default: None,
+                })),
+                _ => return Err(self.parser_error_prev("Invalid for..of left-hand side")),
+            };
+            let right = self.parse_expression()?;
+            self.expect(TokenKind::CloseParen)?;
+            let body = Box::new(self.parse_statement()?);
+            let end = self.previous().span.end;
+            return Ok(Stmt::ForIn(ForInStmt {
+                left,
+                right,
+                body,
+                span: start..end,
+            }));
+        }
+
+        self.expect(TokenKind::Semi)?;
         let test = if !self.check(&TokenKind::Semi) {
             Some(self.parse_expression()?)
         } else {
             None
         };
         self.expect(TokenKind::Semi)?;
-
         let update = if !self.check(&TokenKind::CloseParen) {
             Some(self.parse_expression()?)
         } else {
             None
         };
         self.expect(TokenKind::CloseParen)?;
-
         let body = Box::new(self.parse_statement()?);
         let end = self.previous().span.end;
 
         Ok(Stmt::For(ForStmt {
-            init,
+            init: Some(ForInit::Expr(expr)),
             test,
             update,
             body,
@@ -1000,26 +1202,37 @@ impl Parser {
         let type_params = self.parse_type_params_opt()?;
 
         let mut fields = Vec::new();
+        let mut methods = Vec::new();
         self.expect(TokenKind::OpenBrace)?;
 
         while !self.check(&TokenKind::CloseBrace) && !self.is_at_end() {
-            let field_id = self.expect_identifier()?;
-            let field_start = field_id.span.start;
+            if self.match_one(&[TokenKind::Semi, TokenKind::Comma]) {
+                continue;
+            }
+
+            let member_id = self.expect_identifier()?;
+            let member_start = member_id.span.start;
+            let key = Expr::Identifier(member_id.clone());
+
+            if self.check(&TokenKind::OpenParen) || self.check(&TokenKind::LessThan) {
+                let method = self.parse_method(key)?;
+                methods.push(method);
+                self.match_one(&[TokenKind::Semi]);
+                continue;
+            }
 
             self.expect(TokenKind::Colon)?;
             let type_annotation = Box::new(self.parse_type()?);
             let field_end = self.previous().span.end;
 
             fields.push(StructField {
-                id: field_id,
+                id: member_id,
                 type_annotation,
                 is_readonly: false,
-                span: field_start..field_end,
+                span: member_start..field_end,
             });
 
-            if !self.check(&TokenKind::CloseBrace) {
-                self.match_one(&[TokenKind::Semi, TokenKind::Comma]);
-            }
+            self.match_one(&[TokenKind::Semi, TokenKind::Comma]);
         }
 
         self.expect(TokenKind::CloseBrace)?;
@@ -1029,6 +1242,7 @@ impl Parser {
             id,
             type_params,
             fields,
+            methods,
             span: start..end,
         }))
     }
@@ -2593,6 +2807,44 @@ impl Parser {
             return Ok(expr);
         }
 
+        if self.match_one(&[TokenKind::OpenBrace]) {
+            let span_start = self.previous().span.start;
+            let mut properties = Vec::new();
+
+            while !self.check(&TokenKind::CloseBrace) && !self.is_at_end() {
+                if self.match_one(&[TokenKind::Comma, TokenKind::Semi]) {
+                    continue;
+                }
+
+                let key = self.parse_expression()?;
+                let (value, shorthand) = if self.match_one(&[TokenKind::Colon]) {
+                    (ExprOrSpread::Expr(self.parse_expression()?), false)
+                } else {
+                    (ExprOrSpread::Expr(key.clone()), true)
+                };
+
+                let prop_start = key.span().start;
+                let prop_end = self.previous().span.end;
+                properties.push(ObjectProperty::Property(Property {
+                    key,
+                    value,
+                    kind: PropertyKind::Init,
+                    method: false,
+                    computed: false,
+                    shorthand,
+                    span: prop_start..prop_end,
+                }));
+
+                if !self.check(&TokenKind::CloseBrace) {
+                    self.match_one(&[TokenKind::Comma, TokenKind::Semi]);
+                }
+            }
+
+            self.expect(TokenKind::CloseBrace)?;
+            let span = span_start..self.previous().span.end;
+            return Ok(Expr::Object(ObjectExpression { properties, span }));
+        }
+
         if self.match_one(&[TokenKind::OpenBracket]) {
             let span_start = self.previous().span.start;
             let mut elements: Vec<Option<argon_ast::ExprOrSpread>> = Vec::new();
@@ -2987,8 +3239,10 @@ impl Parser {
             // Replace the current token with a single `>`, then insert the remaining `>` tokens.
             self.tokens[self.current].kind = TokenKind::GreaterThan;
             for _ in 1..split_count {
-                self.tokens
-                    .insert(self.current + 1, LexerToken::new(TokenKind::GreaterThan, span.clone()));
+                self.tokens.insert(
+                    self.current + 1,
+                    LexerToken::new(TokenKind::GreaterThan, span.clone()),
+                );
             }
 
             self.advance();

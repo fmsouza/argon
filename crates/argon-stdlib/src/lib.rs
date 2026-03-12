@@ -652,3 +652,58 @@ class Set<T> {
 
     defs
 }
+
+#[cfg(test)]
+mod stdlib_tests {
+    use super::*;
+
+    #[test]
+    fn exposes_expected_primitives() {
+        // Assign
+        let primitives = StdLib::get_primitives();
+
+        // Act
+        let has_i32 = primitives
+            .iter()
+            .any(|(name, js)| *name == "i32" && *js == "number");
+        let has_bool = primitives
+            .iter()
+            .any(|(name, js)| *name == "bool" && *js == "boolean");
+
+        // Assert
+        assert!(has_i32);
+        assert!(has_bool);
+    }
+
+    #[test]
+    fn embeds_runtime_core_types() {
+        // Assign
+        let runtime = StdLib::get_runtime();
+
+        // Act
+        let has_vec = runtime.contains("function Vec(");
+        let has_option = runtime.contains("function Some(") && runtime.contains("function None()");
+        let has_shared = runtime.contains("Shared.wrap");
+
+        // Assert
+        assert!(has_vec);
+        assert!(has_option);
+        assert!(has_shared);
+    }
+
+    #[test]
+    fn generates_type_definitions_for_core_containers() {
+        // Assign
+        let defs = generate_stdlib_definitions();
+
+        // Act
+        let vec_def = defs.get("Vec");
+        let map_def = defs.get("Map");
+        let set_def = defs.get("Set");
+
+        // Assert
+        assert!(vec_def.is_some());
+        assert!(map_def.is_some());
+        assert!(set_def.is_some());
+    }
+}

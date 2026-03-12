@@ -1,10 +1,13 @@
 //! Argon - WebAssembly code generator
 
 use argon_ir::{
-    BasicBlock, ConstValue, Function as IrFunction, Instruction as IrInstruction,
-    Module as IrModule, Param, Terminator,
+    BasicBlock, BinOp, ConstValue, Function as IrFunction, Instruction as IrInstruction, LogicOp,
+    Module as IrModule, Terminator, UnOp, ValueId,
 };
+use std::collections::{BTreeSet, HashMap};
 use wasm_encoder::*;
+
+const HEAP_PTR_GLOBAL_INDEX: u32 = 0;
 
 pub struct WasmCodegen {}
 
@@ -17,94 +20,16 @@ impl WasmCodegen {
         &mut self,
         source: &argon_ast::SourceFile,
     ) -> Result<Vec<u8>, CodegenError> {
-        let mut functions = Vec::new();
-
-        for stmt in &source.statements {
-            if let argon_ast::Stmt::Function(f) = stmt {
-                let func_name = f.id.as_ref().map(|i| i.sym.clone()).unwrap_or_default();
-
-                let params: Vec<Param> = f
-                    .params
-                    .iter()
-                    .filter_map(|p| {
-                        if let argon_ast::Pattern::Identifier(id) = &p.pat {
-                            Some(Param {
-                                name: id.name.sym.clone(),
-                                ty: 0,
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                let body = vec![BasicBlock {
-                    id: 0,
-                    instructions: vec![IrInstruction::Const {
-                        dest: 0,
-                        value: ConstValue::Number(42.0),
-                    }],
-                    terminator: Terminator::Return(Some(0)),
-                }];
-
-                functions.push(IrFunction {
-                    id: func_name,
-                    params,
-                    return_type: Some(0),
-                    is_async: false,
-                    body,
-                });
-            }
-        }
-
-        let module = IrModule {
-            functions,
-            types: Vec::new(),
-            globals: Vec::new(),
-            imports: Vec::new(),
-            exports: Vec::new(),
-        };
-        self.generate(&module)
+        let mut builder = argon_ir::IrBuilder::new();
+        let ir = builder
+            .build(source)
+            .map_err(|e| CodegenError::IrError(e.to_string()))?;
+        self.generate(&ir)
     }
 
     pub fn generate(&self, ir_module: &IrModule) -> Result<Vec<u8>, CodegenError> {
-        let mut module = Module::new();
-
-        // Type section: () -> i32
-        let mut types = TypeSection::new();
-        for _ in ir_module.functions.iter() {
-            let params = vec![];
-            let results = vec![ValType::I32];
-            types.function(params, results);
-        }
-        module.section(&types);
-
-        // Function section: map functions to type indices
-        let mut funcs = FunctionSection::new();
-        for (i, _) in ir_module.functions.iter().enumerate() {
-            funcs.function(i as u32);
-        }
-        module.section(&funcs);
-
-        // Export section
-        let mut exports = ExportSection::new();
-        for (i, func) in ir_module.functions.iter().enumerate() {
-            exports.export(func.id.as_str(), ExportKind::Func, i as u32);
-        }
-        module.section(&exports);
-
-        // Code section
-        let mut codes = CodeSection::new();
-        for _ in ir_module.functions.iter() {
-            let locals = vec![];
-            let mut f = Function::new(locals);
-            f.instruction(&Instruction::I32Const(42));
-            f.instruction(&Instruction::End);
-            codes.function(&f);
-        }
-        module.section(&codes);
-
-        Ok(module.finish())
+        let mut lowerer = ModuleLowerer::new(ir_module);
+        lowerer.lower_module()
     }
 }
 
@@ -130,3 +55,1009 @@ impl std::fmt::Display for CodegenError {
 }
 
 impl std::error::Error for CodegenError {}
+
+#[derive(Debug, Clone, Copy)]
+struct FunctionSignature {
+    params: u32,
+    returns_i32: bool,
+}
+
+#[derive(Debug, Clone)]
+struct FunctionPlan {
+    max_value: usize,
+    var_names: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone)]
+struct DataSegment {
+    offset: u32,
+    bytes: Vec<u8>,
+}
+
+struct ModuleLowerer<'a> {
+    ir_module: &'a IrModule,
+    function_indices: HashMap<String, u32>,
+    signatures: Vec<FunctionSignature>,
+    data_segments: Vec<DataSegment>,
+    string_pool: HashMap<String, u32>,
+    next_data_offset: u32,
+    uses_memory: bool,
+}
+
+impl<'a> ModuleLowerer<'a> {
+    fn new(ir_module: &'a IrModule) -> Self {
+        let mut function_indices = HashMap::new();
+        let mut signatures = Vec::new();
+
+        for (idx, func) in ir_module.functions.iter().enumerate() {
+            function_indices.insert(func.id.clone(), idx as u32);
+            signatures.push(Self::infer_signature(func));
+        }
+
+        Self {
+            ir_module,
+            function_indices,
+            signatures,
+            data_segments: Vec::new(),
+            string_pool: HashMap::new(),
+            next_data_offset: 16,
+            uses_memory: false,
+        }
+    }
+
+    fn lower_module(&mut self) -> Result<Vec<u8>, CodegenError> {
+        let mut compiled_functions: Vec<Function> =
+            Vec::with_capacity(self.ir_module.functions.len());
+        for (idx, func) in self.ir_module.functions.iter().enumerate() {
+            let signature = self.signatures[idx];
+            compiled_functions.push(self.lower_function(func, signature)?);
+        }
+
+        let mut module = Module::new();
+
+        let mut types = TypeSection::new();
+        for signature in &self.signatures {
+            let params = vec![ValType::I32; signature.params as usize];
+            let results = if signature.returns_i32 {
+                vec![ValType::I32]
+            } else {
+                Vec::new()
+            };
+            types.function(params, results);
+        }
+        module.section(&types);
+
+        let mut funcs = FunctionSection::new();
+        for (i, _) in self.ir_module.functions.iter().enumerate() {
+            funcs.function(i as u32);
+        }
+        module.section(&funcs);
+
+        let heap_init = align4(self.next_data_offset.max(16));
+        if self.uses_memory {
+            let mut memories = MemorySection::new();
+            memories.memory(MemoryType {
+                minimum: 1,
+                maximum: None,
+                memory64: false,
+                shared: false,
+            });
+            module.section(&memories);
+
+            let mut globals = GlobalSection::new();
+            globals.global(
+                GlobalType {
+                    val_type: ValType::I32,
+                    mutable: true,
+                },
+                &ConstExpr::i32_const(heap_init as i32),
+            );
+            module.section(&globals);
+        }
+
+        let mut exports = ExportSection::new();
+        for (i, func) in self.ir_module.functions.iter().enumerate() {
+            let export_name = if func.id.is_empty() {
+                format!("__anon_{}", i)
+            } else {
+                func.id.clone()
+            };
+            exports.export(&export_name, ExportKind::Func, i as u32);
+        }
+        if self.uses_memory {
+            exports.export("memory", ExportKind::Memory, 0);
+        }
+        module.section(&exports);
+
+        let mut codes = CodeSection::new();
+        for f in compiled_functions {
+            codes.function(&f);
+        }
+        module.section(&codes);
+
+        if self.uses_memory && !self.data_segments.is_empty() {
+            let mut data = DataSection::new();
+            for segment in &self.data_segments {
+                data.active(
+                    0,
+                    &ConstExpr::i32_const(segment.offset as i32),
+                    segment.bytes.clone(),
+                );
+            }
+            module.section(&data);
+        }
+
+        Ok(module.finish())
+    }
+
+    fn infer_signature(func: &IrFunction) -> FunctionSignature {
+        let returns_i32 = func.return_type.is_some()
+            || func
+                .body
+                .iter()
+                .any(|bb| matches!(bb.terminator, Terminator::Return(Some(_))));
+
+        FunctionSignature {
+            params: func.params.len() as u32,
+            returns_i32,
+        }
+    }
+
+    fn lower_function(
+        &mut self,
+        func: &IrFunction,
+        signature: FunctionSignature,
+    ) -> Result<Function, CodegenError> {
+        let plan = self.plan_function(func);
+        let params_count = signature.params;
+        let value_local_count = (plan.max_value + 1) as u32;
+
+        let mut named_locals = HashMap::new();
+        let mut next_named_local = params_count + value_local_count;
+        for name in &plan.var_names {
+            if param_index(func, name).is_none() {
+                named_locals.insert(name.clone(), next_named_local);
+                next_named_local += 1;
+            }
+        }
+
+        let bb_local = next_named_local;
+        let extra_locals_count = value_local_count + (named_locals.len() as u32) + 1;
+        let mut wasm_fn = Function::new(vec![(extra_locals_count, ValType::I32)]);
+
+        let entry_block_id = func.body.first().map(|b| b.id as i32).unwrap_or(0);
+        wasm_fn.instruction(&Instruction::I32Const(entry_block_id));
+        wasm_fn.instruction(&Instruction::LocalSet(bb_local));
+
+        let mut block_ids: Vec<usize> = func.body.iter().map(|b| b.id).collect();
+        block_ids.sort_unstable();
+
+        let mut blocks = HashMap::new();
+        for bb in &func.body {
+            blocks.insert(bb.id, bb);
+        }
+
+        let mut function_refs: HashMap<ValueId, u32> = HashMap::new();
+        let mut ctx = FunctionCtx {
+            params_count,
+            signature,
+            bb_local,
+            named_locals,
+            function_refs: &mut function_refs,
+            func,
+        };
+
+        wasm_fn.instruction(&Instruction::Block(BlockType::Empty));
+        wasm_fn.instruction(&Instruction::Loop(BlockType::Empty));
+        self.emit_dispatch_chain(&mut wasm_fn, &block_ids, 0, &blocks, &mut ctx)?;
+        wasm_fn.instruction(&Instruction::LocalGet(bb_local));
+        wasm_fn.instruction(&Instruction::I32Const(-1));
+        wasm_fn.instruction(&Instruction::I32Eq);
+        wasm_fn.instruction(&Instruction::BrIf(1));
+        wasm_fn.instruction(&Instruction::Br(0));
+        wasm_fn.instruction(&Instruction::End);
+        wasm_fn.instruction(&Instruction::End);
+
+        if signature.returns_i32 {
+            wasm_fn.instruction(&Instruction::I32Const(0));
+        }
+        wasm_fn.instruction(&Instruction::End);
+
+        Ok(wasm_fn)
+    }
+
+    fn emit_dispatch_chain(
+        &mut self,
+        wasm_fn: &mut Function,
+        block_ids: &[usize],
+        idx: usize,
+        blocks: &HashMap<usize, &BasicBlock>,
+        ctx: &mut FunctionCtx<'_>,
+    ) -> Result<(), CodegenError> {
+        if idx >= block_ids.len() {
+            wasm_fn.instruction(&Instruction::I32Const(-1));
+            wasm_fn.instruction(&Instruction::LocalSet(ctx.bb_local));
+            return Ok(());
+        }
+
+        let block_id = block_ids[idx] as i32;
+        wasm_fn.instruction(&Instruction::LocalGet(ctx.bb_local));
+        wasm_fn.instruction(&Instruction::I32Const(block_id));
+        wasm_fn.instruction(&Instruction::I32Eq);
+        wasm_fn.instruction(&Instruction::If(BlockType::Empty));
+
+        let bb = blocks
+            .get(&(block_id as usize))
+            .ok_or_else(|| CodegenError::IrError(format!("missing basic block {}", block_id)))?;
+        self.emit_basic_block(wasm_fn, bb, ctx)?;
+
+        wasm_fn.instruction(&Instruction::Else);
+        self.emit_dispatch_chain(wasm_fn, block_ids, idx + 1, blocks, ctx)?;
+        wasm_fn.instruction(&Instruction::End);
+        Ok(())
+    }
+
+    fn emit_basic_block(
+        &mut self,
+        wasm_fn: &mut Function,
+        bb: &BasicBlock,
+        ctx: &mut FunctionCtx<'_>,
+    ) -> Result<(), CodegenError> {
+        for inst in &bb.instructions {
+            self.emit_instruction(wasm_fn, inst, ctx)?;
+        }
+
+        match &bb.terminator {
+            Terminator::Return(Some(value)) => {
+                wasm_fn.instruction(&Instruction::LocalGet(value_local(
+                    ctx.params_count,
+                    *value,
+                )));
+                wasm_fn.instruction(&Instruction::Return);
+            }
+            Terminator::Return(None) => {
+                if ctx.signature.returns_i32 {
+                    wasm_fn.instruction(&Instruction::I32Const(0));
+                }
+                wasm_fn.instruction(&Instruction::Return);
+            }
+            Terminator::Jump(target) => {
+                wasm_fn.instruction(&Instruction::I32Const(*target as i32));
+                wasm_fn.instruction(&Instruction::LocalSet(ctx.bb_local));
+            }
+            Terminator::Branch { cond, then, else_ } => {
+                wasm_fn.instruction(&Instruction::LocalGet(value_local(ctx.params_count, *cond)));
+                wasm_fn.instruction(&Instruction::If(BlockType::Empty));
+                wasm_fn.instruction(&Instruction::I32Const(*then as i32));
+                wasm_fn.instruction(&Instruction::LocalSet(ctx.bb_local));
+                wasm_fn.instruction(&Instruction::Else);
+                wasm_fn.instruction(&Instruction::I32Const(*else_ as i32));
+                wasm_fn.instruction(&Instruction::LocalSet(ctx.bb_local));
+                wasm_fn.instruction(&Instruction::End);
+            }
+            Terminator::Unreachable => {
+                wasm_fn.instruction(&Instruction::Unreachable);
+                wasm_fn.instruction(&Instruction::I32Const(-1));
+                wasm_fn.instruction(&Instruction::LocalSet(ctx.bb_local));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn emit_instruction(
+        &mut self,
+        wasm_fn: &mut Function,
+        inst: &IrInstruction,
+        ctx: &mut FunctionCtx<'_>,
+    ) -> Result<(), CodegenError> {
+        match inst {
+            IrInstruction::Const { dest, value } => match value {
+                ConstValue::Number(n) => {
+                    if n.fract() != 0.0 {
+                        return Err(CodegenError::Unsupported(format!(
+                            "non-integer number literal '{}' is unsupported in wasm subset",
+                            n
+                        )));
+                    }
+                    wasm_fn.instruction(&Instruction::I32Const(*n as i32));
+                    wasm_fn
+                        .instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
+                    ctx.function_refs.remove(dest);
+                }
+                ConstValue::Bool(b) => {
+                    wasm_fn.instruction(&Instruction::I32Const(if *b { 1 } else { 0 }));
+                    wasm_fn
+                        .instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
+                    ctx.function_refs.remove(dest);
+                }
+                ConstValue::Null => {
+                    wasm_fn.instruction(&Instruction::I32Const(0));
+                    wasm_fn
+                        .instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
+                    ctx.function_refs.remove(dest);
+                }
+                ConstValue::String(s) => {
+                    let ptr = self.intern_string(s);
+                    wasm_fn.instruction(&Instruction::I32Const(ptr as i32));
+                    wasm_fn
+                        .instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
+                    ctx.function_refs.remove(dest);
+                }
+            },
+            IrInstruction::VarDecl { name, init, .. } => {
+                let local = self.resolve_variable_local(ctx, name)?;
+                if let Some(src) = init {
+                    wasm_fn
+                        .instruction(&Instruction::LocalGet(value_local(ctx.params_count, *src)));
+                } else {
+                    wasm_fn.instruction(&Instruction::I32Const(0));
+                }
+                wasm_fn.instruction(&Instruction::LocalSet(local));
+            }
+            IrInstruction::AssignVar { name, src } => {
+                let local = self.resolve_variable_local(ctx, name)?;
+                wasm_fn.instruction(&Instruction::LocalGet(value_local(ctx.params_count, *src)));
+                wasm_fn.instruction(&Instruction::LocalSet(local));
+            }
+            IrInstruction::AssignExpr { name, src, dest } => {
+                let local = self.resolve_variable_local(ctx, name)?;
+                wasm_fn.instruction(&Instruction::LocalGet(value_local(ctx.params_count, *src)));
+                wasm_fn.instruction(&Instruction::LocalSet(local));
+                wasm_fn.instruction(&Instruction::LocalGet(value_local(ctx.params_count, *src)));
+                wasm_fn.instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
+                ctx.function_refs.remove(dest);
+            }
+            IrInstruction::VarRef { dest, name } => {
+                if let Some(param_idx) = param_index(ctx.func, name) {
+                    wasm_fn.instruction(&Instruction::LocalGet(param_idx));
+                    wasm_fn
+                        .instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
+                    ctx.function_refs.remove(dest);
+                } else if let Some(local_idx) = ctx.named_locals.get(name).copied() {
+                    wasm_fn.instruction(&Instruction::LocalGet(local_idx));
+                    wasm_fn
+                        .instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
+                    ctx.function_refs.remove(dest);
+                } else if let Some(func_idx) = self.function_indices.get(name).copied() {
+                    wasm_fn.instruction(&Instruction::I32Const(func_idx as i32));
+                    wasm_fn
+                        .instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
+                    ctx.function_refs.insert(*dest, func_idx);
+                } else {
+                    return Err(CodegenError::Unsupported(format!(
+                        "unsupported symbol reference '{}' in wasm backend",
+                        name
+                    )));
+                }
+            }
+            IrInstruction::Load { dest, src } => {
+                wasm_fn.instruction(&Instruction::LocalGet(value_local(ctx.params_count, *src)));
+                wasm_fn.instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
+                ctx.function_refs.remove(dest);
+            }
+            IrInstruction::Store { dest, src } => {
+                wasm_fn.instruction(&Instruction::LocalGet(value_local(ctx.params_count, *src)));
+                wasm_fn.instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
+            }
+            IrInstruction::BinOp { op, lhs, rhs, dest } => {
+                wasm_fn.instruction(&Instruction::LocalGet(value_local(ctx.params_count, *lhs)));
+                wasm_fn.instruction(&Instruction::LocalGet(value_local(ctx.params_count, *rhs)));
+                self.emit_binop(wasm_fn, *op);
+                wasm_fn.instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
+                ctx.function_refs.remove(dest);
+            }
+            IrInstruction::UnOp { op, arg, dest } => {
+                match op {
+                    UnOp::Neg => {
+                        wasm_fn.instruction(&Instruction::I32Const(0));
+                        wasm_fn.instruction(&Instruction::LocalGet(value_local(
+                            ctx.params_count,
+                            *arg,
+                        )));
+                        wasm_fn.instruction(&Instruction::I32Sub);
+                    }
+                    UnOp::Not => {
+                        wasm_fn.instruction(&Instruction::LocalGet(value_local(
+                            ctx.params_count,
+                            *arg,
+                        )));
+                        wasm_fn.instruction(&Instruction::I32Eqz);
+                    }
+                }
+                wasm_fn.instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
+                ctx.function_refs.remove(dest);
+            }
+            IrInstruction::LogicalOp { op, lhs, rhs, dest } => {
+                match op {
+                    LogicOp::And => {
+                        wasm_fn.instruction(&Instruction::LocalGet(value_local(
+                            ctx.params_count,
+                            *lhs,
+                        )));
+                        wasm_fn.instruction(&Instruction::LocalGet(value_local(
+                            ctx.params_count,
+                            *rhs,
+                        )));
+                        wasm_fn.instruction(&Instruction::I32And);
+                    }
+                    LogicOp::Or => {
+                        wasm_fn.instruction(&Instruction::LocalGet(value_local(
+                            ctx.params_count,
+                            *lhs,
+                        )));
+                        wasm_fn.instruction(&Instruction::LocalGet(value_local(
+                            ctx.params_count,
+                            *rhs,
+                        )));
+                        wasm_fn.instruction(&Instruction::I32Or);
+                    }
+                    LogicOp::Nullish => {
+                        return Err(CodegenError::Unsupported(
+                            "nullish coalescing is unsupported for wasm backend".to_string(),
+                        ))
+                    }
+                }
+                wasm_fn.instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
+                ctx.function_refs.remove(dest);
+            }
+            IrInstruction::Conditional {
+                cond,
+                then_value,
+                else_value,
+                dest,
+            } => {
+                wasm_fn.instruction(&Instruction::LocalGet(value_local(
+                    ctx.params_count,
+                    *then_value,
+                )));
+                wasm_fn.instruction(&Instruction::LocalGet(value_local(
+                    ctx.params_count,
+                    *else_value,
+                )));
+                wasm_fn.instruction(&Instruction::LocalGet(value_local(ctx.params_count, *cond)));
+                wasm_fn.instruction(&Instruction::Select);
+                wasm_fn.instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
+                ctx.function_refs.remove(dest);
+            }
+            IrInstruction::Call { callee, args, dest } => {
+                let callee_idx = ctx.function_refs.get(callee).copied().ok_or_else(|| {
+                    CodegenError::Unsupported(
+                        "dynamic or interop calls are unsupported for wasm backend".to_string(),
+                    )
+                })?;
+
+                for arg in args {
+                    wasm_fn
+                        .instruction(&Instruction::LocalGet(value_local(ctx.params_count, *arg)));
+                }
+                wasm_fn.instruction(&Instruction::Call(callee_idx));
+
+                let sig = self.signatures.get(callee_idx as usize).ok_or_else(|| {
+                    CodegenError::IrError(format!(
+                        "missing signature for function index {}",
+                        callee_idx
+                    ))
+                })?;
+                if sig.returns_i32 {
+                    wasm_fn
+                        .instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
+                } else {
+                    wasm_fn.instruction(&Instruction::I32Const(0));
+                    wasm_fn
+                        .instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
+                }
+                ctx.function_refs.remove(dest);
+            }
+            IrInstruction::ArrayLit { dest, elements } => {
+                self.uses_memory = true;
+                let dest_local = value_local(ctx.params_count, *dest);
+                let bytes = ((elements.len() + 1) * 4) as i32;
+
+                wasm_fn.instruction(&Instruction::GlobalGet(HEAP_PTR_GLOBAL_INDEX));
+                wasm_fn.instruction(&Instruction::LocalTee(dest_local));
+                wasm_fn.instruction(&Instruction::I32Const(bytes));
+                wasm_fn.instruction(&Instruction::I32Add);
+                wasm_fn.instruction(&Instruction::GlobalSet(HEAP_PTR_GLOBAL_INDEX));
+
+                wasm_fn.instruction(&Instruction::LocalGet(dest_local));
+                wasm_fn.instruction(&Instruction::I32Const(elements.len() as i32));
+                wasm_fn.instruction(&Instruction::I32Store(memarg(0)));
+
+                for (idx, element) in elements.iter().enumerate() {
+                    wasm_fn.instruction(&Instruction::LocalGet(dest_local));
+                    if let Some(value) = element {
+                        wasm_fn.instruction(&Instruction::LocalGet(value_local(
+                            ctx.params_count,
+                            *value,
+                        )));
+                    } else {
+                        wasm_fn.instruction(&Instruction::I32Const(0));
+                    }
+                    wasm_fn.instruction(&Instruction::I32Store(memarg(((idx + 1) * 4) as u64)));
+                }
+
+                ctx.function_refs.remove(dest);
+            }
+            IrInstruction::ExprStmt { .. } => {}
+            IrInstruction::ObjectLit { .. }
+            | IrInstruction::Member { .. }
+            | IrInstruction::MemberComputed { .. }
+            | IrInstruction::New { .. }
+            | IrInstruction::Await { .. }
+            | IrInstruction::ThrowStmt { .. }
+            | IrInstruction::Try { .. } => {
+                return Err(CodegenError::Unsupported(format!(
+                    "unsupported for wasm backend: {:?}",
+                    inst
+                )))
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_binop(&self, wasm_fn: &mut Function, op: BinOp) {
+        match op {
+            BinOp::Add => {
+                wasm_fn.instruction(&Instruction::I32Add);
+            }
+            BinOp::Sub => {
+                wasm_fn.instruction(&Instruction::I32Sub);
+            }
+            BinOp::Mul => {
+                wasm_fn.instruction(&Instruction::I32Mul);
+            }
+            BinOp::Div => {
+                wasm_fn.instruction(&Instruction::I32DivS);
+            }
+            BinOp::Mod => {
+                wasm_fn.instruction(&Instruction::I32RemS);
+            }
+            BinOp::Eq => {
+                wasm_fn.instruction(&Instruction::I32Eq);
+            }
+            BinOp::Ne => {
+                wasm_fn.instruction(&Instruction::I32Ne);
+            }
+            BinOp::Lt => {
+                wasm_fn.instruction(&Instruction::I32LtS);
+            }
+            BinOp::Le => {
+                wasm_fn.instruction(&Instruction::I32LeS);
+            }
+            BinOp::Gt => {
+                wasm_fn.instruction(&Instruction::I32GtS);
+            }
+            BinOp::Ge => {
+                wasm_fn.instruction(&Instruction::I32GeS);
+            }
+            BinOp::And => {
+                wasm_fn.instruction(&Instruction::I32And);
+            }
+            BinOp::Or => {
+                wasm_fn.instruction(&Instruction::I32Or);
+            }
+            BinOp::Xor => {
+                wasm_fn.instruction(&Instruction::I32Xor);
+            }
+            BinOp::Shl => {
+                wasm_fn.instruction(&Instruction::I32Shl);
+            }
+            BinOp::Shr => {
+                wasm_fn.instruction(&Instruction::I32ShrU);
+            }
+            BinOp::Sar => {
+                wasm_fn.instruction(&Instruction::I32ShrS);
+            }
+        }
+    }
+
+    fn resolve_variable_local(
+        &self,
+        ctx: &FunctionCtx<'_>,
+        name: &str,
+    ) -> Result<u32, CodegenError> {
+        if let Some(param_idx) = param_index(ctx.func, name) {
+            return Ok(param_idx);
+        }
+        ctx.named_locals
+            .get(name)
+            .copied()
+            .ok_or_else(|| CodegenError::IrError(format!("unknown wasm local variable '{}'", name)))
+    }
+
+    fn intern_string(&mut self, s: &str) -> u32 {
+        let normalized = normalize_string_literal(s);
+
+        if let Some(ptr) = self.string_pool.get(&normalized).copied() {
+            return ptr;
+        }
+
+        self.uses_memory = true;
+        let offset = align4(self.next_data_offset);
+        let mut bytes = Vec::with_capacity(4 + normalized.len());
+        bytes.extend((normalized.len() as u32).to_le_bytes());
+        bytes.extend(normalized.as_bytes());
+
+        self.next_data_offset = align4(offset + bytes.len() as u32);
+        self.data_segments.push(DataSegment {
+            offset,
+            bytes: bytes.clone(),
+        });
+        self.string_pool.insert(normalized, offset);
+        offset
+    }
+
+    fn plan_function(&self, func: &IrFunction) -> FunctionPlan {
+        let mut max_value: usize = 0;
+        let mut var_names = BTreeSet::new();
+
+        for bb in &func.body {
+            for inst in &bb.instructions {
+                match inst {
+                    IrInstruction::Load { dest, src } | IrInstruction::Store { dest, src } => {
+                        touch_value(&mut max_value, *dest);
+                        touch_value(&mut max_value, *src);
+                    }
+                    IrInstruction::ObjectLit { dest, props } => {
+                        touch_value(&mut max_value, *dest);
+                        for prop in props {
+                            touch_value(&mut max_value, prop.value);
+                        }
+                    }
+                    IrInstruction::New { callee, args, dest } => {
+                        touch_value(&mut max_value, *callee);
+                        touch_value(&mut max_value, *dest);
+                        for arg in args {
+                            touch_value(&mut max_value, *arg);
+                        }
+                    }
+                    IrInstruction::Await { arg, dest } => {
+                        touch_value(&mut max_value, *arg);
+                        touch_value(&mut max_value, *dest);
+                    }
+                    IrInstruction::VarDecl { name, init, .. } => {
+                        var_names.insert(name.clone());
+                        if let Some(init) = init {
+                            touch_value(&mut max_value, *init);
+                        }
+                    }
+                    IrInstruction::AssignVar { name, src } => {
+                        var_names.insert(name.clone());
+                        touch_value(&mut max_value, *src);
+                    }
+                    IrInstruction::AssignExpr { name, src, dest } => {
+                        var_names.insert(name.clone());
+                        touch_value(&mut max_value, *src);
+                        touch_value(&mut max_value, *dest);
+                    }
+                    IrInstruction::ThrowStmt { arg } => touch_value(&mut max_value, *arg),
+                    IrInstruction::Try {
+                        try_body,
+                        catch,
+                        finally_body,
+                    } => {
+                        for i in try_body {
+                            self.plan_nested_inst(i, &mut max_value, &mut var_names);
+                        }
+                        if let Some(catch) = catch {
+                            if let Some(param) = &catch.param {
+                                var_names.insert(param.clone());
+                            }
+                            for i in &catch.body {
+                                self.plan_nested_inst(i, &mut max_value, &mut var_names);
+                            }
+                        }
+                        if let Some(finally_body) = finally_body {
+                            for i in finally_body {
+                                self.plan_nested_inst(i, &mut max_value, &mut var_names);
+                            }
+                        }
+                    }
+                    IrInstruction::ExprStmt { value }
+                    | IrInstruction::VarRef { dest: value, .. } => {
+                        touch_value(&mut max_value, *value);
+                    }
+                    IrInstruction::Member { object, dest, .. } => {
+                        touch_value(&mut max_value, *object);
+                        touch_value(&mut max_value, *dest);
+                    }
+                    IrInstruction::MemberComputed {
+                        object,
+                        property,
+                        dest,
+                    } => {
+                        touch_value(&mut max_value, *object);
+                        touch_value(&mut max_value, *property);
+                        touch_value(&mut max_value, *dest);
+                    }
+                    IrInstruction::BinOp { lhs, rhs, dest, .. } => {
+                        touch_value(&mut max_value, *lhs);
+                        touch_value(&mut max_value, *rhs);
+                        touch_value(&mut max_value, *dest);
+                    }
+                    IrInstruction::UnOp { arg, dest, .. } => {
+                        touch_value(&mut max_value, *arg);
+                        touch_value(&mut max_value, *dest);
+                    }
+                    IrInstruction::Call { callee, args, dest } => {
+                        touch_value(&mut max_value, *callee);
+                        for arg in args {
+                            touch_value(&mut max_value, *arg);
+                        }
+                        touch_value(&mut max_value, *dest);
+                    }
+                    IrInstruction::ArrayLit { dest, elements } => {
+                        touch_value(&mut max_value, *dest);
+                        for value in elements.iter().flatten() {
+                            touch_value(&mut max_value, *value);
+                        }
+                    }
+                    IrInstruction::LogicalOp { lhs, rhs, dest, .. } => {
+                        touch_value(&mut max_value, *lhs);
+                        touch_value(&mut max_value, *rhs);
+                        touch_value(&mut max_value, *dest);
+                    }
+                    IrInstruction::Conditional {
+                        cond,
+                        then_value,
+                        else_value,
+                        dest,
+                    } => {
+                        touch_value(&mut max_value, *cond);
+                        touch_value(&mut max_value, *then_value);
+                        touch_value(&mut max_value, *else_value);
+                        touch_value(&mut max_value, *dest);
+                    }
+                    IrInstruction::Const { dest, .. } => touch_value(&mut max_value, *dest),
+                }
+            }
+
+            match &bb.terminator {
+                Terminator::Return(Some(v)) | Terminator::Branch { cond: v, .. } => {
+                    touch_value(&mut max_value, *v);
+                }
+                Terminator::Return(None) | Terminator::Jump(_) | Terminator::Unreachable => {}
+            }
+        }
+
+        FunctionPlan {
+            max_value,
+            var_names,
+        }
+    }
+
+    fn plan_nested_inst(
+        &self,
+        inst: &IrInstruction,
+        max_value: &mut usize,
+        var_names: &mut BTreeSet<String>,
+    ) {
+        match inst {
+            IrInstruction::VarDecl { name, init, .. } => {
+                var_names.insert(name.clone());
+                if let Some(value) = init {
+                    touch_value(max_value, *value);
+                }
+            }
+            IrInstruction::AssignVar { name, src } => {
+                var_names.insert(name.clone());
+                touch_value(max_value, *src);
+            }
+            IrInstruction::AssignExpr { name, src, dest } => {
+                var_names.insert(name.clone());
+                touch_value(max_value, *src);
+                touch_value(max_value, *dest);
+            }
+            IrInstruction::ExprStmt { value } | IrInstruction::VarRef { dest: value, .. } => {
+                touch_value(max_value, *value);
+            }
+            IrInstruction::Const { dest, .. } => touch_value(max_value, *dest),
+            _ => {}
+        }
+    }
+}
+
+struct FunctionCtx<'a> {
+    params_count: u32,
+    signature: FunctionSignature,
+    bb_local: u32,
+    named_locals: HashMap<String, u32>,
+    function_refs: &'a mut HashMap<ValueId, u32>,
+    func: &'a IrFunction,
+}
+
+fn value_local(params_count: u32, value: ValueId) -> u32 {
+    params_count + (value as u32)
+}
+
+fn memarg(offset: u64) -> MemArg {
+    MemArg {
+        offset,
+        align: 2,
+        memory_index: 0,
+    }
+}
+
+fn param_index(func: &IrFunction, name: &str) -> Option<u32> {
+    func.params
+        .iter()
+        .position(|p| p.name == name)
+        .map(|i| i as u32)
+}
+
+fn touch_value(max: &mut usize, value: ValueId) {
+    if value > *max {
+        *max = value;
+    }
+}
+
+fn align4(value: u32) -> u32 {
+    (value + 3) & !3
+}
+
+fn normalize_string_literal(input: &str) -> String {
+    if input.len() >= 2 {
+        let first = input.chars().next().unwrap_or_default();
+        let last = input.chars().next_back().unwrap_or_default();
+        if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+            return input[1..input.len() - 1].to_string();
+        }
+    }
+    input.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use wasmparser::Validator;
+
+    fn compile_source(source: &str) -> Vec<u8> {
+        // Assign
+        let ast = argon_parser::parse(source).expect("source should parse");
+        let mut codegen = WasmCodegen::new();
+
+        // Act
+        codegen
+            .generate_from_ast(&ast)
+            .expect("wasm generation should succeed")
+    }
+
+    fn run_node_script(wasm_bytes: &[u8], script_body: &str) -> String {
+        // Assign
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be valid")
+            .as_nanos();
+        let wasm_path = std::env::temp_dir().join(format!("argon_wasm_test_{}.wasm", nonce));
+        fs::write(&wasm_path, wasm_bytes).expect("should write wasm fixture");
+
+        let script = format!(
+            "const fs=require('fs');\
+             const bytes=fs.readFileSync(process.argv[1]);\
+             WebAssembly.instantiate(bytes, {{}}).then(({{instance}})=>{{\
+               {}\
+             }}).catch((err)=>{{console.error(err); process.exit(1);}});",
+            script_body
+        );
+
+        // Act
+        let output = Command::new("node")
+            .arg("-e")
+            .arg(&script)
+            .arg(&wasm_path)
+            .output()
+            .expect("node should be available");
+
+        let _ = fs::remove_file(&wasm_path);
+
+        // Assert
+        assert!(
+            output.status.success(),
+            "node execution failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn emits_valid_wasm_for_control_flow_subset() {
+        // Assign
+        let source = r#"
+            function sumTo(n: i32): i32 {
+                let acc = 0;
+                let i = 0;
+                while (i <= n) {
+                    acc = acc + i;
+                    i = i + 1;
+                }
+                return acc;
+            }
+        "#;
+
+        // Act
+        let wasm = compile_source(source);
+        let validation = Validator::new().validate_all(&wasm);
+
+        // Assert
+        assert!(validation.is_ok(), "wasm must be structurally valid");
+    }
+
+    #[test]
+    fn executes_internal_function_calls_and_loops() {
+        // Assign
+        let source = r#"
+            function add(a: i32, b: i32): i32 { return a + b; }
+            function sumTo(n: i32): i32 {
+                let acc = 0;
+                for (let i = 0; i <= n; i = i + 1) {
+                    acc = acc + i;
+                }
+                return add(acc, 0);
+            }
+        "#;
+        let wasm = compile_source(source);
+
+        // Act
+        let output = run_node_script(
+            &wasm,
+            "const result = instance.exports.sumTo(4); console.log(String(result));",
+        );
+
+        // Assert
+        assert_eq!(output, "10");
+    }
+
+    #[test]
+    fn stores_string_constants_in_linear_memory() {
+        // Assign
+        let source = r#"
+            function greet(): i32 {
+                return "hello";
+            }
+        "#;
+        let wasm = compile_source(source);
+
+        // Act
+        let output = run_node_script(
+            &wasm,
+            "const ptr = instance.exports.greet();\
+             const view = new DataView(instance.exports.memory.buffer);\
+             const len = view.getUint32(ptr, true);\
+             const bytes = new Uint8Array(instance.exports.memory.buffer, ptr + 4, len);\
+             console.log(new TextDecoder().decode(bytes));",
+        );
+
+        // Assert
+        assert_eq!(output, "hello");
+    }
+
+    #[test]
+    fn stores_array_literals_in_linear_memory() {
+        // Assign
+        let source = r#"
+            function makeArray(): i32 {
+                return [1, 2, 3];
+            }
+        "#;
+        let wasm = compile_source(source);
+
+        // Act
+        let output = run_node_script(
+            &wasm,
+            "const ptr = instance.exports.makeArray();\
+             const view = new DataView(instance.exports.memory.buffer);\
+             const len = view.getInt32(ptr, true);\
+             const a = view.getInt32(ptr + 4, true);\
+             const b = view.getInt32(ptr + 8, true);\
+             const c = view.getInt32(ptr + 12, true);\
+             console.log(`${len},${a},${b},${c}`);",
+        );
+
+        // Assert
+        assert_eq!(output, "3,1,2,3");
+    }
+}

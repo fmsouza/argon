@@ -297,6 +297,7 @@ pub struct StructDecl {
     pub id: Ident,
     pub type_params: Vec<TypeParam>,
     pub fields: Vec<StructField>,
+    pub methods: Vec<MethodDefinition>,
     pub span: Span,
 }
 #[derive(Debug, Clone)]

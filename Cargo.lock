@@ -180,6 +180,7 @@ dependencies = [
  "smallvec",
  "thiserror",
  "wasm-encoder 0.41.2",
+ "wasmparser 0.224.1",
 ]
 
 [[package]]
@@ -215,6 +216,7 @@ name = "argon-interop"
 version = "0.1.0"
 dependencies = [
  "argon-ast",
+ "argon-parser",
  "argon-types",
  "indexmap",
  "proptest",
@@ -276,6 +278,7 @@ dependencies = [
  "anyhow",
  "argon-ast",
  "argon-borrowck",
+ "argon-parser",
  "argon-types",
 ]
 
@@ -654,6 +657,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
  "foldhash",
+ "serde",
 ]
 
 [[package]]
@@ -1583,8 +1587,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04f17a5917c2ddd3819e84c661fae0d6ba29d7b9c1f0e96c708c65a9c4188e11"
 dependencies = [
  "bitflags 2.11.0",
+ "hashbrown 0.15.5",
  "indexmap",
  "semver",
+ "serde",
 ]
 
 [[package]]

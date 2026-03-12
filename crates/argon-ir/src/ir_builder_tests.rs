@@ -250,7 +250,11 @@ mod new_and_object_translation {
         let mut builder = IrBuilder::new();
 
         let module = builder.build(&ast).unwrap();
-        let p = module.globals.iter().find(|g| g.name == "p").expect("expected global p");
+        let p = module
+            .globals
+            .iter()
+            .find(|g| g.name == "p")
+            .expect("expected global p");
         let mut saw_object = false;
         let mut saw_new = false;
         for inst in &p.init_insts {
@@ -369,13 +373,61 @@ mod switch_and_match_translation {
 
     #[test]
     fn translates_match_statement() {
-        let source = "function f(x: i32): void { match (x) { 1 => const a = 1, 2 => const b = 2, } }";
+        let source =
+            "function f(x: i32): void { match (x) { 1 => const a = 1, 2 => const b = 2, } }";
         let ast = parse(source).unwrap();
         let mut builder = IrBuilder::new();
 
         let module = builder.build(&ast).unwrap();
         let f = module.functions.iter().find(|f| f.id == "f").unwrap();
         assert!(f.body.len() > 1);
+    }
+}
+
+mod loop_translation {
+    use super::*;
+    use crate::{Instruction, Terminator};
+
+    #[test]
+    fn translates_loop_statement() {
+        let source = "function f(): void { let i = 0; loop { i = i + 1; if (i > 3) { break; } } }";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+
+        let module = builder.build(&ast).unwrap();
+        let f = module.functions.iter().find(|f| f.id == "f").unwrap();
+        assert!(f.body.len() > 1);
+        assert!(f
+            .body
+            .iter()
+            .any(|b| matches!(b.terminator, Terminator::Jump(_))));
+    }
+
+    #[test]
+    fn translates_for_of_statement() {
+        let source = "function f(items: i32[]): i32 { let sum = 0; for (const item of items) { sum = sum + item; } return sum; }";
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+
+        let module = builder.build(&ast).unwrap();
+        let f = module.functions.iter().find(|f| f.id == "f").unwrap();
+
+        let mut saw_member_computed = false;
+        let mut saw_index_var = false;
+        for block in &f.body {
+            for inst in &block.instructions {
+                match inst {
+                    Instruction::MemberComputed { .. } => saw_member_computed = true,
+                    Instruction::VarDecl { name, .. } if name.contains("__argon_forin_idx_") => {
+                        saw_index_var = true
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        assert!(saw_member_computed);
+        assert!(saw_index_var);
     }
 }
 
@@ -393,8 +445,7 @@ mod export_translation {
         assert!(module
             .exports
             .iter()
-            .any(|e| e.declaration.is_none()
-                && e.specifiers.iter().any(|s| s.orig.sym == "foo")));
+            .any(|e| e.declaration.is_none() && e.specifiers.iter().any(|s| s.orig.sym == "foo")));
     }
 
     #[test]
@@ -409,8 +460,7 @@ mod export_translation {
         assert!(module
             .exports
             .iter()
-            .any(|e| e.declaration.is_none()
-                && e.specifiers.iter().any(|s| s.orig.sym == "foo")));
+            .any(|e| e.declaration.is_none() && e.specifiers.iter().any(|s| s.orig.sym == "foo")));
     }
 }
 
@@ -434,7 +484,10 @@ mod try_catch_translation {
                 match inst {
                     Instruction::Try { try_body, .. } => {
                         saw_try = true;
-                        if try_body.iter().any(|i| matches!(i, Instruction::ThrowStmt { .. })) {
+                        if try_body
+                            .iter()
+                            .any(|i| matches!(i, Instruction::ThrowStmt { .. }))
+                        {
                             saw_throw = true;
                         }
                     }

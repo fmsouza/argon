@@ -460,7 +460,10 @@ impl IrBuilder {
                             props.push(ObjectProp { key, value });
                         }
                         ObjectProperty::Shorthand(id) => {
-                            let value = self.translate_expression(&Expr::Identifier(id.clone()), instructions)?;
+                            let value = self.translate_expression(
+                                &Expr::Identifier(id.clone()),
+                                instructions,
+                            )?;
                             props.push(ObjectProp {
                                 key: id.sym.clone(),
                                 value,
@@ -902,9 +905,7 @@ impl IrBuilder {
                         JsxAttributeValue::Expression(e) => {
                             self.translate_expression(e, instructions)?
                         }
-                        _ => {
-                            return Err(IrError::Unsupported("jsx attribute value".to_string()))
-                        }
+                        _ => return Err(IrError::Unsupported("jsx attribute value".to_string())),
                     }
                 } else {
                     let id = self.new_value();
@@ -941,13 +942,15 @@ impl IrBuilder {
                         });
                         args.push(dest);
                     }
-                    JsxChild::Expression(e) => args.push(self.translate_expression(e, instructions)?),
+                    JsxChild::Expression(e) => {
+                        args.push(self.translate_expression(e, instructions)?)
+                    }
                     JsxChild::Element(e) => args.push(self.translate_jsx_element(e, instructions)?),
-                    JsxChild::Fragment(f) => args.push(self.translate_jsx_fragment(f, instructions)?),
+                    JsxChild::Fragment(f) => {
+                        args.push(self.translate_jsx_fragment(f, instructions)?)
+                    }
                     JsxChild::Spread(_) => {
-                        return Err(IrError::Unsupported(
-                            "jsx spread children".to_string(),
-                        ))
+                        return Err(IrError::Unsupported("jsx spread children".to_string()))
                     }
                 }
             }
@@ -1009,9 +1012,7 @@ impl IrBuilder {
                 JsxChild::Element(e) => args.push(self.translate_jsx_element(e, instructions)?),
                 JsxChild::Fragment(f) => args.push(self.translate_jsx_fragment(f, instructions)?),
                 JsxChild::Spread(_) => {
-                    return Err(IrError::Unsupported(
-                        "jsx spread children".to_string(),
-                    ))
+                    return Err(IrError::Unsupported("jsx spread children".to_string()))
                 }
             }
         }
@@ -1092,14 +1093,16 @@ impl<'a> FunctionLowerer<'a> {
                 let value = self
                     .builder
                     .translate_expression(&e.expr, &mut self.current_instructions)?;
-                self.current_instructions.push(Instruction::ExprStmt { value });
+                self.current_instructions
+                    .push(Instruction::ExprStmt { value });
                 Ok(false)
             }
             Stmt::Throw(t) => {
                 let arg = self
                     .builder
                     .translate_expression(&t.argument, &mut self.current_instructions)?;
-                self.current_instructions.push(Instruction::ThrowStmt { arg });
+                self.current_instructions
+                    .push(Instruction::ThrowStmt { arg });
                 Ok(false)
             }
             Stmt::Try(t) => {
@@ -1136,10 +1139,10 @@ impl<'a> FunctionLowerer<'a> {
             }
             Stmt::Return(r) => {
                 let value = if let Some(arg) = &r.argument {
-                    Some(self.builder.translate_expression(
-                        arg,
-                        &mut self.current_instructions,
-                    )?)
+                    Some(
+                        self.builder
+                            .translate_expression(arg, &mut self.current_instructions)?,
+                    )
                 } else {
                     None
                 };
@@ -1149,7 +1152,9 @@ impl<'a> FunctionLowerer<'a> {
             Stmt::Block(b) => self.lower_stmt_list(&b.statements),
             Stmt::If(i) => self.lower_if(i),
             Stmt::While(w) => self.lower_while(w),
+            Stmt::Loop(l) => self.lower_loop(l),
             Stmt::For(f) => self.lower_for(f),
+            Stmt::ForIn(fi) => self.lower_for_in(fi),
             Stmt::DoWhile(d) => self.lower_do_while(d),
             Stmt::Switch(s) => self.lower_switch(s),
             Stmt::Match(m) => self.lower_match(m),
@@ -1249,6 +1254,27 @@ impl<'a> FunctionLowerer<'a> {
         Ok(false)
     }
 
+    fn lower_loop(&mut self, l: &LoopStmt) -> Result<bool, IrError> {
+        let body_id = self.builder.new_block();
+        let after_id = self.builder.new_block();
+
+        self.finish_current(Terminator::Jump(body_id))?;
+
+        self.start_block(body_id)?;
+        self.breakable_stack.push(BreakableContext {
+            break_target: after_id,
+            continue_target: Some(body_id),
+        });
+        let body_terminated = self.lower_stmt(&l.body)?;
+        self.breakable_stack.pop();
+        if !body_terminated {
+            self.finish_current(Terminator::Jump(body_id))?;
+        }
+
+        self.start_block(after_id)?;
+        Ok(false)
+    }
+
     fn lower_for(&mut self, f: &ForStmt) -> Result<bool, IrError> {
         if let Some(init) = &f.init {
             match init {
@@ -1259,7 +1285,8 @@ impl<'a> FunctionLowerer<'a> {
                     let v = self
                         .builder
                         .translate_expression(e, &mut self.current_instructions)?;
-                    self.current_instructions.push(Instruction::ExprStmt { value: v });
+                    self.current_instructions
+                        .push(Instruction::ExprStmt { value: v });
                 }
             }
         }
@@ -1305,8 +1332,141 @@ impl<'a> FunctionLowerer<'a> {
             let v = self
                 .builder
                 .translate_expression(update, &mut self.current_instructions)?;
-            self.current_instructions.push(Instruction::ExprStmt { value: v });
+            self.current_instructions
+                .push(Instruction::ExprStmt { value: v });
         }
+        self.finish_current(Terminator::Jump(cond_id))?;
+
+        self.start_block(after_id)?;
+        Ok(false)
+    }
+
+    fn lower_for_in(&mut self, f: &ForInStmt) -> Result<bool, IrError> {
+        let bound_name = match &f.left {
+            ForInLeft::Pattern(Pattern::Identifier(id)) => id.name.sym.clone(),
+            ForInLeft::Variable(v) => match &v.id {
+                Pattern::Identifier(id) => id.name.sym.clone(),
+                _ => return Err(IrError::Unsupported("for..of left pattern".to_string())),
+            },
+            _ => return Err(IrError::Unsupported("for..of left pattern".to_string())),
+        };
+
+        let iter_name = format!("__argon_forin_iter_{}", self.builder.new_value());
+        let idx_name = format!("__argon_forin_idx_{}", self.builder.new_value());
+
+        let iter_value = self
+            .builder
+            .translate_expression(&f.right, &mut self.current_instructions)?;
+        self.current_instructions.push(Instruction::VarDecl {
+            kind: VarKind::Const,
+            name: iter_name.clone(),
+            init: Some(iter_value),
+        });
+
+        let zero = self.builder.new_value();
+        self.current_instructions.push(Instruction::Const {
+            dest: zero,
+            value: ConstValue::Number(0.0),
+        });
+        self.current_instructions.push(Instruction::VarDecl {
+            kind: VarKind::Let,
+            name: idx_name.clone(),
+            init: Some(zero),
+        });
+
+        let cond_id = self.builder.new_block();
+        let body_id = self.builder.new_block();
+        let update_id = self.builder.new_block();
+        let after_id = self.builder.new_block();
+
+        self.finish_current(Terminator::Jump(cond_id))?;
+
+        self.start_block(cond_id)?;
+        let idx_val = self.builder.new_value();
+        self.current_instructions.push(Instruction::VarRef {
+            dest: idx_val,
+            name: idx_name.clone(),
+        });
+        let iter_ref = self.builder.new_value();
+        self.current_instructions.push(Instruction::VarRef {
+            dest: iter_ref,
+            name: iter_name.clone(),
+        });
+        let len_val = self.builder.new_value();
+        self.current_instructions.push(Instruction::Member {
+            object: iter_ref,
+            property: "length".to_string(),
+            dest: len_val,
+        });
+        let cond_val = self.builder.new_value();
+        self.current_instructions.push(Instruction::BinOp {
+            op: BinOp::Lt,
+            lhs: idx_val,
+            rhs: len_val,
+            dest: cond_val,
+        });
+        self.finish_current(Terminator::Branch {
+            cond: cond_val,
+            then: body_id,
+            else_: after_id,
+        })?;
+
+        self.start_block(body_id)?;
+        self.breakable_stack.push(BreakableContext {
+            break_target: after_id,
+            continue_target: Some(update_id),
+        });
+
+        let iter_obj = self.builder.new_value();
+        self.current_instructions.push(Instruction::VarRef {
+            dest: iter_obj,
+            name: iter_name.clone(),
+        });
+        let idx_obj = self.builder.new_value();
+        self.current_instructions.push(Instruction::VarRef {
+            dest: idx_obj,
+            name: idx_name.clone(),
+        });
+        let element = self.builder.new_value();
+        self.current_instructions.push(Instruction::MemberComputed {
+            object: iter_obj,
+            property: idx_obj,
+            dest: element,
+        });
+        self.current_instructions.push(Instruction::VarDecl {
+            kind: VarKind::Let,
+            name: bound_name,
+            init: Some(element),
+        });
+
+        let body_terminated = self.lower_stmt(&f.body)?;
+        self.breakable_stack.pop();
+        if !body_terminated {
+            self.finish_current(Terminator::Jump(update_id))?;
+        }
+
+        self.start_block(update_id)?;
+        let cur_idx = self.builder.new_value();
+        self.current_instructions.push(Instruction::VarRef {
+            dest: cur_idx,
+            name: idx_name.clone(),
+        });
+        let one = self.builder.new_value();
+        self.current_instructions.push(Instruction::Const {
+            dest: one,
+            value: ConstValue::Number(1.0),
+        });
+        let next_idx = self.builder.new_value();
+        self.current_instructions.push(Instruction::BinOp {
+            op: BinOp::Add,
+            lhs: cur_idx,
+            rhs: one,
+            dest: next_idx,
+        });
+        self.current_instructions.push(Instruction::AssignVar {
+            name: idx_name,
+            src: next_idx,
+        });
         self.finish_current(Terminator::Jump(cond_id))?;
 
         self.start_block(after_id)?;
@@ -1356,7 +1516,9 @@ impl<'a> FunctionLowerer<'a> {
             continue_target: None,
         });
 
-        let case_block_ids: Vec<BlockId> = (0..s.cases.len()).map(|_| self.builder.new_block()).collect();
+        let case_block_ids: Vec<BlockId> = (0..s.cases.len())
+            .map(|_| self.builder.new_block())
+            .collect();
         let default_case = s.cases.iter().position(|c| c.test.is_none());
         let non_default: Vec<usize> = s
             .cases
@@ -1371,7 +1533,9 @@ impl<'a> FunctionLowerer<'a> {
             self.finish_current(Terminator::Jump(target))?;
         } else {
             // Build check blocks.
-            let check_ids: Vec<BlockId> = (0..non_default.len()).map(|_| self.builder.new_block()).collect();
+            let check_ids: Vec<BlockId> = (0..non_default.len())
+                .map(|_| self.builder.new_block())
+                .collect();
             self.finish_current(Terminator::Jump(check_ids[0]))?;
 
             for (j, check_id) in check_ids.iter().enumerate() {
@@ -1384,9 +1548,9 @@ impl<'a> FunctionLowerer<'a> {
                     .test
                     .as_ref()
                     .expect("non-default case has test");
-                let test_val =
-                    self.builder
-                        .translate_expression(test_expr, &mut self.current_instructions)?;
+                let test_val = self
+                    .builder
+                    .translate_expression(test_expr, &mut self.current_instructions)?;
                 let cond = self.builder.new_value();
                 self.current_instructions.push(Instruction::BinOp {
                     op: BinOp::Eq,
@@ -1398,9 +1562,7 @@ impl<'a> FunctionLowerer<'a> {
                 let else_target = if j + 1 < check_ids.len() {
                     check_ids[j + 1]
                 } else {
-                    default_case
-                        .map(|i| case_block_ids[i])
-                        .unwrap_or(after_id)
+                    default_case.map(|i| case_block_ids[i]).unwrap_or(after_id)
                 };
                 self.finish_current(Terminator::Branch {
                     cond,
@@ -1437,8 +1599,12 @@ impl<'a> FunctionLowerer<'a> {
         // ValueId dependencies in the non-SSA IR.
         let after_id = self.builder.new_block();
 
-        let arm_ids: Vec<BlockId> = (0..m.cases.len()).map(|_| self.builder.new_block()).collect();
-        let check_ids: Vec<BlockId> = (0..m.cases.len()).map(|_| self.builder.new_block()).collect();
+        let arm_ids: Vec<BlockId> = (0..m.cases.len())
+            .map(|_| self.builder.new_block())
+            .collect();
+        let check_ids: Vec<BlockId> = (0..m.cases.len())
+            .map(|_| self.builder.new_block())
+            .collect();
 
         if m.cases.is_empty() {
             self.finish_current(Terminator::Jump(after_id))?;

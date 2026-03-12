@@ -177,7 +177,12 @@ impl JsCodegen {
                         .unwrap_or_else(|| "undefined".to_string());
                     let args = args
                         .iter()
-                        .map(|a| values.get(a).cloned().unwrap_or_else(|| "undefined".to_string()))
+                        .map(|a| {
+                            values
+                                .get(a)
+                                .cloned()
+                                .unwrap_or_else(|| "undefined".to_string())
+                        })
                         .collect::<Vec<_>>()
                         .join(", ");
                     values.insert(*dest, format!("new {}({})", callee, args));
@@ -190,8 +195,10 @@ impl JsCodegen {
                     values.insert(*dest, format!("await {}", arg));
                 }
                 IrInst::AssignExpr { name, src, dest } => {
-                    let expr =
-                        values.get(src).cloned().unwrap_or_else(|| "undefined".to_string());
+                    let expr = values
+                        .get(src)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
                     values.insert(*dest, format!("({} = {})", name, expr));
                 }
                 IrInst::Const { dest, value } => {
@@ -235,7 +242,10 @@ impl JsCodegen {
                         .get(rhs)
                         .cloned()
                         .unwrap_or_else(|| "undefined".to_string());
-                    values.insert(*dest, format!("({} {} {})", lhs, self.binop_to_js(*op), rhs));
+                    values.insert(
+                        *dest,
+                        format!("({} {} {})", lhs, self.binop_to_js(*op), rhs),
+                    );
                 }
                 IrInst::UnOp { op, arg, dest } => {
                     let arg = values
@@ -251,7 +261,12 @@ impl JsCodegen {
                         .unwrap_or_else(|| "undefined".to_string());
                     let args = args
                         .iter()
-                        .map(|a| values.get(a).cloned().unwrap_or_else(|| "undefined".to_string()))
+                        .map(|a| {
+                            values
+                                .get(a)
+                                .cloned()
+                                .unwrap_or_else(|| "undefined".to_string())
+                        })
                         .collect::<Vec<_>>()
                         .join(", ");
                     values.insert(*dest, format!("{}({})", callee, args));
@@ -301,7 +316,10 @@ impl JsCodegen {
                         .get(else_value)
                         .cloned()
                         .unwrap_or_else(|| "undefined".to_string());
-                    values.insert(*dest, format!("({} ? {} : {})", cond, then_value, else_value));
+                    values.insert(
+                        *dest,
+                        format!("({} ? {} : {})", cond, then_value, else_value),
+                    );
                 }
                 _ => {
                     return Err(CodegenError::Unsupported(format!(
@@ -353,7 +371,8 @@ impl JsCodegen {
     }
 
     fn generate_ir_init(&mut self, func: &argon_ir::Function) -> Result<(), CodegenError> {
-        if func.body.len() == 1 && matches!(func.body[0].terminator, argon_ir::Terminator::Return(_))
+        if func.body.len() == 1
+            && matches!(func.body[0].terminator, argon_ir::Terminator::Return(_))
         {
             let entry = func.body.first().ok_or_else(|| {
                 CodegenError::Unsupported("init function has no body".to_string())
@@ -371,11 +390,13 @@ impl JsCodegen {
     }
 
     fn generate_ir_function(&mut self, func: &argon_ir::Function) -> Result<(), CodegenError> {
-        if func.body.len() == 1 && matches!(func.body[0].terminator, argon_ir::Terminator::Return(_))
+        if func.body.len() == 1
+            && matches!(func.body[0].terminator, argon_ir::Terminator::Return(_))
         {
-            let entry = func.body.first().ok_or_else(|| {
-                CodegenError::Unsupported("function has no body".to_string())
-            })?;
+            let entry = func
+                .body
+                .first()
+                .ok_or_else(|| CodegenError::Unsupported("function has no body".to_string()))?;
 
             if func.is_async {
                 self.output.push_str("async ");
@@ -438,7 +459,11 @@ impl JsCodegen {
 
             let mut values: std::collections::HashMap<argon_ir::ValueId, String> =
                 std::collections::HashMap::new();
-            self.emit_ir_instructions_cfg_with_prefix(&block.instructions, &mut values, "            ")?;
+            self.emit_ir_instructions_cfg_with_prefix(
+                &block.instructions,
+                &mut values,
+                "            ",
+            )?;
 
             match &block.terminator {
                 IrTerm::Jump(target) => {
@@ -462,7 +487,10 @@ impl JsCodegen {
                     self.output.push_str("            continue;\n");
                 }
                 IrTerm::Return(Some(v)) => {
-                    let expr = values.get(v).cloned().unwrap_or_else(|| "undefined".to_string());
+                    let expr = values
+                        .get(v)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
                     self.output
                         .push_str(&format!("            return {};\n", expr));
                 }
@@ -520,7 +548,12 @@ impl JsCodegen {
                         .unwrap_or_else(|| "undefined".to_string());
                     let args = args
                         .iter()
-                        .map(|a| values.get(a).cloned().unwrap_or_else(|| "undefined".to_string()))
+                        .map(|a| {
+                            values
+                                .get(a)
+                                .cloned()
+                                .unwrap_or_else(|| "undefined".to_string())
+                        })
                         .collect::<Vec<_>>()
                         .join(", ");
                     values.insert(*dest, format!("new {}({})", callee, args));
@@ -533,8 +566,10 @@ impl JsCodegen {
                     values.insert(*dest, format!("await {}", arg));
                 }
                 IrInst::AssignExpr { name, src, dest } => {
-                    let expr =
-                        values.get(src).cloned().unwrap_or_else(|| "undefined".to_string());
+                    let expr = values
+                        .get(src)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
                     values.insert(*dest, format!("({} = {})", name, expr));
                 }
                 IrInst::Const { dest, value } => {
@@ -578,7 +613,10 @@ impl JsCodegen {
                         .get(rhs)
                         .cloned()
                         .unwrap_or_else(|| "undefined".to_string());
-                    values.insert(*dest, format!("({} {} {})", lhs, self.binop_to_js(*op), rhs));
+                    values.insert(
+                        *dest,
+                        format!("({} {} {})", lhs, self.binop_to_js(*op), rhs),
+                    );
                 }
                 IrInst::UnOp { op, arg, dest } => {
                     let arg = values
@@ -594,7 +632,12 @@ impl JsCodegen {
                         .unwrap_or_else(|| "undefined".to_string());
                     let args = args
                         .iter()
-                        .map(|a| values.get(a).cloned().unwrap_or_else(|| "undefined".to_string()))
+                        .map(|a| {
+                            values
+                                .get(a)
+                                .cloned()
+                                .unwrap_or_else(|| "undefined".to_string())
+                        })
                         .collect::<Vec<_>>()
                         .join(", ");
                     values.insert(*dest, format!("{}({})", callee, args));
@@ -644,11 +687,16 @@ impl JsCodegen {
                         .get(else_value)
                         .cloned()
                         .unwrap_or_else(|| "undefined".to_string());
-                    values.insert(*dest, format!("({} ? {} : {})", cond, then_value, else_value));
+                    values.insert(
+                        *dest,
+                        format!("({} ? {} : {})", cond, then_value, else_value),
+                    );
                 }
                 IrInst::ThrowStmt { arg } => {
-                    let expr =
-                        values.get(arg).cloned().unwrap_or_else(|| "undefined".to_string());
+                    let expr = values
+                        .get(arg)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
                     self.output.push_str(prefix);
                     self.output.push_str("throw ");
                     self.output.push_str(&expr);
@@ -664,11 +712,7 @@ impl JsCodegen {
                     let mut nested_prefix = String::new();
                     nested_prefix.push_str(prefix);
                     nested_prefix.push_str("    ");
-                    self.emit_ir_instructions_cfg_with_prefix(
-                        try_body,
-                        values,
-                        &nested_prefix,
-                    )?;
+                    self.emit_ir_instructions_cfg_with_prefix(try_body, values, &nested_prefix)?;
                     self.output.push_str(prefix);
                     self.output.push_str("}");
 
@@ -680,22 +724,14 @@ impl JsCodegen {
                             self.output.push_str(")");
                         }
                         self.output.push_str(" {\n");
-                        self.emit_ir_instructions_cfg_with_prefix(
-                            &c.body,
-                            values,
-                            &nested_prefix,
-                        )?;
+                        self.emit_ir_instructions_cfg_with_prefix(&c.body, values, &nested_prefix)?;
                         self.output.push_str(prefix);
                         self.output.push_str("}");
                     }
 
                     if let Some(f) = finally_body {
                         self.output.push_str(" finally {\n");
-                        self.emit_ir_instructions_cfg_with_prefix(
-                            f,
-                            values,
-                            &nested_prefix,
-                        )?;
+                        self.emit_ir_instructions_cfg_with_prefix(f, values, &nested_prefix)?;
                         self.output.push_str(prefix);
                         self.output.push_str("}");
                     }
@@ -707,16 +743,20 @@ impl JsCodegen {
                     self.output.push_str("var ");
                     self.output.push_str(name);
                     if let Some(v) = init {
-                        let expr =
-                            values.get(v).cloned().unwrap_or_else(|| "undefined".to_string());
+                        let expr = values
+                            .get(v)
+                            .cloned()
+                            .unwrap_or_else(|| "undefined".to_string());
                         self.output.push_str(" = ");
                         self.output.push_str(&expr);
                     }
                     self.output.push_str(";\n");
                 }
                 IrInst::AssignVar { name, src } => {
-                    let expr =
-                        values.get(src).cloned().unwrap_or_else(|| "undefined".to_string());
+                    let expr = values
+                        .get(src)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
                     self.output.push_str(prefix);
                     self.output.push_str(name);
                     self.output.push_str(" = ");
@@ -759,8 +799,10 @@ impl JsCodegen {
         if !is_init {
             match &block.terminator {
                 IrTerm::Return(Some(v)) => {
-                    let expr =
-                        values.get(v).cloned().unwrap_or_else(|| "undefined".to_string());
+                    let expr = values
+                        .get(v)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
                     self.output.push_str("    return ");
                     self.output.push_str(&expr);
                     self.output.push_str(";\n");
@@ -808,7 +850,12 @@ impl JsCodegen {
                         .unwrap_or_else(|| "undefined".to_string());
                     let args = args
                         .iter()
-                        .map(|a| values.get(a).cloned().unwrap_or_else(|| "undefined".to_string()))
+                        .map(|a| {
+                            values
+                                .get(a)
+                                .cloned()
+                                .unwrap_or_else(|| "undefined".to_string())
+                        })
                         .collect::<Vec<_>>()
                         .join(", ");
                     values.insert(*dest, format!("new {}({})", callee, args));
@@ -827,13 +874,17 @@ impl JsCodegen {
                     values.insert(*dest, name.clone());
                 }
                 IrInst::AssignExpr { name, src, dest } => {
-                    let expr =
-                        values.get(src).cloned().unwrap_or_else(|| "undefined".to_string());
+                    let expr = values
+                        .get(src)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
                     values.insert(*dest, format!("({} = {})", name, expr));
                 }
                 IrInst::ThrowStmt { arg } => {
-                    let expr =
-                        values.get(arg).cloned().unwrap_or_else(|| "undefined".to_string());
+                    let expr = values
+                        .get(arg)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
                     self.output.push_str(prefix);
                     self.output.push_str("throw ");
                     self.output.push_str(&expr);
@@ -850,11 +901,7 @@ impl JsCodegen {
                     let mut nested_prefix = String::new();
                     nested_prefix.push_str(prefix);
                     nested_prefix.push_str("    ");
-                    self.emit_ir_instructions_block_with_prefix(
-                        try_body,
-                        values,
-                        &nested_prefix,
-                    )?;
+                    self.emit_ir_instructions_block_with_prefix(try_body, values, &nested_prefix)?;
 
                     self.output.push_str(prefix);
                     self.output.push_str("}");
@@ -890,8 +937,10 @@ impl JsCodegen {
                     property,
                     dest,
                 } => {
-                    let obj =
-                        values.get(object).cloned().unwrap_or_else(|| "undefined".to_string());
+                    let obj = values
+                        .get(object)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
                     values.insert(*dest, format!("{}.{}", obj, property));
                 }
                 IrInst::MemberComputed {
@@ -899,8 +948,10 @@ impl JsCodegen {
                     property,
                     dest,
                 } => {
-                    let obj =
-                        values.get(object).cloned().unwrap_or_else(|| "undefined".to_string());
+                    let obj = values
+                        .get(object)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
                     let prop = values
                         .get(property)
                         .cloned()
@@ -908,12 +959,24 @@ impl JsCodegen {
                     values.insert(*dest, format!("{}[{}]", obj, prop));
                 }
                 IrInst::BinOp { op, lhs, rhs, dest } => {
-                    let lhs = values.get(lhs).cloned().unwrap_or_else(|| "undefined".to_string());
-                    let rhs = values.get(rhs).cloned().unwrap_or_else(|| "undefined".to_string());
-                    values.insert(*dest, format!("({} {} {})", lhs, self.binop_to_js(*op), rhs));
+                    let lhs = values
+                        .get(lhs)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    let rhs = values
+                        .get(rhs)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    values.insert(
+                        *dest,
+                        format!("({} {} {})", lhs, self.binop_to_js(*op), rhs),
+                    );
                 }
                 IrInst::UnOp { op, arg, dest } => {
-                    let arg = values.get(arg).cloned().unwrap_or_else(|| "undefined".to_string());
+                    let arg = values
+                        .get(arg)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
                     values.insert(*dest, format!("({}{})", self.unop_to_js(*op), arg));
                 }
                 IrInst::Call { callee, args, dest } => {
@@ -923,7 +986,12 @@ impl JsCodegen {
                         .unwrap_or_else(|| "undefined".to_string());
                     let args = args
                         .iter()
-                        .map(|a| values.get(a).cloned().unwrap_or_else(|| "undefined".to_string()))
+                        .map(|a| {
+                            values
+                                .get(a)
+                                .cloned()
+                                .unwrap_or_else(|| "undefined".to_string())
+                        })
                         .collect::<Vec<_>>()
                         .join(", ");
                     values.insert(*dest, format!("{}({})", callee, args));
@@ -987,16 +1055,20 @@ impl JsCodegen {
                     });
                     self.output.push_str(name);
                     if let Some(v) = init {
-                        let expr =
-                            values.get(v).cloned().unwrap_or_else(|| "undefined".to_string());
+                        let expr = values
+                            .get(v)
+                            .cloned()
+                            .unwrap_or_else(|| "undefined".to_string());
                         self.output.push_str(" = ");
                         self.output.push_str(&expr);
                     }
                     self.output.push_str(";\n");
                 }
                 IrInst::AssignVar { name, src } => {
-                    let expr =
-                        values.get(src).cloned().unwrap_or_else(|| "undefined".to_string());
+                    let expr = values
+                        .get(src)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
                     self.output.push_str(prefix);
                     self.output.push_str(name);
                     self.output.push_str(" = ");

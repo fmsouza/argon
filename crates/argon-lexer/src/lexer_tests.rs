@@ -339,7 +339,9 @@ const x = new Container<number>(42);
         assert!(tokens.iter().any(|t| t.kind == TokenKind::LessThan));
         assert!(tokens.iter().any(|t| t.kind == TokenKind::GreaterThan));
         assert!(
-            !tokens.iter().any(|t| matches!(t.kind, TokenKind::JsxElementOpen | TokenKind::JsxChild)),
+            !tokens
+                .iter()
+                .any(|t| matches!(t.kind, TokenKind::JsxElementOpen | TokenKind::JsxChild)),
             "expected no JSX tokens when lexing generic params/type args"
         );
     }
@@ -1915,7 +1917,7 @@ mod error_handling {
     #[test]
     fn returns_error_when_unexpected_character_is_encountered() {
         // Assign
-        let source = "@";
+        let source = "§";
 
         // Act
         let result = tokenize(source);
@@ -1966,7 +1968,7 @@ mod error_handling {
     }
 
     #[test]
-    fn provides_position_information_in_error() {
+    fn tokenizes_at_symbol_for_decorators() {
         // Assign
         let source = "@";
 
@@ -1974,10 +1976,9 @@ mod error_handling {
         let result = tokenize(source);
 
         // Assert
-        assert!(result.is_err());
-        let error = result.unwrap_err();
-        let error_string = format!("{:?}", error);
-        assert!(error_string.contains("position") || error_string.contains("@"));
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::At);
     }
 }
 
@@ -2024,5 +2025,35 @@ mod unicode_character_handling {
         assert!(result.is_ok());
         let tokens = result.unwrap();
         assert_eq!(tokens.len(), 2); // test + EOF
+    }
+}
+
+mod completion_regressions {
+    use super::*;
+
+    #[test]
+    fn tokenizes_loop_keyword() {
+        // Assign
+        let source = "loop";
+
+        // Act
+        let result = tokenize(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Loop);
+    }
+
+    #[test]
+    fn does_not_panic_on_template_interpolation() {
+        // Assign
+        let source = "`Hello ${name}`";
+
+        // Act
+        let result = tokenize(source);
+
+        // Assert
+        assert!(result.is_ok());
     }
 }

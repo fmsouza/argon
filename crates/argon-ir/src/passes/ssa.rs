@@ -51,7 +51,14 @@ pub fn build(func: &Function) -> Result<SsaFunction, SsaError> {
     let cfg = build_cfg(func);
     let dom = dominators(func);
     let (idom, dom_tree) = compute_idoms(&cfg.blocks, cfg.entry, &dom);
-    let df = dominance_frontier(&cfg.blocks, cfg.entry, &cfg.preds, &cfg.succs, &idom, &dom_tree);
+    let df = dominance_frontier(
+        &cfg.blocks,
+        cfg.entry,
+        &cfg.preds,
+        &cfg.succs,
+        &idom,
+        &dom_tree,
+    );
 
     let mut next_value = max_value_id(func) + 1;
 
@@ -208,10 +215,9 @@ fn rename_block(
                 var_reads.insert(*dest, cur);
             }
             Instruction::VarDecl { name, init, .. } => {
-                let v = init.ok_or_else(|| SsaError::Unsupported(format!(
-                    "var decl without initializer: {}",
-                    name
-                )))?;
+                let v = init.ok_or_else(|| {
+                    SsaError::Unsupported(format!("var decl without initializer: {}", name))
+                })?;
                 stacks.entry(name.clone()).or_default().push(v);
                 pushed.push(name.clone());
             }
@@ -447,10 +453,13 @@ fn dominance_frontier(
     df
 }
 
-fn dom_tree_postorder(node: BlockId, tree: &HashMap<BlockId, Vec<BlockId>>, out: &mut Vec<BlockId>) {
+fn dom_tree_postorder(
+    node: BlockId,
+    tree: &HashMap<BlockId, Vec<BlockId>>,
+    out: &mut Vec<BlockId>,
+) {
     for child in tree.get(&node).cloned().unwrap_or_default() {
         dom_tree_postorder(child, tree, out);
     }
     out.push(node);
 }
-
