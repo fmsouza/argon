@@ -1,13 +1,15 @@
-// Boolean operations
-const x = true;
-const y = false;
+// Boolean logic and conditionals
+const a = true;
+const b = false;
+const both = a && b;
+const either = a || b;
+const inverted = !b;
 
-if (x) {
+if (both) {
+    console.log(0);
+} else {
     console.log(1);
 }
 
-if (y) {
-    console.log(2);
-} else {
-    console.log(3);
-}
+console.log(either);
+console.log(inverted);

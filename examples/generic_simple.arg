@@ -1,0 +1,8 @@
+// Generic struct + alias + object literal assignment
+struct Container<T> {
+    value: T;
+}
+
+type NumberContainer = Container<i32>;
+const container: NumberContainer = { value: 42 };
+console.log(container.value);

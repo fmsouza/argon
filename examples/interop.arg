@@ -1,0 +1,10 @@
+// README interop syntax
+@js-interop
+declare module "axios" {
+    function get<T>(url: string): string;
+}
+
+@export
+function processImage(data: i32, width: i32, height: i32): i32 {
+    return data + width + height;
+}

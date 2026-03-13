@@ -1,1 +1,2 @@
-<div>Hello</div>
+const element = <span>Simple JSX</span>;
+console.log(element);

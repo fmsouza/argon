@@ -1,11 +1,47 @@
-// Control flow - conditionals and loops
-const x: i32 = 10;
-if (x > 5) {
+// if/else, while, for, switch, and loop
+const x: i32 = 4;
+
+if (x > 3) {
     console.log(1);
+} else {
+    console.log(0);
 }
 
+let whileSum: i32 = 0;
 let i: i32 = 0;
 while (i < 3) {
-    console.log(i);
+    whileSum = whileSum + i;
     i = i + 1;
 }
+console.log(whileSum);
+
+let forSum: i32 = 0;
+for (let j = 0; j < 4; j = j + 1) {
+    if (j == 2) {
+        continue;
+    }
+    forSum = forSum + j;
+}
+console.log(forSum);
+
+let chosen: i32 = 0;
+switch (x) {
+    case 1:
+        chosen = 10;
+        break;
+    case 4:
+        chosen = 40;
+        break;
+    default:
+        chosen = -1;
+}
+console.log(chosen);
+
+let loopCount: i32 = 0;
+loop {
+    loopCount = loopCount + 1;
+    if (loopCount >= 2) {
+        break;
+    }
+}
+console.log(loopCount);

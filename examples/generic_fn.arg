@@ -1,0 +1,10 @@
+// Generic functions with inferred and explicit type arguments
+function identity<T>(value: T): T {
+    return value;
+}
+
+const n = identity<i32>(42);
+const s = identity("argon");
+
+console.log(n);
+console.log(s);

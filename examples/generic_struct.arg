@@ -1,0 +1,12 @@
+// Generic struct with method
+struct Pair<T> {
+    left: T;
+    right: T;
+
+    first(): T with &this {
+        return this.left;
+    }
+}
+
+const ints = Pair { left: 1, right: 2 };
+console.log(ints.first());

@@ -1,0 +1,5 @@
+// Enum declaration and member access
+enum Mode { Dev, Test, Prod }
+
+const mode = Mode.Dev;
+console.log(mode);

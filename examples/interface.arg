@@ -1,0 +1,8 @@
+// Interface declarations and usage in function signatures
+interface Reader {
+    read(key: string): string;
+}
+
+function useReader(reader: Reader): string {
+    return reader.read("config");
+}

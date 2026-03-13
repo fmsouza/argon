@@ -1,15 +1,11 @@
-// Object-like structures using structs
-
-struct PersonName {
-    name: string;
+// Object literals in expression position
+struct Config {
+    host: string;
+    port: i32;
 }
 
-struct PersonAge {
-    age: i32;
-}
+const config: Config = { host: "localhost", port: 8080 };
+const payload = { value: 42, nested: { ok: true } };
 
-const personName = PersonName { name: "Alice" };
-const personAge = PersonAge { age: 30 };
-
-console.log(personName.name);
-console.log(personAge.age);
+console.log(config.host);
+console.log(payload.value);

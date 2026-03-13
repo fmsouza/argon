@@ -1,0 +1,24 @@
+// Type declarations currently supported by checker
+type UserId = i32;
+type LabelList = string[];
+type Mapper = (x: i32) => i32;
+
+interface Named {
+    name: string;
+}
+
+enum Status { Ready, Running, Done }
+
+function inc(x: i32): i32 {
+    return x + 1;
+}
+
+const id: UserId = 42;
+const labels: LabelList = ["alpha", "beta"];
+const mapper: Mapper = inc;
+const status = Status.Ready;
+
+console.log(id);
+console.log(labels[0]);
+console.log(mapper(4));
+console.log(status);

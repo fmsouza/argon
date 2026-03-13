@@ -1,0 +1,18 @@
+// Generic class + explicit type args on `new`
+class Box<T> {
+    value: T;
+
+    constructor(value: T) {
+        this.value = value;
+    }
+
+    get(): T with &this {
+        return this.value;
+    }
+}
+
+const intBox = new Box<i32>(10);
+const strBox = new Box<string>("hello");
+
+console.log(intBox.get());
+console.log(strBox.get());

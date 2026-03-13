@@ -1,14 +1,13 @@
-// Pattern matching concepts
-function classify(n: number): number {
-    if (n < 0) {
-        return 0;
+// Match statement
+function classify(n: i32): i32 {
+    match (n) {
+        0 => return 1,
+        1 => return 2,
+        2 => return 3,
     }
-    if (n == 0) {
-        return 1;
-    }
-    return 2;
+    return 0;
 }
 
-console.log(classify(-5));
 console.log(classify(0));
-console.log(classify(10));
+console.log(classify(1));
+console.log(classify(9));

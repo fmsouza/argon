@@ -1,6 +1,8 @@
-// String operations in SafeScript
+// String operations and template interpolation
 const greeting = "Hello";
-const name = "World";
-const message = greeting + name;
+const name = "Argon";
+const message = greeting + ", " + name;
+const templated = `${greeting} ${name} v${1}`;
 
 console.log(message);
+console.log(templated);

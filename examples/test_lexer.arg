@@ -1,1 +1,11 @@
-import x from "test";
+// Interop annotations and declare module syntax
+@js-interop
+declare module "axios" {
+    function get<T>(url: string): string;
+}
+
+@export
+function makeMessage(name: string): string {
+    const prefix = "Hello";
+    return `${prefix}, ${name}!`;
+}

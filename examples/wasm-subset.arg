@@ -1,0 +1,10 @@
+// WASM core subset fixture (numeric locals + while loop)
+function sumTo(n: i32): i32 {
+    let acc = 0;
+    let i = 0;
+    while (i <= n) {
+        acc = acc + i;
+        i = i + 1;
+    }
+    return acc;
+}

@@ -1,1 +1,5 @@
-<div className="test">Hello World</div>
+function view(): void {
+    return <div className="title">Hello Argon</div>;
+}
+
+view();

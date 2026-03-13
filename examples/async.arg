@@ -1,8 +1,11 @@
-async function greet(): string {
-    return "hello";
+// Async + await
+async function fetchLabel(id: i32): string {
+    return `user-${id}`;
 }
 
 async function main(): string {
-    const result = await greet();
-    return result;
+    const label = await fetchLabel(7);
+    return label;
 }
+
+main();

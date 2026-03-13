@@ -1,4 +1,4 @@
-// Option type - represents optional values using structs
+// Option/Result-style tagged unions
 struct Some {
     value: i32;
 }
@@ -6,36 +6,34 @@ struct Some {
 struct None {
 }
 
-// Simulating Option with pattern matching
-function findUser(id: i32): Some {
+function findUser(id: i32): Some | None {
     if (id > 0) {
         return Some { value: id };
     }
-    return None { };
+    return None {};
 }
 
-const found = findUser(42);
-const missing = findUser(-1);
-
-console.log(found.value);
-
-// Result type - for error handling  
 struct Ok {
-    value: f64;
+    value: i32;
 }
 
 struct Err {
-    error: string;
+    code: i32;
 }
 
-function divide(a: f64, b: f64): Ok {
-    if (b == 0.0) {
-        return Err { error: "Division by zero" };
+function divide(a: i32, b: i32): Ok | Err {
+    if (b == 0) {
+        return Err { code: 1 };
     }
     return Ok { value: a / b };
 }
 
-const success = divide(10.0, 2.0);
-const failure = divide(10.0, 0.0);
+const found = findUser(42);
+const missing = findUser(-1);
+const success = divide(10, 2);
+const failure = divide(10, 0);
 
+console.log(found);
+console.log(missing);
 console.log(success.value);
+console.log(failure);

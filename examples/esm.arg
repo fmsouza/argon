@@ -1,2 +1,15 @@
-import y from "test";
-const x = 1;
+// ES module syntax
+import "reflect-metadata";
+import axios from "axios";
+import { useState } from "react";
+
+export const apiBase = "/api";
+
+export function readEnv(): string {
+    return apiBase;
+}
+
+const stateFactory = useState;
+const client = axios;
+console.log(stateFactory);
+console.log(client);

@@ -1,22 +1,16 @@
-// Ownership - values are moved by default for non-copyable types
-struct Vec2 {
-    x: f64;
-    y: f64;
+// Ownership and move semantics
+struct Message {
+    text: string;
 }
 
-// This function takes ownership of the vector
-function consume(v: Vec2): f64 {
-    return v.x + v.y;
+function consume(msg: Message): string {
+    return msg.text;
 }
 
-const v1 = Vec2 { x: 3.0, y: 4.0 };
-const result = consume(v1);
-console.log(result);
+const m = Message { text: "owned-value" };
+const consumed = consume(m);
+console.log(consumed);
 
-// After consume, v1 is moved and cannot be used
-// This demonstrates ownership transfer
-
-// Copy semantics for primitive-like types
 const a: i32 = 10;
 const b: i32 = a;
 console.log(a);

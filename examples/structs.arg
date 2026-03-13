@@ -1,4 +1,4 @@
-// Struct - stack-allocated, copied by default
+// Struct declarations and literals
 struct Point {
     x: f64;
     y: f64;
@@ -18,7 +18,7 @@ const red = Color { r: 255, g: 0, b: 0 };
 console.log(red.r);
 console.log(red.g);
 
-function getX(p: Point): f64 {
+function getX(p: &Point): f64 {
     return p.x;
 }
 

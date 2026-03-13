@@ -1,22 +1,9 @@
-// Collections concepts using structs
+// Arrays and indexed access
 
-struct VecLength {
-    length: usize;
+const numbers: i32[] = [2, 4, 6, 8];
+
+let total = 0;
+for (const value of numbers) {
+    total = total + value;
 }
-
-struct EntryKey {
-    key: string;
-}
-
-struct EntryValue {
-    value: i32;
-}
-
-const vecLen = VecLength { length: 5 };
-console.log(vecLen.length);
-
-const entryKey = EntryKey { key: "test" };
-console.log(entryKey.key);
-
-const entryValue = EntryValue { value: 42 };
-console.log(entryValue.value);
+console.log(total);
