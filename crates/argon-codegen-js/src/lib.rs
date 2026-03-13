@@ -3343,10 +3343,12 @@ fn append_declaration_stmt(output: &mut String, stmt: &Stmt, exported: bool) {
         }
         Stmt::Export(e) => {
             if let Some(ref decl) = e.declaration {
-                append_declaration_stmt(output, decl.as_ref(), !e.is_type_only || matches!(
+                append_declaration_stmt(
+                    output,
                     decl.as_ref(),
-                    Stmt::Interface(_) | Stmt::TypeAlias(_)
-                ));
+                    !e.is_type_only
+                        || matches!(decl.as_ref(), Stmt::Interface(_) | Stmt::TypeAlias(_)),
+                );
             } else if !e.is_type_only && !e.specifiers.is_empty() {
                 output.push_str("export { ");
                 for (i, spec) in e.specifiers.iter().enumerate() {

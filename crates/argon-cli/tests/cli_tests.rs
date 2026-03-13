@@ -21,7 +21,10 @@ fn examples_dir() -> PathBuf {
 
 fn assert_real_native_wasm(output_file: &PathBuf) {
     let wat = fs::read_to_string(output_file.with_extension("wat")).unwrap();
-    assert!(wat.contains("(func"), "expected native wasm function body, got:\n{wat}");
+    assert!(
+        wat.contains("(func"),
+        "expected native wasm function body, got:\n{wat}"
+    );
 }
 
 #[test]
@@ -1232,13 +1235,19 @@ WebAssembly.instantiate(bytes, {
 #[test]
 fn test_readme_js_examples_compile_on_ir_pipeline() {
     let cases = [
-        ("enum.arg", Some("const Mode = { Dev: 0, Test: 1, Prod: 2 }")),
+        (
+            "enum.arg",
+            Some("const Mode = { Dev: 0, Test: 1, Prod: 2 }"),
+        ),
         ("functions.arg", Some("function reduceThree")),
         ("generic_simple.arg", Some("function Container")),
         ("interface.arg", Some("function useReader")),
         ("interop.arg", Some("function processImage")),
         ("test_lexer.arg", Some("function makeMessage")),
-        ("type_test.arg", Some("const Status = { Ready: 0, Running: 1, Done: 2 }")),
+        (
+            "type_test.arg",
+            Some("const Status = { Ready: 0, Running: 1, Done: 2 }"),
+        ),
     ];
 
     for (file_name, expected_snippet) in cases {
@@ -1270,7 +1279,12 @@ fn test_readme_js_examples_compile_on_ir_pipeline() {
 
 #[test]
 fn test_run_core_examples_succeed_after_runtime_fixes() {
-    let cases = ["classes.arg", "generic_simple2.arg", "recursion.arg", "type_test.arg"];
+    let cases = [
+        "classes.arg",
+        "generic_simple2.arg",
+        "recursion.arg",
+        "type_test.arg",
+    ];
 
     for file_name in cases {
         let source_file = examples_dir().join(file_name);

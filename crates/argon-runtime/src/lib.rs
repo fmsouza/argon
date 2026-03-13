@@ -362,9 +362,7 @@ impl Runtime {
                         for stmt in &case.consequent {
                             match self.execute_statement(stmt)? {
                                 ExecOutcome::Normal => {}
-                                ExecOutcome::Break => {
-                                    return Ok(ExecOutcome::Normal)
-                                }
+                                ExecOutcome::Break => return Ok(ExecOutcome::Normal),
                                 non_normal => return Ok(non_normal),
                             }
                         }
@@ -502,10 +500,9 @@ impl Runtime {
                     if m.computed {
                         let key = self.evaluate_expression(&m.property)?;
                         match key {
-                            Value::Number(n) if n >= 0.0 && n.fract() == 0.0 => Ok(values
-                                .get(n as usize)
-                                .cloned()
-                                .unwrap_or(Value::Undefined)),
+                            Value::Number(n) if n >= 0.0 && n.fract() == 0.0 => {
+                                Ok(values.get(n as usize).cloned().unwrap_or(Value::Undefined))
+                            }
                             Value::String(s) => Ok(s
                                 .parse::<usize>()
                                 .ok()
@@ -778,8 +775,10 @@ impl Runtime {
             values.insert(member.id.sym.clone(), value);
         }
 
-        self.scope
-            .define(e.id.sym.clone(), Value::Object(Rc::new(RefCell::new(values))));
+        self.scope.define(
+            e.id.sym.clone(),
+            Value::Object(Rc::new(RefCell::new(values))),
+        );
         Ok(())
     }
 
