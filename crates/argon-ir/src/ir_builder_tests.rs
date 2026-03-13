@@ -339,7 +339,10 @@ mod jsx_translation {
                             saw_class_name_prop = true;
                         }
                     }
-                    Instruction::Const { value: crate::ConstValue::String(s), .. } => {
+                    Instruction::Const {
+                        value: crate::ConstValue::String(s),
+                        ..
+                    } => {
                         if s.contains("Hello") {
                             saw_hello = true;
                         }

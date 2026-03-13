@@ -3464,8 +3464,7 @@ fn type_to_ts_string(ty: &argon_ast::Type) -> String {
                 if r.type_args.is_empty() {
                     id.sym.clone()
                 } else {
-                    let args: Vec<String> =
-                        r.type_args.iter().map(type_to_ts_string).collect();
+                    let args: Vec<String> = r.type_args.iter().map(type_to_ts_string).collect();
                     format!("{}<{}>", id.sym, args.join(", "))
                 }
             } else {

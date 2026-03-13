@@ -543,11 +543,9 @@ impl BorrowChecker {
                         ExprOrSpread::Expr(e) => {
                             self.collect_called_functions_from_expr(e, functions, called)
                         }
-                        ExprOrSpread::Spread(s) => self.collect_called_functions_from_expr(
-                            &s.argument,
-                            functions,
-                            called,
-                        ),
+                        ExprOrSpread::Spread(s) => {
+                            self.collect_called_functions_from_expr(&s.argument, functions, called)
+                        }
                     }
                 }
             }

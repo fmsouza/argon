@@ -1123,8 +1123,7 @@ impl<'a> ModuleLowerer<'a> {
                     wasm_fn.instruction(&Instruction::LocalGet(dest_local));
                     wasm_fn
                         .instruction(&Instruction::LocalGet(value_local(ctx.params_count, *arg)));
-                    wasm_fn
-                        .instruction(&Instruction::I32Store(memarg(4 + idx as u64 * 4)));
+                    wasm_fn.instruction(&Instruction::I32Store(memarg(4 + idx as u64 * 4)));
                 }
 
                 ctx.set_value_shape(*dest, Some(HeapValueShape::Object(layout)));
