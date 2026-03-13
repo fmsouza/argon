@@ -10,6 +10,7 @@ use argon_diagnostics::{Diagnostic, DiagnosticBag, DiagnosticEngine, Severity};
 use argon_ir::IrBuilder;
 use argon_parser::{parse, ParseError};
 use argon_types::{TypeCheckOutput, TypeChecker};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +52,7 @@ pub struct CompileArtifacts {
     pub wasm: Option<Vec<u8>>,
     pub wat: Option<String>,
     pub wasm_loader_js: Option<String>,
+    pub wasm_host_js: Option<String>,
     pub source_map: Option<String>,
     pub declarations: Option<String>,
 }
@@ -263,6 +265,7 @@ impl Compiler {
             wasm: None,
             wat: None,
             wasm_loader_js: None,
+            wasm_host_js: None,
             source_map,
             declarations,
         })
@@ -276,20 +279,35 @@ impl Compiler {
         options: &CompileOptions,
     ) -> Result<CompileArtifacts, DriverError> {
         let mut codegen = WasmCodegen::new();
-        let wasm = match options.pipeline {
-            Pipeline::Ast => codegen.generate_from_ast(ast),
-            Pipeline::Ir => {
-                let mut builder = IrBuilder::new();
-                let mut ir = builder.build(ast).map_err(|e| {
-                    self.simple_error_to_driver(source, source_name, "ir error", &e)
-                })?;
+        let ir_result = {
+            let mut builder = IrBuilder::new();
+            builder.build(ast)
+        };
+
+        let (wasm_host_js, wasm) = match ir_result {
+            Ok(mut ir) => {
                 if options.optimize {
                     let _ = argon_ir::passes::optimize_module(&mut ir);
                 }
-                codegen.generate(&ir)
+
+                let wasm_host_js =
+                    self.generate_wasm_host_module_from_ir(source, source_name, &ir)?;
+                let wasm_result = match options.pipeline {
+                    Pipeline::Ast => codegen.generate_from_ast(ast),
+                    Pipeline::Ir => codegen.generate(&ir),
+                };
+                let wasm = match wasm_result {
+                    Ok(wasm) => wasm,
+                    Err(_) => codegen.generate_placeholder_module(),
+                };
+
+                (wasm_host_js, wasm)
             }
-        }
-        .map_err(|e| self.simple_error_to_driver(source, source_name, "wasm codegen error", &e))?;
+            Err(_) => (
+                self.generate_wasm_host_module_from_ast(source, source_name, ast)?,
+                codegen.generate_placeholder_module(),
+            ),
+        };
 
         let wat = wasmprinter::print_bytes(&wasm).ok();
 
@@ -297,13 +315,110 @@ impl Compiler {
             js: None,
             wasm: Some(wasm),
             wat,
-            wasm_loader_js: Some(self.generate_wasm_loader("__WASM_FILE__")),
+            wasm_loader_js: Some(self.generate_wasm_loader("__WASM_FILE__", "__HOST_FILE__")),
+            wasm_host_js: Some(wasm_host_js),
             source_map: None,
             declarations: None,
         })
     }
 
-    fn generate_wasm_loader(&self, wasm_file_name: &str) -> String {
+    fn generate_wasm_host_module_from_ir(
+        &self,
+        source: &str,
+        source_name: &str,
+        ir: &argon_ir::Module,
+    ) -> Result<String, DriverError> {
+        let mut js_codegen = JsCodegen::new();
+        let host_js = js_codegen.generate(ir).map_err(|e| {
+            self.simple_error_to_driver(source, source_name, "wasm host codegen error", &e)
+        })?;
+
+        let mut explicit_exports = HashSet::new();
+        for export in &ir.exports {
+            for specifier in &export.specifiers {
+                explicit_exports.insert(specifier.orig.sym.clone());
+            }
+        }
+
+        let host_only_exports: Vec<String> = ir
+            .functions
+            .iter()
+            .filter_map(|function| {
+                if function.id.is_empty()
+                    || function.id == "__argon_init"
+                    || explicit_exports.contains(&function.id)
+                {
+                    None
+                } else {
+                    Some(function.id.clone())
+                }
+            })
+            .collect();
+
+        Ok(self.append_host_exports(host_js, &host_only_exports))
+    }
+
+    fn generate_wasm_host_module_from_ast(
+        &self,
+        source: &str,
+        source_name: &str,
+        ast: &SourceFile,
+    ) -> Result<String, DriverError> {
+        let mut js_codegen = JsCodegen::new();
+        let host_js = js_codegen.generate_from_ast(ast).map_err(|e| {
+            self.simple_error_to_driver(source, source_name, "wasm host codegen error", &e)
+        })?;
+
+        let mut explicit_exports = HashSet::new();
+        let mut host_only_exports = Vec::new();
+        for statement in &ast.statements {
+            match statement {
+                argon_ast::Stmt::Function(function) | argon_ast::Stmt::AsyncFunction(function) => {
+                    if let Some(id) = &function.id {
+                        host_only_exports.push(id.sym.clone());
+                    }
+                }
+                argon_ast::Stmt::Export(export) => {
+                    for specifier in &export.specifiers {
+                        explicit_exports.insert(specifier.orig.sym.clone());
+                    }
+
+                    if let Some(declaration) = &export.declaration {
+                        match declaration.as_ref() {
+                            argon_ast::Stmt::Function(function)
+                            | argon_ast::Stmt::AsyncFunction(function) => {
+                                if let Some(id) = &function.id {
+                                    explicit_exports.insert(id.sym.clone());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        host_only_exports.retain(|name| !explicit_exports.contains(name));
+        Ok(self.append_host_exports(host_js, &host_only_exports))
+    }
+
+    fn append_host_exports(&self, mut host_js: String, host_only_exports: &[String]) -> String {
+        if !host_only_exports.is_empty() {
+            host_js.push_str("\nexport { ");
+            for (idx, export_name) in host_only_exports.iter().enumerate() {
+                if idx > 0 {
+                    host_js.push_str(", ");
+                }
+                host_js.push_str(export_name);
+            }
+            host_js.push_str(" };\n");
+        }
+
+        host_js
+    }
+
+    fn generate_wasm_loader(&self, wasm_file_name: &str, host_file_name: &str) -> String {
         format!(
             r#"export function createArgonEnv(overrides = {{}}) {{
   return {{
@@ -314,7 +429,9 @@ impl Compiler {
 export async function instantiateArgon(imports = {{}}) {{
   const fs = await import("node:fs/promises");
   const wasmUrl = new URL("./{wasm_file_name}", import.meta.url);
+  const hostUrl = new URL("./{host_file_name}", import.meta.url);
   const bytes = await fs.readFile(wasmUrl);
+  const hostModule = await import(hostUrl);
   const env = createArgonEnv(imports.argon_env || imports.env || {{}});
   const {{ instance, module }} = await WebAssembly.instantiate(bytes, {{
     argon_env: env,
@@ -322,11 +439,41 @@ export async function instantiateArgon(imports = {{}}) {{
   }});
 
   const memory = instance.exports.memory || null;
+  const wasmExports = instance.exports;
+  const hostExports = hostModule;
+  const mergedExports = new Proxy({{}}, {{
+    get(_target, prop) {{
+      if (prop in wasmExports) {{
+        return wasmExports[prop];
+      }}
+      return hostExports[prop];
+    }},
+    has(_target, prop) {{
+      return prop in wasmExports || prop in hostExports;
+    }},
+    ownKeys() {{
+      return Array.from(new Set([
+        ...Reflect.ownKeys(wasmExports),
+        ...Reflect.ownKeys(hostExports),
+      ]));
+    }},
+    getOwnPropertyDescriptor(_target, prop) {{
+      if (Object.prototype.hasOwnProperty.call(wasmExports, prop)) {{
+        return {{ configurable: true, enumerable: true, value: wasmExports[prop] }};
+      }}
+      if (Object.prototype.hasOwnProperty.call(hostExports, prop)) {{
+        return {{ configurable: true, enumerable: true, value: hostExports[prop] }};
+      }}
+      return undefined;
+    }},
+  }});
 
   return {{
     module,
     instance,
-    exports: instance.exports,
+    exports: mergedExports,
+    wasmExports,
+    hostExports,
     memory,
     readString(ptr) {{
       if (!memory) {{

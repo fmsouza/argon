@@ -563,9 +563,12 @@ function greet(): string {
         .success();
 
     let loader_file = output_file.with_extension("mjs");
+    let host_file = output_file.with_extension("host.mjs");
     let loader_contents = fs::read_to_string(&loader_file).unwrap();
+    assert!(host_file.exists());
     assert!(loader_contents.contains("instantiateArgon"));
     assert!(loader_contents.contains("loader.wasm"));
+    assert!(loader_contents.contains("loader.host.mjs"));
 
     let script_file = temp_dir.path().join("check_loader.mjs");
     fs::write(
@@ -583,6 +586,163 @@ console.log(runtime.readString(runtime.exports.greet()));
     assert!(node_output.status.success(), "{:?}", node_output);
     let stdout = String::from_utf8_lossy(&node_output.stdout);
     assert!(stdout.contains("hello"));
+}
+
+#[test]
+fn test_compile_wasm_async_executes_via_host_sidecar() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("async_loader.arg");
+    let output_file = temp_dir.path().join("async_loader.wasm");
+    fs::write(
+        &source_file,
+        r#"
+async function greet(): string {
+    return "hello";
+}
+
+async function main(): string {
+    const value = await greet();
+    return value;
+}
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(&output_file)
+        .arg("--target")
+        .arg("wasm")
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
+        .success();
+
+    let script_file = temp_dir.path().join("run_async_loader.mjs");
+    fs::write(
+        &script_file,
+        r#"
+import { instantiateArgon } from "./async_loader.mjs";
+
+const runtime = await instantiateArgon();
+console.log(await runtime.exports.main());
+"#,
+    )
+    .unwrap();
+
+    let node_output = Command::new("node").arg(&script_file).output().unwrap();
+    assert!(node_output.status.success(), "{:?}", node_output);
+    let stdout = String::from_utf8_lossy(&node_output.stdout);
+    assert!(stdout.contains("hello"));
+}
+
+#[test]
+fn test_compile_wasm_try_catch_executes_via_host_sidecar() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("try_loader.arg");
+    let output_file = temp_dir.path().join("try_loader.wasm");
+    fs::write(
+        &source_file,
+        r#"
+function recover(flag: bool): i32 {
+    try {
+        if (flag) {
+            throw 7;
+        }
+        return 1;
+    } catch (err) {
+        return 0;
+    }
+
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(&output_file)
+        .arg("--target")
+        .arg("wasm")
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
+        .success();
+
+    let script_file = temp_dir.path().join("run_try_loader.mjs");
+    fs::write(
+        &script_file,
+        r#"
+import { instantiateArgon } from "./try_loader.mjs";
+
+const runtime = await instantiateArgon();
+console.log(`${runtime.exports.recover(false)},${runtime.exports.recover(true)}`);
+"#,
+    )
+    .unwrap();
+
+    let node_output = Command::new("node").arg(&script_file).output().unwrap();
+    assert!(node_output.status.success(), "{:?}", node_output);
+    let stdout = String::from_utf8_lossy(&node_output.stdout);
+    assert!(stdout.contains("1,0"));
+}
+
+#[test]
+fn test_compile_wasm_import_executes_via_host_sidecar() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let dep_file = temp_dir.path().join("dep.mjs");
+    let source_file = temp_dir.path().join("interop_loader.arg");
+    let output_file = temp_dir.path().join("interop_loader.wasm");
+    fs::write(
+        &dep_file,
+        "export default function inc(x) { return x + 1; }\n",
+    )
+    .unwrap();
+    fs::write(
+        &source_file,
+        r#"
+import inc from "./dep.mjs";
+
+function main(): i32 {
+    return inc(4);
+}
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(&output_file)
+        .arg("--target")
+        .arg("wasm")
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
+        .success();
+
+    let script_file = temp_dir.path().join("run_interop_loader.mjs");
+    fs::write(
+        &script_file,
+        r#"
+import { instantiateArgon } from "./interop_loader.mjs";
+
+const runtime = await instantiateArgon();
+console.log(runtime.exports.main());
+"#,
+    )
+    .unwrap();
+
+    let node_output = Command::new("node").arg(&script_file).output().unwrap();
+    assert!(node_output.status.success(), "{:?}", node_output);
+    let stdout = String::from_utf8_lossy(&node_output.stdout);
+    assert!(stdout.contains("5"));
 }
 
 #[test]

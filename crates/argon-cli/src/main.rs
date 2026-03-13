@@ -243,13 +243,25 @@ fn compile(
             fs::write(&output_path, &wasm_bytes)?;
             println!("Wrote {}", output_path.display());
 
+            let host_path = output_path.with_extension("host.mjs");
+            if let Some(host_js) = artifacts.wasm_host_js {
+                fs::write(&host_path, host_js)?;
+                println!("Wrote {}", host_path.display());
+            }
+
             if let Some(loader) = artifacts.wasm_loader_js {
                 let wasm_file = output_path
                     .file_name()
                     .and_then(|s| s.to_str())
                     .unwrap_or("output.wasm");
+                let host_file = host_path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("output.host.mjs");
                 let loader_path = output_path.with_extension("mjs");
-                let loader_contents = loader.replace("__WASM_FILE__", wasm_file);
+                let loader_contents = loader
+                    .replace("__WASM_FILE__", wasm_file)
+                    .replace("__HOST_FILE__", host_file);
                 fs::write(&loader_path, loader_contents)?;
                 println!("Wrote {}", loader_path.display());
             }

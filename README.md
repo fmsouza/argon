@@ -17,14 +17,14 @@ This repository contains the full compiler toolchain:
 For the locked scope in [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md), the compiler is **scope-complete**:
 - README syntax parity (including interop decorators/declarations) is implemented.
 - `argon run` executes core runtime features in the internal AST runtime.
-- WASM compilation works for a documented core subset, including a generated `.mjs` loader sidecar and heap-backed string/array/object access support.
+- WASM compilation now supports full README parity through a generated host-ABI companion (`.mjs` loader + `.host.mjs` host module), while still emitting native `.wasm` for the core subset.
 - Memory-safety baseline is enforced (moves, borrows, NLL-style loop analysis, thread/process capture checks).
 - Post-scope type-system hardening is implemented for interfaces/enums, structural object shapes, and recursive generic inference.
 - Post-scope borrow analysis now propagates helper summaries across transitive and mutually recursive borrowed returns plus thread/process captures.
 
 Known boundaries:
-- Full README parity on the WASM target is intentionally out of scope (core subset only).
 - Interprocedural lifetime solving is not yet a full global solver.
+- Raw standalone `.wasm` without the generated sidecars is still only the native core subset by design.
 
 ## Quick Start
 
@@ -45,7 +45,7 @@ argon run examples/collections.arg
 argon compile examples/control-flow.arg --target js -o out.js
 node out.js
 
-# Compile to WebAssembly (core subset + loader sidecar)
+# Compile to WebAssembly (native wasm + host-ABI sidecars)
 argon compile examples/wasm-subset.arg --target wasm --pipeline ir -o out.wasm
 ```
 
@@ -71,7 +71,7 @@ Argon runs a fixed pipeline:
    Produces a control-flow-oriented IR with optional optimization passes.
 6. **Code Generation**
    - `argon-codegen-js`: ES2022 JS output (+ optional source maps and `.d.ts`)
-   - `argon-codegen-wasm`: `.wasm` + generated `.mjs` loader for the supported core subset
+   - `argon-codegen-wasm`: native `.wasm` + generated `.mjs` loader + `.host.mjs` host companion for full wasm-target parity
 
 For `argon run`, the checked AST is executed by `argon-runtime` directly (no Node fallback as the primary path).
 
@@ -87,10 +87,10 @@ Supported targets:
 
 WASM notes:
 - `.wasm` is the binary output format.
-- `argon compile --target wasm ... -o out.wasm` also writes `out.mjs` as a loader/helper sidecar.
-- Core subset includes numeric locals/ops, calls, branching, loops, array indexing, and heap-backed object/field access for local shapes.
-- Linear-memory support exists for strings, arrays, object literals, and struct-literal constructor lowering.
-- JS-only/interop-heavy constructs produce explicit unsupported diagnostics.
+- `argon compile --target wasm ... -o out.wasm` also writes `out.mjs` and `out.host.mjs`.
+- Native wasm covers numeric locals/ops, calls, branching, loops, array indexing, and heap-backed object/field access for local shapes.
+- The loader merges native wasm exports with the generated host companion so imports/exports, async/await, and try/throw continue to work on the wasm target.
+- Linear-memory helpers still exist for native wasm strings, arrays, object literals, and struct-literal constructor lowering.
 
 ## CLI Commands
 
@@ -173,11 +173,10 @@ argon compile examples/wasm-subset.arg --target wasm --pipeline ir -o /tmp/out.w
 CI includes completion-focused coverage for:
 - README parity checks
 - Runtime execution paths
-- WASM subset compile/execute paths, including loader-sidecar and heap-backed object/member cases
+- WASM compile/execute paths, including loader-sidecar, host-ABI async/try/import coverage, and native heap-backed object/member cases
 
 ## Roadmap Beyond Current Scope
 
-- Full-language WASM parity (notably interop imports, async/await lowering, and try/throw on the wasm target).
 - Deeper global/interprocedural lifetime analysis.
 
 ## License

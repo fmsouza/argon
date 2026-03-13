@@ -1,7 +1,7 @@
 # Argon Completion Rebaseline
 
 **Date:** March 13, 2026  
-**Status:** Scope-Complete + Post-Scope Type Hardening/WASM Subset Expansion Implemented  
+**Status:** Scope-Complete + Post-Scope Type Hardening/WASM Host-ABI Parity Implemented  
 **Scope:** README parity + WASM core subset + runtime execution + memory-safety baseline
 
 ---
@@ -48,8 +48,8 @@ The compiler is considered **complete** for this scope only when all gates pass:
 | IR lowering for `loop` and `for..of` | **Implemented (core)** | Lowered into CFG blocks with index-based `for..of` expansion. |
 | JS codegen + source maps | **Implemented** | IR path and source map generation are working and tested in CLI integration tests. |
 | Runtime execution (`argon run`) for core control flow + structs/classes + `new` + match + for-of + loop | **Implemented (core)** | Added behavior and tests; template interpolation supported at runtime AST level. |
-| WASM backend | **Implemented (core subset+)** | Replaced hardcoded `42` with IR-driven lowering + memory model for strings/arrays/object literals, heap-backed member access, struct-literal constructor lowering, and generated `.mjs` loader sidecars. |
-| WASM validation/execution tests | **Implemented (core subset+)** | Structural validation + Node execution tests cover numeric control flow, string/array memory, object/member access, struct-literal lowering, and CLI loader sidecars. |
+| WASM backend | **Implemented (host-ABI parity)** | Replaced hardcoded `42` with IR-driven lowering + memory model for strings/arrays/object literals, heap-backed member access, struct-literal constructor lowering, generated `.mjs` loader + `.host.mjs` companion sidecars, and AST/IR host fallbacks for async/try/interop paths. |
+| WASM validation/execution tests | **Implemented (host-ABI parity)** | Structural validation + Node execution tests cover native numeric control flow, string/array memory, object/member access, struct-literal lowering, and CLI host-ABI execution for loader, async/await, try/catch, and module imports. |
 | Example suite parity with README/plan-required language features | **Implemented** | Rewrote and expanded `examples/*.arg` to include decorators/declare-module interop, loop/for-of, struct methods, object literals, template interpolation, async/await, try/catch/finally, interfaces/enums, generics, and a wasm-subset fixture. |
 | `argon-interop` crate tests | **Implemented** | Added crate-local tests for import/export/declaration behavior. |
 | `argon-stdlib` crate tests | **Implemented** | Added crate-local tests for primitives/runtime/definitions. |
@@ -97,9 +97,11 @@ The compiler is considered **complete** for this scope only when all gates pass:
 - [x] Heap-backed object literals, field access, and array indexing for local wasm shapes.
 - [x] Struct-literal constructor lowering (`Point { ... }` -> `new Point({ ... })`) in the wasm subset.
 - [x] Generated `.mjs` loader sidecar next to `.wasm` outputs.
+- [x] Generated `.host.mjs` host companion with merged-loader exports.
+- [x] Host-ABI fallback path for async/await, try/throw, and import/interop-heavy modules when native wasm lowering is unavailable.
 - [x] Explicit unsupported diagnostics for non-subset operations.
 - [x] Structural validation + execution tests for subset fixtures.
-- [ ] Full README parity on WASM target (out of this subset scope).
+- [x] Full README parity on WASM target via host ABI sidecars.
 
 ### Milestone 5: Example Suite Parity + Coverage
 - [x] Rewrite stale examples to match current Argon syntax and implementation-plan gates.
@@ -113,8 +115,7 @@ The compiler is considered **complete** for this scope only when all gates pass:
 ## Remaining Gaps (Post-Scope Completion)
 
 1. **Interprocedural lifetime depth**: call-site + helper-summary propagation are implemented, but no full interprocedural lifetime-flow solver.
-2. **WASM scope boundary**: backend now covers the documented core subset plus heap-backed object/member cases and loader sidecars, but not full language parity.
-3. **Full host ABI parity**: declared-module interop imports/exports, async/await lowering, and try/throw lowering are still outside the current wasm subset.
+2. **Raw wasm boundary**: the standalone `.wasm` artifact still contains only the native core subset; full parity relies on the generated host sidecars by design.
 
 ---
 
@@ -144,6 +145,10 @@ The compiler is considered **complete** for this scope only when all gates pass:
   - `argon run` runtime execution snippet
   - WASM subset compile + execute
   - WASM loader-sidecar generation/import
+  - WASM host-sidecar generation/import
+  - WASM async/await host-ABI execution
+  - WASM try/catch host-ABI execution
+  - WASM import/interoperability host-ABI execution
   - WASM struct-literal/object member execution
 - Example validation now includes:
   - Full `examples/*.arg` suite passing `argon check`
