@@ -1,0 +1,5 @@
+[advisories]
+# plain v0.2.3 is pulled in by libredox (Redox OS only) via notify/directories.
+# libredox 0.1.14 is the latest release and still depends on plain.
+# This dep is never compiled on Linux/macOS/Windows targets.
+ignore = ["RUSTSEC-2023-0004"]

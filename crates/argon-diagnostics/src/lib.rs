@@ -2,6 +2,7 @@
 //!
 //! Provides beautiful error messages using ariadne
 
+use std::io::IsTerminal;
 use std::ops::Range;
 
 pub type Result<T> = std::result::Result<T, String>;
@@ -88,7 +89,7 @@ impl DiagnosticEngine {
     pub fn new() -> Self {
         Self {
             sources: indexmap::IndexMap::new(),
-            use_colors: atty::is(atty::Stream::Stdout),
+            use_colors: std::io::stdout().is_terminal(),
         }
     }
 

@@ -8,7 +8,6 @@ repository.workspace = true
 
 [dependencies]
 ariadne.workspace = true
-atty.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 indexmap.workspace = true

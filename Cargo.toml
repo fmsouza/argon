@@ -27,7 +27,6 @@ repository = "https://github.com/argon/argon"
 [workspace.dependencies]
 # Error reporting
 ariadne = "0.5"
-atty = "0.2"
 
 # Memory management
 bumpalo = "3.14"
