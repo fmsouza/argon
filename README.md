@@ -14,16 +14,17 @@ This repository contains the full compiler toolchain:
 
 ## Status (March 13, 2026)
 
-For the locked scope in [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md), the compiler is **scope-complete**:
-- README syntax parity (including interop decorators/declarations) is implemented.
-- `argon run` executes core runtime features in the internal AST runtime.
-- WASM compilation now supports full README parity through a generated host-ABI companion (`.mjs` loader + `.host.mjs` host module), and the native standalone `.wasm` path now covers the expanded backend subset directly.
+For the locked scope in [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md), the compiler now has truthful default-path support for the currently supported targets:
+- The preferred JS path (`argon compile --target js --pipeline ir`) handles the README declaration syntax examples, including enums, interfaces, type aliases, and interop declarations.
+- `argon run` executes the host-independent core runtime examples and reports JSX/ESM/interop constructs as compile-only features instead of failing later with generic runtime errors.
+- Native WASM compilation only succeeds for the validated native subset. Unsupported cases now fail clearly instead of emitting placeholder `.wasm` files.
 - Memory-safety baseline is enforced (moves, borrows, NLL-style loop analysis, thread/process capture checks).
 - Post-scope type-system hardening is implemented for interfaces/enums, structural object shapes, and recursive generic inference.
 - Post-scope borrow analysis now computes global interprocedural borrow summaries across the call graph, including alias-aware borrowed returns, multi-source returned-borrow provenance, and transitive thread/process captures.
 
 Known boundaries:
-- Raw standalone `.wasm` now covers the native compiler subset directly, including nested `switch`/`match` control flow inside exception regions. The generated sidecars are still useful under JS hosts because they automate JS-module resolution and promise-backed host interop that plain `.wasm` imports cannot autonomously perform on their own.
+- `argon run` is intentionally scoped to host-independent execution. JSX, ESM imports, and JS interop declarations are compile-only features.
+- Raw standalone `.wasm` covers the validated native subset directly. If native lowering is unsupported, `argon compile --target wasm` now fails instead of falling back to a compatibility placeholder binary.
 
 ## Quick Start
 
@@ -70,8 +71,8 @@ Argon runs a fixed pipeline:
 5. **Lowering to IR** (`argon-ir`)  
    Produces a control-flow-oriented IR with optional optimization passes.
 6. **Code Generation**
-   - `argon-codegen-js`: ES2022 JS output (+ optional source maps and `.d.ts`)
-   - `argon-codegen-wasm`: native `.wasm` + generated `.mjs` loader + `.host.mjs` host companion for full wasm-target parity
+   - `argon-codegen-js`: ES2022 JS output (+ experimental source maps and `.d.ts`)
+   - `argon-codegen-wasm`: native `.wasm` + generated `.mjs` loader + `.host.mjs` host companion for the validated native subset
 
 For `argon run`, the checked AST is executed by `argon-runtime` directly (no Node fallback as the primary path).
 
@@ -85,11 +86,19 @@ Supported targets:
 - `--target js`
 - `--target wasm`
 
+Target support matrix:
+- `argon check`: full parser/type-checker/borrow-checker surface, including declaration-only syntax such as interfaces, type aliases, enums, and interop module declarations.
+- `argon compile --target js --pipeline ir`: preferred JS path; supports the README declaration examples plus executable core language features.
+- `argon run`: host-independent runtime subset only; rejects JSX, ESM imports, and interop declarations as compile-only features.
+- `argon compile --target wasm --pipeline ir`: validated native subset only; unsupported native cases fail clearly.
+- Generated WASM sidecars (`.mjs` + `.host.mjs`): JS-host convenience layer for supported native wasm builds.
+
 WASM notes:
 - `.wasm` is the binary output format.
 - `argon compile --target wasm ... -o out.wasm` also writes `out.mjs` and `out.host.mjs`.
-- Native standalone wasm now covers numeric locals/ops, calls, branching, loops, array indexing, heap-backed object/field access for local shapes, internal async/await lowered synchronously, flat and structured `try/catch/finally` with nested `if`/`return`, loop control, `for`/`for..of`, and nested `switch`/`match`, plus direct function imports supplied by the embedder.
-- The loader merges native wasm exports with the generated host companion so JS-heavy imports/exports, promise-backed async, and deeper JS-host interop paths continue to work on the wasm target.
+- Native standalone wasm covers the validated numeric/control-flow subset used by the current standalone tests: locals/ops, calls, branching, loops, array indexing, heap-backed object/field access for local shapes, internal async/await lowered synchronously, structured `try/catch/finally`, loop control, `for`/`for..of`, nested `switch`/`match`, and direct function imports supplied by the embedder.
+- Unsupported native wasm cases fail at compile time; successful compilation now means the emitted `.wasm` is a real native backend artifact.
+- The loader merges native wasm exports with the generated host companion for JS-host convenience on supported native builds.
 - Linear-memory helpers still exist for native wasm strings, arrays, object literals, and struct-literal constructor lowering.
 
 ## CLI Commands
@@ -168,9 +177,9 @@ argon compile examples/wasm-subset.arg --target wasm --pipeline ir -o /tmp/out.w
 ```
 
 CI includes completion-focused coverage for:
-- README parity checks
-- Runtime execution paths
-- WASM compile/execute paths, including raw standalone async/import coverage, flat and structured standalone try/catch coverage, loop-control/for/switch/match-in-try standalone coverage, loader-sidecar host-ABI coverage, and native heap-backed object/member cases
+- README example compilation on the preferred JS IR path
+- Runtime execution paths and compile-only runtime diagnostics
+- WASM compile/execute paths, including non-placeholder native artifact checks, standalone async/import coverage, flat and structured standalone try/catch coverage, loop-control/for/switch/match-in-try standalone coverage, loader-sidecar host-ABI coverage, and native heap-backed object/member cases
 
 ## Roadmap Beyond Current Scope
 

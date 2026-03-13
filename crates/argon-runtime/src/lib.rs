@@ -20,6 +20,7 @@ pub enum Value {
 
 #[derive(Debug, Clone)]
 pub struct RcFunction {
+    pub name: Option<String>,
     pub params: Vec<String>,
     pub body: Vec<Stmt>,
     pub closure: Scope,
@@ -69,7 +70,7 @@ impl Scope {
 }
 
 enum ExecOutcome {
-    Normal(Value),
+    Normal,
     Return(Value),
     Break,
     Continue,
@@ -161,9 +162,13 @@ impl Runtime {
     }
 
     pub fn execute(&mut self, source: &SourceFile) -> Result<Value, RuntimeError> {
+        if let Some(feature) = detect_compile_only_feature_in_source(source) {
+            return Err(RuntimeError::CompileOnlyFeature(feature.to_string()));
+        }
+
         for stmt in &source.statements {
             match self.execute_statement(stmt)? {
-                ExecOutcome::Normal(_) => {}
+                ExecOutcome::Normal => {}
                 ExecOutcome::Return(value) => return Ok(value),
                 ExecOutcome::Break => {
                     return Err(RuntimeError::InvalidControlFlow(
@@ -192,28 +197,31 @@ impl Runtime {
                         self.scope.define(id.name.sym.clone(), value);
                     }
                 }
-                Ok(ExecOutcome::Normal(Value::Undefined))
+                Ok(ExecOutcome::Normal)
             }
             Stmt::Function(f) | Stmt::AsyncFunction(f) => {
                 if let Some(id) = &f.id {
-                    let func = RcFunction {
-                        params: function_params(f),
-                        body: f.body.statements.clone(),
-                        closure: self.scope.clone(),
-                    };
+                    let func = self.function_value(f, self.scope.clone());
                     self.scope.define(id.sym.clone(), Value::Function(func));
                 }
-                Ok(ExecOutcome::Normal(Value::Undefined))
+                Ok(ExecOutcome::Normal)
             }
             Stmt::Struct(s) => {
                 self.register_struct(s);
-                Ok(ExecOutcome::Normal(Value::Undefined))
+                Ok(ExecOutcome::Normal)
             }
             Stmt::Class(c) => {
                 self.register_class(c);
-                Ok(ExecOutcome::Normal(Value::Undefined))
+                Ok(ExecOutcome::Normal)
             }
-            Stmt::Expr(e) => Ok(ExecOutcome::Normal(self.evaluate_expression(&e.expr)?)),
+            Stmt::Enum(e) => {
+                self.register_enum(e)?;
+                Ok(ExecOutcome::Normal)
+            }
+            Stmt::Expr(e) => {
+                let _ = self.evaluate_expression(&e.expr)?;
+                Ok(ExecOutcome::Normal)
+            }
             Stmt::Return(r) => match &r.argument {
                 Some(expr) => Ok(ExecOutcome::Return(self.evaluate_expression(expr)?)),
                 None => Ok(ExecOutcome::Return(Value::Undefined)),
@@ -225,7 +233,7 @@ impl Runtime {
                 } else if let Some(alt) = &i.alternate {
                     self.execute_statement(alt)
                 } else {
-                    Ok(ExecOutcome::Normal(Value::Undefined))
+                    Ok(ExecOutcome::Normal)
                 }
             }
             Stmt::While(w) => {
@@ -236,24 +244,24 @@ impl Runtime {
                     }
 
                     match self.execute_statement(&w.body)? {
-                        ExecOutcome::Normal(_) => {}
+                        ExecOutcome::Normal => {}
                         ExecOutcome::Break => break,
                         ExecOutcome::Continue => continue,
                         ExecOutcome::Return(v) => return Ok(ExecOutcome::Return(v)),
                     }
                 }
-                Ok(ExecOutcome::Normal(Value::Undefined))
+                Ok(ExecOutcome::Normal)
             }
             Stmt::Loop(l) => {
                 loop {
                     match self.execute_statement(&l.body)? {
-                        ExecOutcome::Normal(_) => {}
+                        ExecOutcome::Normal => {}
                         ExecOutcome::Break => break,
                         ExecOutcome::Continue => continue,
                         ExecOutcome::Return(v) => return Ok(ExecOutcome::Return(v)),
                     }
                 }
-                Ok(ExecOutcome::Normal(Value::Undefined))
+                Ok(ExecOutcome::Normal)
             }
             Stmt::For(f) => {
                 if let Some(init) = &f.init {
@@ -276,7 +284,7 @@ impl Runtime {
                     }
 
                     match self.execute_statement(&f.body)? {
-                        ExecOutcome::Normal(_) => {}
+                        ExecOutcome::Normal => {}
                         ExecOutcome::Break => break,
                         ExecOutcome::Continue => {}
                         ExecOutcome::Return(v) => return Ok(ExecOutcome::Return(v)),
@@ -286,7 +294,7 @@ impl Runtime {
                         let _ = self.evaluate_expression(update)?;
                     }
                 }
-                Ok(ExecOutcome::Normal(Value::Undefined))
+                Ok(ExecOutcome::Normal)
             }
             Stmt::ForIn(f) => {
                 let iterable = self.evaluate_expression(&f.right)?;
@@ -309,22 +317,22 @@ impl Runtime {
                     }
 
                     match self.execute_statement(&f.body)? {
-                        ExecOutcome::Normal(_) => {}
+                        ExecOutcome::Normal => {}
                         ExecOutcome::Break => break,
                         ExecOutcome::Continue => continue,
                         ExecOutcome::Return(v) => return Ok(ExecOutcome::Return(v)),
                     }
                 }
-                Ok(ExecOutcome::Normal(Value::Undefined))
+                Ok(ExecOutcome::Normal)
             }
             Stmt::Block(b) => {
                 for stmt in &b.statements {
                     match self.execute_statement(stmt)? {
-                        ExecOutcome::Normal(_) => {}
+                        ExecOutcome::Normal => {}
                         non_normal => return Ok(non_normal),
                     }
                 }
-                Ok(ExecOutcome::Normal(Value::Undefined))
+                Ok(ExecOutcome::Normal)
             }
             Stmt::Break(_) => Ok(ExecOutcome::Break),
             Stmt::Continue(_) => Ok(ExecOutcome::Continue),
@@ -336,7 +344,7 @@ impl Runtime {
                         return self.execute_statement(&case.consequent);
                     }
                 }
-                Ok(ExecOutcome::Normal(Value::Undefined))
+                Ok(ExecOutcome::Normal)
             }
             Stmt::Switch(s) => {
                 let disc = self.evaluate_expression(&s.discriminant)?;
@@ -353,16 +361,16 @@ impl Runtime {
                     if matched {
                         for stmt in &case.consequent {
                             match self.execute_statement(stmt)? {
-                                ExecOutcome::Normal(_) => {}
+                                ExecOutcome::Normal => {}
                                 ExecOutcome::Break => {
-                                    return Ok(ExecOutcome::Normal(Value::Undefined))
+                                    return Ok(ExecOutcome::Normal)
                                 }
                                 non_normal => return Ok(non_normal),
                             }
                         }
                     }
                 }
-                Ok(ExecOutcome::Normal(Value::Undefined))
+                Ok(ExecOutcome::Normal)
             }
             Stmt::Throw(t) => {
                 let value = self.evaluate_expression(&t.argument)?;
@@ -390,14 +398,11 @@ impl Runtime {
                 }
                 Ok(outcome)
             }
-            Stmt::Import(_)
-            | Stmt::Export(_)
+            Stmt::Export(_)
             | Stmt::Interface(_)
-            | Stmt::Enum(_)
             | Stmt::TypeAlias(_)
-            | Stmt::Module(_)
             | Stmt::Empty(_)
-            | Stmt::Debugger(_) => Ok(ExecOutcome::Normal(Value::Undefined)),
+            | Stmt::Debugger(_) => Ok(ExecOutcome::Normal),
             _ => Err(RuntimeError::Unsupported(format!(
                 "unsupported statement at runtime: {:?}",
                 stmt
@@ -481,19 +486,42 @@ impl Runtime {
             }
             Expr::Member(m) => {
                 let object = self.evaluate_expression(&m.object)?;
-                let property = if m.computed {
-                    let key = self.evaluate_expression(&m.property)?;
-                    self.value_to_string(&key)
-                } else {
-                    self.property_key(&m.property)?
-                };
-
                 if let Value::Object(map) = object {
+                    let property = if m.computed {
+                        let key = self.evaluate_expression(&m.property)?;
+                        self.value_to_string(&key)
+                    } else {
+                        self.property_key(&m.property)?
+                    };
                     Ok(map
                         .borrow()
                         .get(&property)
                         .cloned()
                         .unwrap_or(Value::Undefined))
+                } else if let Value::Array(values) = object {
+                    if m.computed {
+                        let key = self.evaluate_expression(&m.property)?;
+                        match key {
+                            Value::Number(n) if n >= 0.0 && n.fract() == 0.0 => Ok(values
+                                .get(n as usize)
+                                .cloned()
+                                .unwrap_or(Value::Undefined)),
+                            Value::String(s) => Ok(s
+                                .parse::<usize>()
+                                .ok()
+                                .and_then(|idx| values.get(idx).cloned())
+                                .unwrap_or(Value::Undefined)),
+                            _ => Err(RuntimeError::TypeError(
+                                "array index must be numeric".to_string(),
+                            )),
+                        }
+                    } else {
+                        let property = self.property_key(&m.property)?;
+                        match property.as_str() {
+                            "length" => Ok(Value::Number(values.len() as f64)),
+                            _ => Ok(Value::Undefined),
+                        }
+                    }
                 } else {
                     Err(RuntimeError::TypeError(
                         "member access on non-object value".to_string(),
@@ -508,26 +536,17 @@ impl Runtime {
                             self.scope.set(id.sym.clone(), value.clone());
                             Ok(value)
                         }
+                        Expr::Member(member) => {
+                            self.assign_member(member, value.clone())?;
+                            Ok(value)
+                        }
                         _ => Err(RuntimeError::Unsupported(
                             "unsupported assignment target".to_string(),
                         )),
                     },
                     AssignmentTarget::Member(member) => {
-                        let object = self.evaluate_expression(&member.object)?;
-                        let property = if member.computed {
-                            let key = self.evaluate_expression(&member.property)?;
-                            self.value_to_string(&key)
-                        } else {
-                            self.property_key(&member.property)?
-                        };
-                        if let Value::Object(map) = object {
-                            map.borrow_mut().insert(property, value.clone());
-                            Ok(value)
-                        } else {
-                            Err(RuntimeError::TypeError(
-                                "member assignment on non-object value".to_string(),
-                            ))
-                        }
+                        self.assign_member(member, value.clone())?;
+                        Ok(value)
                     }
                     AssignmentTarget::Pattern(_) => Err(RuntimeError::Unsupported(
                         "pattern assignment is not supported".to_string(),
@@ -661,6 +680,9 @@ impl Runtime {
         match callee {
             Value::Function(func) => {
                 let mut call_scope = func.closure.clone();
+                if let Some(name) = &func.name {
+                    call_scope.define(name.clone(), Value::Function(func.clone()));
+                }
                 for (i, param) in func.params.iter().enumerate() {
                     call_scope.define(
                         param.clone(),
@@ -729,6 +751,36 @@ impl Runtime {
                 constructor,
             },
         );
+    }
+
+    fn register_enum(&mut self, e: &EnumDecl) -> Result<(), RuntimeError> {
+        let mut values = HashMap::new();
+        let mut next_numeric = Some(0.0);
+
+        for member in &e.members {
+            let value = if let Some(init) = &member.init {
+                let value = self.evaluate_enum_initializer(init)?;
+                next_numeric = match value {
+                    Value::Number(n) => Some(n + 1.0),
+                    _ => None,
+                };
+                value
+            } else if let Some(current) = next_numeric {
+                next_numeric = Some(current + 1.0);
+                Value::Number(current)
+            } else {
+                return Err(RuntimeError::Unsupported(format!(
+                    "enum member '{}' requires an explicit initializer after a non-numeric member",
+                    member.id.sym
+                )));
+            };
+
+            values.insert(member.id.sym.clone(), value);
+        }
+
+        self.scope
+            .define(e.id.sym.clone(), Value::Object(Rc::new(RefCell::new(values))));
+        Ok(())
     }
 
     fn instantiate_struct(
@@ -804,7 +856,7 @@ impl Runtime {
             };
             for stmt in &constructor.body.statements {
                 match ctor_rt.execute_statement(stmt)? {
-                    ExecOutcome::Normal(_) => {}
+                    ExecOutcome::Normal => {}
                     ExecOutcome::Return(_) => break,
                     ExecOutcome::Break | ExecOutcome::Continue => {
                         return Err(RuntimeError::InvalidControlFlow(
@@ -825,17 +877,57 @@ impl Runtime {
     ) -> Value {
         let mut closure = Scope::new();
         closure.define("this".to_string(), Value::Object(this_obj));
-        Value::Function(RcFunction {
+        Value::Function(self.function_value(decl, closure))
+    }
+
+    fn function_value(&self, decl: &FunctionDecl, closure: Scope) -> RcFunction {
+        RcFunction {
+            name: decl.id.as_ref().map(|id| id.sym.clone()),
             params: function_params(decl),
             body: decl.body.statements.clone(),
             closure,
-        })
+        }
+    }
+
+    fn evaluate_enum_initializer(&mut self, expr: &Expr) -> Result<Value, RuntimeError> {
+        match expr {
+            Expr::Literal(Literal::Number(n)) => Ok(Value::Number(n.value)),
+            Expr::Literal(Literal::String(s)) => Ok(Value::String(s.value.clone())),
+            Expr::Literal(Literal::Boolean(b)) => Ok(Value::Boolean(b.value)),
+            Expr::Literal(Literal::Null(_)) => Ok(Value::Null),
+            _ => Err(RuntimeError::Unsupported(
+                "enum initializers must be literal values at runtime".to_string(),
+            )),
+        }
+    }
+
+    fn assign_member(&mut self, member: &MemberExpr, value: Value) -> Result<(), RuntimeError> {
+        let object = self.evaluate_expression(&member.object)?;
+        let property = if member.computed {
+            let key = self.evaluate_expression(&member.property)?;
+            self.value_to_string(&key)
+        } else {
+            self.property_key(&member.property)?
+        };
+
+        match object {
+            Value::Object(map) => {
+                map.borrow_mut().insert(property, value);
+                Ok(())
+            }
+            Value::Array(_) => Err(RuntimeError::Unsupported(
+                "array element assignment is not supported at runtime".to_string(),
+            )),
+            _ => Err(RuntimeError::TypeError(
+                "member assignment on non-object value".to_string(),
+            )),
+        }
     }
 
     fn execute_function_body(&mut self, body: &[Stmt]) -> Result<Value, RuntimeError> {
         for stmt in body {
             match self.execute_statement(stmt)? {
-                ExecOutcome::Normal(_) => {}
+                ExecOutcome::Normal => {}
                 ExecOutcome::Return(v) => return Ok(v),
                 ExecOutcome::Break => {
                     return Err(RuntimeError::InvalidControlFlow(
@@ -1039,6 +1131,7 @@ pub enum RuntimeError {
     UndefinedVariable(String),
     TypeError(String),
     Unsupported(String),
+    CompileOnlyFeature(String),
     Thrown(String),
     InvalidControlFlow(String),
 }
@@ -1049,6 +1142,7 @@ impl std::fmt::Display for RuntimeError {
             RuntimeError::UndefinedVariable(name) => write!(f, "Undefined variable: {}", name),
             RuntimeError::TypeError(msg) => write!(f, "Type error: {}", msg),
             RuntimeError::Unsupported(msg) => write!(f, "Unsupported runtime feature: {}", msg),
+            RuntimeError::CompileOnlyFeature(msg) => write!(f, "Compile-only feature: {}", msg),
             RuntimeError::Thrown(msg) => write!(f, "Thrown value: {}", msg),
             RuntimeError::InvalidControlFlow(msg) => write!(f, "Invalid control flow: {}", msg),
         }
@@ -1060,6 +1154,239 @@ impl std::error::Error for RuntimeError {}
 pub fn execute_ast(ast: &SourceFile) -> Result<Value, RuntimeError> {
     let mut runtime = Runtime::new();
     runtime.execute(ast)
+}
+
+fn detect_compile_only_feature_in_source(source: &SourceFile) -> Option<&'static str> {
+    for stmt in &source.statements {
+        if let Some(feature) = detect_compile_only_feature_in_stmt(stmt) {
+            return Some(feature);
+        }
+    }
+    None
+}
+
+fn detect_compile_only_feature_in_stmt(stmt: &Stmt) -> Option<&'static str> {
+    match stmt {
+        Stmt::Import(_) => Some(
+            "ES module imports are not supported by `argon run`; use `argon compile --target js` instead",
+        ),
+        Stmt::Module(_) => Some(
+            "interop module declarations are not supported by `argon run`; use `argon check` or `argon compile` instead",
+        ),
+        Stmt::Expr(e) => detect_compile_only_feature_in_expr(&e.expr),
+        Stmt::Block(b) => b
+            .statements
+            .iter()
+            .find_map(detect_compile_only_feature_in_stmt),
+        Stmt::If(i) => detect_compile_only_feature_in_expr(&i.condition)
+            .or_else(|| detect_compile_only_feature_in_stmt(&i.consequent))
+            .or_else(|| i.alternate.as_deref().and_then(detect_compile_only_feature_in_stmt)),
+        Stmt::Switch(s) => detect_compile_only_feature_in_expr(&s.discriminant).or_else(|| {
+            s.cases.iter().find_map(|case| {
+                case.test
+                    .as_ref()
+                    .and_then(detect_compile_only_feature_in_expr)
+                    .or_else(|| case.consequent.iter().find_map(detect_compile_only_feature_in_stmt))
+            })
+        }),
+        Stmt::For(f) => f
+            .init
+            .as_ref()
+            .and_then(|init| match init {
+                ForInit::Variable(v) => v
+                    .declarations
+                    .iter()
+                    .find_map(|decl| decl.init.as_ref().and_then(detect_compile_only_feature_in_expr)),
+                ForInit::Expr(expr) => detect_compile_only_feature_in_expr(expr),
+            })
+            .or_else(|| f.test.as_ref().and_then(detect_compile_only_feature_in_expr))
+            .or_else(|| f.update.as_ref().and_then(detect_compile_only_feature_in_expr))
+            .or_else(|| detect_compile_only_feature_in_stmt(&f.body)),
+        Stmt::ForIn(f) => detect_compile_only_feature_in_expr(&f.right)
+            .or_else(|| detect_compile_only_feature_in_stmt(&f.body)),
+        Stmt::While(w) => detect_compile_only_feature_in_expr(&w.condition)
+            .or_else(|| detect_compile_only_feature_in_stmt(&w.body)),
+        Stmt::DoWhile(d) => detect_compile_only_feature_in_stmt(&d.body)
+            .or_else(|| detect_compile_only_feature_in_expr(&d.condition)),
+        Stmt::Loop(l) => detect_compile_only_feature_in_stmt(&l.body),
+        Stmt::Return(r) => r
+            .argument
+            .as_ref()
+            .and_then(detect_compile_only_feature_in_expr),
+        Stmt::Throw(t) => detect_compile_only_feature_in_expr(&t.argument),
+        Stmt::Try(t) => t
+            .block
+            .statements
+            .iter()
+            .find_map(detect_compile_only_feature_in_stmt)
+            .or_else(|| {
+                t.handler.as_ref().and_then(|handler| {
+                    handler
+                        .body
+                        .statements
+                        .iter()
+                        .find_map(detect_compile_only_feature_in_stmt)
+                })
+            })
+            .or_else(|| {
+                t.finalizer.as_ref().and_then(|finalizer| {
+                    finalizer
+                        .statements
+                        .iter()
+                        .find_map(detect_compile_only_feature_in_stmt)
+                })
+            }),
+        Stmt::Variable(v) => v
+            .declarations
+            .iter()
+            .find_map(|decl| decl.init.as_ref().and_then(detect_compile_only_feature_in_expr)),
+        Stmt::Function(f) | Stmt::AsyncFunction(f) => f
+            .body
+            .statements
+            .iter()
+            .find_map(detect_compile_only_feature_in_stmt),
+        Stmt::Class(c) => c.body.body.iter().find_map(|member| match member {
+            ClassMember::Field(field) => field
+                .value
+                .as_ref()
+                .and_then(detect_compile_only_feature_in_expr),
+            ClassMember::Method(method) => method
+                .value
+                .body
+                .statements
+                .iter()
+                .find_map(detect_compile_only_feature_in_stmt),
+            ClassMember::Constructor(cons) => cons
+                .body
+                .statements
+                .iter()
+                .find_map(detect_compile_only_feature_in_stmt),
+            ClassMember::IndexSignature(_) => None,
+        }),
+        Stmt::Struct(s) => s.methods.iter().find_map(|method| {
+            method
+                .value
+                .body
+                .statements
+                .iter()
+                .find_map(detect_compile_only_feature_in_stmt)
+        }),
+        Stmt::Export(e) => e
+            .declaration
+            .as_deref()
+            .and_then(detect_compile_only_feature_in_stmt),
+        _ => None,
+    }
+}
+
+fn detect_compile_only_feature_in_expr(expr: &Expr) -> Option<&'static str> {
+    match expr {
+        Expr::JsxElement(_) | Expr::JsxFragment(_) => Some(
+            "JSX is not supported by `argon run`; use `argon compile --target js` instead",
+        ),
+        Expr::Import(_) => Some(
+            "dynamic imports are not supported by `argon run`; use `argon compile --target js` instead",
+        ),
+        Expr::Template(t) => t
+            .expressions
+            .iter()
+            .find_map(detect_compile_only_feature_in_expr),
+        Expr::Member(m) => detect_compile_only_feature_in_expr(&m.object)
+            .or_else(|| detect_compile_only_feature_in_expr(&m.property)),
+        Expr::Call(c) => detect_compile_only_feature_in_expr(&c.callee).or_else(|| {
+            c.arguments.iter().find_map(|arg| match arg {
+                ExprOrSpread::Expr(expr) => detect_compile_only_feature_in_expr(expr),
+                ExprOrSpread::Spread(spread) => detect_compile_only_feature_in_expr(&spread.argument),
+            })
+        }),
+        Expr::New(n) => detect_compile_only_feature_in_expr(&n.callee).or_else(|| {
+            n.arguments.iter().find_map(|arg| match arg {
+                ExprOrSpread::Expr(expr) => detect_compile_only_feature_in_expr(expr),
+                ExprOrSpread::Spread(spread) => detect_compile_only_feature_in_expr(&spread.argument),
+            })
+        }),
+        Expr::Update(u) => detect_compile_only_feature_in_expr(&u.argument),
+        Expr::Unary(u) => detect_compile_only_feature_in_expr(&u.argument),
+        Expr::Binary(b) => detect_compile_only_feature_in_expr(&b.left)
+            .or_else(|| detect_compile_only_feature_in_expr(&b.right)),
+        Expr::Logical(l) => detect_compile_only_feature_in_expr(&l.left)
+            .or_else(|| detect_compile_only_feature_in_expr(&l.right)),
+        Expr::Conditional(c) => detect_compile_only_feature_in_expr(&c.test)
+            .or_else(|| detect_compile_only_feature_in_expr(&c.consequent))
+            .or_else(|| detect_compile_only_feature_in_expr(&c.alternate)),
+        Expr::Assignment(a) => match &*a.left {
+            AssignmentTarget::Simple(expr) => detect_compile_only_feature_in_expr(expr),
+            AssignmentTarget::Member(member) => detect_compile_only_feature_in_expr(&Expr::Member(member.clone())),
+            AssignmentTarget::Pattern(_) => None,
+        }
+        .or_else(|| detect_compile_only_feature_in_expr(&a.right)),
+        Expr::Array(a) => a.elements.iter().find_map(|element| {
+            element.as_ref().and_then(|element| match element {
+                ExprOrSpread::Expr(expr) => detect_compile_only_feature_in_expr(expr),
+                ExprOrSpread::Spread(spread) => detect_compile_only_feature_in_expr(&spread.argument),
+            })
+        }),
+        Expr::Object(o) => o.properties.iter().find_map(|prop| match prop {
+            ObjectProperty::Property(p) => detect_compile_only_feature_in_expr(&p.key).or_else(|| {
+                match &p.value {
+                    ExprOrSpread::Expr(expr) => detect_compile_only_feature_in_expr(expr),
+                    ExprOrSpread::Spread(spread) => detect_compile_only_feature_in_expr(&spread.argument),
+                }
+            }),
+            ObjectProperty::Spread(spread) => detect_compile_only_feature_in_expr(&spread.argument),
+            ObjectProperty::Method(method)
+            | ObjectProperty::Getter(method)
+            | ObjectProperty::Setter(method) => method
+                .value
+                .body
+                .statements
+                .iter()
+                .find_map(detect_compile_only_feature_in_stmt),
+            ObjectProperty::Shorthand(_) => None,
+        }),
+        Expr::ArrowFunction(arrow) => match &arrow.body {
+            ArrowFunctionBody::Block(block) => block
+                .statements
+                .iter()
+                .find_map(detect_compile_only_feature_in_stmt),
+            ArrowFunctionBody::Expr(expr) => detect_compile_only_feature_in_expr(expr),
+        },
+        Expr::Await(a)
+        | Expr::AwaitPromised(a) => detect_compile_only_feature_in_expr(&a.argument),
+        Expr::Ref(r) => detect_compile_only_feature_in_expr(&r.expr),
+        Expr::MutRef(r) => detect_compile_only_feature_in_expr(&r.expr),
+        Expr::TaggedTemplate(t) => detect_compile_only_feature_in_expr(&t.tag).or_else(|| {
+            t.template
+                .expressions
+                .iter()
+                .find_map(detect_compile_only_feature_in_expr)
+        }),
+        Expr::Parenthesized(p) => detect_compile_only_feature_in_expr(&p.expression),
+        Expr::AsType(a) => detect_compile_only_feature_in_expr(&a.expression),
+        Expr::TypeAssertion(a) => detect_compile_only_feature_in_expr(&a.expression),
+        Expr::NonNull(n) => detect_compile_only_feature_in_expr(&n.expression),
+        Expr::Chain(chain) => chain.expressions.iter().find_map(|element| match element {
+            ChainElement::Call(call) => detect_compile_only_feature_in_expr(&Expr::Call(call.clone())),
+            ChainElement::Member(member) => {
+                detect_compile_only_feature_in_expr(&Expr::Member(member.clone()))
+            }
+            ChainElement::OptionalCall(call) => {
+                detect_compile_only_feature_in_expr(&Expr::OptionalCall(call.clone()))
+            }
+            ChainElement::OptionalMember(member) => {
+                detect_compile_only_feature_in_expr(&Expr::OptionalMember(member.clone()))
+            }
+        }),
+        Expr::OptionalCall(call) => detect_compile_only_feature_in_expr(&call.callee).or_else(|| {
+            call.arguments.iter().find_map(|arg| match arg {
+                ExprOrSpread::Expr(expr) => detect_compile_only_feature_in_expr(expr),
+                ExprOrSpread::Spread(spread) => detect_compile_only_feature_in_expr(&spread.argument),
+            })
+        }),
+        Expr::OptionalMember(member) => detect_compile_only_feature_in_expr(&member.object)
+            .or_else(|| detect_compile_only_feature_in_expr(&member.property)),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

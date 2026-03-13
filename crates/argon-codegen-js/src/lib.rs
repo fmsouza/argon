@@ -1949,6 +1949,7 @@ impl JsCodegen {
             Stmt::AsyncFunction(f) => self.generate_async_function(f),
             Stmt::Struct(s) => self.generate_struct(s),
             Stmt::Class(c) => self.generate_class(c),
+            Stmt::Enum(e) => self.generate_enum(e, false),
             Stmt::Expr(e) => {
                 self.generate_expression(&e.expr)?;
                 self.output.push_str(";\n");
@@ -1992,28 +1993,72 @@ impl JsCodegen {
     }
 
     fn generate_import(&mut self, import: &argon_ast::ImportStmt) -> Result<(), CodegenError> {
-        self.output.push_str("import ");
+        if import.is_type_only {
+            return Ok(());
+        }
 
-        for (i, spec) in import.specifiers.iter().enumerate() {
-            if i > 0 {
-                self.output.push_str(", ");
-            }
+        if import.specifiers.is_empty() {
+            self.output.push_str("import ");
+            self.output.push_str(&import.source.value);
+            self.output.push_str(";\n");
+            self.add_line();
+            return Ok(());
+        }
+
+        let mut default_import: Option<&str> = None;
+        let mut namespace_import: Option<&str> = None;
+        let mut named_imports = Vec::new();
+
+        for spec in &import.specifiers {
             match spec {
                 argon_ast::ImportSpecifier::Default(d) => {
-                    self.output.push_str(&d.local.sym);
+                    default_import = Some(&d.local.sym);
                 }
                 argon_ast::ImportSpecifier::Named(n) => {
-                    self.output.push_str(&n.imported.sym);
-                    if let Some(ref local) = n.local {
-                        self.output.push_str(" as ");
-                        self.output.push_str(&local.sym);
-                    }
+                    let imported = n.imported.sym.clone();
+                    let local = n
+                        .local
+                        .as_ref()
+                        .map(|ident| ident.sym.clone())
+                        .unwrap_or_else(|| imported.clone());
+                    named_imports.push((imported, local));
                 }
                 argon_ast::ImportSpecifier::Namespace(n) => {
-                    self.output.push_str("* as ");
-                    self.output.push_str(&n.id.sym);
+                    namespace_import = Some(&n.id.sym);
                 }
             }
+        }
+
+        self.output.push_str("import ");
+        let mut needs_comma = false;
+        if let Some(default_import) = default_import {
+            self.output.push_str(default_import);
+            needs_comma = true;
+        }
+        if let Some(namespace_import) = namespace_import {
+            if needs_comma {
+                self.output.push_str(", ");
+            }
+            self.output.push_str("* as ");
+            self.output.push_str(namespace_import);
+            needs_comma = true;
+        }
+        if !named_imports.is_empty() {
+            if needs_comma {
+                self.output.push_str(", ");
+            }
+            self.output.push_str("{ ");
+            for (idx, (imported, local)) in named_imports.iter().enumerate() {
+                if idx > 0 {
+                    self.output.push_str(", ");
+                }
+                self.output.push_str(imported);
+                if imported != local {
+                    self.output.push_str(" as ");
+                    self.output.push_str(local);
+                }
+            }
+            self.output.push_str(" }");
         }
 
         self.output.push_str(" from ");
@@ -2024,16 +2069,35 @@ impl JsCodegen {
     }
 
     fn generate_export(&mut self, export: &argon_ast::ExportStmt) -> Result<(), CodegenError> {
-        self.output.push_str("export ");
+        if export.is_type_only {
+            return Ok(());
+        }
 
         if let Some(ref decl) = export.declaration {
             match decl.as_ref() {
-                Stmt::Function(f) => self.generate_function(f)?,
-                Stmt::Class(c) => self.generate_class(c)?,
-                Stmt::Variable(v) => self.generate_variable(v)?,
+                Stmt::Function(f) => {
+                    self.output.push_str("export ");
+                    self.generate_function(f)?;
+                }
+                Stmt::AsyncFunction(f) => {
+                    self.output.push_str("export ");
+                    self.generate_async_function(f)?;
+                }
+                Stmt::Class(c) => {
+                    self.output.push_str("export ");
+                    self.generate_class(c)?;
+                }
+                Stmt::Variable(v) => {
+                    self.output.push_str("export ");
+                    self.generate_variable(v)?;
+                }
+                Stmt::Enum(e) => {
+                    self.generate_enum(e, true)?;
+                }
                 _ => {}
             }
         } else {
+            self.output.push_str("export { ");
             for (i, spec) in export.specifiers.iter().enumerate() {
                 if i > 0 {
                     self.output.push_str(", ");
@@ -2044,10 +2108,14 @@ impl JsCodegen {
                     self.output.push_str(&exported.sym);
                 }
             }
+            self.output.push_str(" }");
+            if let Some(ref source) = export.source {
+                self.output.push_str(" from ");
+                self.output.push_str(&source.value);
+            }
+            self.output.push_str(";\n");
+            self.add_line();
         }
-
-        self.output.push_str(";\n");
-        self.add_line();
         Ok(())
     }
 
@@ -2955,6 +3023,48 @@ impl JsCodegen {
         Ok(())
     }
 
+    fn generate_enum(&mut self, e: &EnumDecl, export: bool) -> Result<(), CodegenError> {
+        if export {
+            self.output.push_str("export ");
+        }
+        self.output.push_str("const ");
+        self.output.push_str(&e.id.sym);
+        self.output.push_str(" = { ");
+
+        let mut next_numeric = Some(0.0);
+        for (idx, member) in e.members.iter().enumerate() {
+            if idx > 0 {
+                self.output.push_str(", ");
+            }
+            self.output.push_str(&member.id.sym);
+            self.output.push_str(": ");
+
+            if let Some(init) = &member.init {
+                self.generate_expression(init)?;
+                next_numeric = match init {
+                    Expr::Literal(Literal::Number(n)) => Some(n.value + 1.0),
+                    _ => None,
+                };
+            } else if let Some(current) = next_numeric {
+                if current.fract() == 0.0 {
+                    self.output.push_str(&(current as i64).to_string());
+                } else {
+                    self.output.push_str(&current.to_string());
+                }
+                next_numeric = Some(current + 1.0);
+            } else {
+                return Err(CodegenError::Unsupported(format!(
+                    "enum member '{}' requires an explicit initializer after a non-numeric member",
+                    member.id.sym
+                )));
+            }
+        }
+
+        self.output.push_str(" };\n");
+        self.add_line();
+        Ok(())
+    }
+
     fn generate_try(&mut self, t: &TryStmt) -> Result<(), CodegenError> {
         self.output.push_str("try {\n");
         self.indent += 1;
@@ -3064,156 +3174,254 @@ pub fn generate_type_declarations(source: &SourceFile) -> String {
     output.push_str("// TypeScript declarations generated by Argon\n\n");
 
     for stmt in &source.statements {
-        match stmt {
-            Stmt::Function(f) => {
-                output.push_str("declare function ");
-                if let Some(ref id) = f.id {
-                    output.push_str(&id.sym);
-                }
-                output.push('(');
-                for (i, p) in f.params.iter().enumerate() {
-                    if i > 0 {
-                        output.push_str(", ");
-                    }
-                    if let Pattern::Identifier(id) = &p.pat {
-                        output.push_str(&id.name.sym);
-                        if let Some(ref ty) = p.ty {
-                            output.push_str(": ");
-                            output.push_str(&type_to_ts_string(ty));
-                        }
-                    }
-                }
-                output.push(')');
-                if let Some(ref ret_ty) = f.return_type {
-                    output.push_str(": ");
-                    output.push_str(&type_to_ts_string(ret_ty));
-                }
-                output.push_str(";\n\n");
-            }
-            Stmt::Struct(s) => {
-                output.push_str("interface ");
-                output.push_str(&s.id.sym);
-                output.push_str(" {\n");
-                for field in &s.fields {
-                    output.push_str("    ");
-                    output.push_str(&field.id.sym);
-                    output.push_str(": ");
-                    output.push_str(&type_to_ts_string(&field.type_annotation));
-                    output.push_str(";\n");
-                }
-                output.push_str("}\n\n");
-            }
-            Stmt::Class(c) => {
-                output.push_str("class ");
-                output.push_str(&c.id.sym);
-                output.push_str(" {\n");
-                for member in &c.body.body {
-                    match member {
-                        ClassMember::Field(f) => {
-                            output.push_str("    ");
-                            if let Expr::Identifier(id) = &f.key {
-                                output.push_str(&id.sym);
-                            }
-                            if let Some(ref ty) = f.type_annotation {
-                                output.push_str(": ");
-                                output.push_str(&type_to_ts_string(ty));
-                            }
-                            output.push_str(";\n");
-                        }
-                        ClassMember::Method(m) => {
-                            output.push_str("    ");
-                            if let Expr::Identifier(id) = &m.key {
-                                output.push_str(&id.sym);
-                            }
-                            output.push('(');
-                            for (i, p) in m.value.params.iter().enumerate() {
-                                if i > 0 {
-                                    output.push_str(", ");
-                                }
-                                if let Pattern::Identifier(id) = &p.pat {
-                                    output.push_str(&id.name.sym);
-                                }
-                            }
-                            output.push(')');
-                            if let Some(ref ret_ty) = m.value.return_type {
-                                output.push_str(": ");
-                                output.push_str(&type_to_ts_string(ret_ty));
-                            }
-                            output.push_str(";\n");
-                        }
-                        _ => {}
-                    }
-                }
-                output.push_str("}\n\n");
-            }
-            Stmt::Interface(i) => {
-                output.push_str("interface ");
-                output.push_str(&i.id.sym);
-                output.push_str(" {\n");
-                for member in &i.body.body {
-                    match member {
-                        InterfaceMember::Method(m) => {
-                            output.push_str("    ");
-                            output.push_str(&m.id.sym);
-                            output.push('(');
-                            for (i, p) in m.params.iter().enumerate() {
-                                if i > 0 {
-                                    output.push_str(", ");
-                                }
-                                if let Pattern::Identifier(id) = &p.pat {
-                                    output.push_str(&id.name.sym);
-                                }
-                            }
-                            output.push(')');
-                            if let Some(ref ret_ty) = m.return_type {
-                                output.push_str(": ");
-                                output.push_str(&type_to_ts_string(ret_ty));
-                            }
-                            output.push_str(";\n");
-                        }
-                        InterfaceMember::Property(p) => {
-                            output.push_str("    ");
-                            output.push_str(&p.id.sym);
-                            if p.is_optional {
-                                output.push('?');
-                            }
-                            output.push_str(": ");
-                            if let Some(ref ty) = p.type_annotation {
-                                output.push_str(&type_to_ts_string(ty));
-                            }
-                            output.push_str(";\n");
-                        }
-                        InterfaceMember::IndexSignature(_) => {}
-                    }
-                }
-                output.push_str("}\n\n");
-            }
-            Stmt::TypeAlias(t) => {
-                output.push_str("type ");
-                output.push_str(&t.id.sym);
-                output.push_str(" = ");
-                output.push_str(&type_to_ts_string(&t.type_annotation));
-                output.push_str(";\n\n");
-            }
-            Stmt::Enum(e) => {
-                output.push_str("enum ");
-                output.push_str(&e.id.sym);
-                output.push_str(" {\n");
-                for (i, member) in e.members.iter().enumerate() {
-                    output.push_str("    ");
-                    output.push_str(&member.id.sym);
-                    if i < e.members.len() - 1 {
-                        output.push(',');
-                    }
-                    output.push('\n');
-                }
-                output.push_str("}\n\n");
-            }
-            _ => {}
-        }
+        append_declaration_stmt(&mut output, stmt, false);
     }
 
     output
+}
+
+fn append_declaration_stmt(output: &mut String, stmt: &Stmt, exported: bool) {
+    match stmt {
+        Stmt::Function(f) | Stmt::AsyncFunction(f) => {
+            if exported {
+                output.push_str("export ");
+            }
+            output.push_str("declare function ");
+            if let Some(ref id) = f.id {
+                output.push_str(&id.sym);
+            }
+            append_type_params(output, &f.type_params);
+            output.push('(');
+            append_params(output, &f.params);
+            output.push(')');
+            if let Some(ref ret_ty) = f.return_type {
+                output.push_str(": ");
+                output.push_str(&type_to_ts_string(ret_ty));
+            }
+            output.push_str(";\n\n");
+        }
+        Stmt::Struct(s) => {
+            if exported {
+                output.push_str("export ");
+            }
+            output.push_str("interface ");
+            output.push_str(&s.id.sym);
+            append_type_params(output, &s.type_params);
+            output.push_str(" {\n");
+            for field in &s.fields {
+                output.push_str("    ");
+                output.push_str(&field.id.sym);
+                output.push_str(": ");
+                output.push_str(&type_to_ts_string(&field.type_annotation));
+                output.push_str(";\n");
+            }
+            output.push_str("}\n\n");
+        }
+        Stmt::Class(c) => {
+            if exported {
+                output.push_str("export ");
+            }
+            output.push_str("declare class ");
+            output.push_str(&c.id.sym);
+            append_type_params(output, &c.type_params);
+            output.push_str(" {\n");
+            for member in &c.body.body {
+                match member {
+                    ClassMember::Field(f) => {
+                        output.push_str("    ");
+                        if let Expr::Identifier(id) = &f.key {
+                            output.push_str(&id.sym);
+                        }
+                        if f.is_optional {
+                            output.push('?');
+                        }
+                        if let Some(ref ty) = f.type_annotation {
+                            output.push_str(": ");
+                            output.push_str(&type_to_ts_string(ty));
+                        }
+                        output.push_str(";\n");
+                    }
+                    ClassMember::Method(m) => {
+                        output.push_str("    ");
+                        if m.is_static {
+                            output.push_str("static ");
+                        }
+                        if let Expr::Identifier(id) = &m.key {
+                            output.push_str(&id.sym);
+                        }
+                        append_type_params(output, &m.value.type_params);
+                        output.push('(');
+                        append_params(output, &m.value.params);
+                        output.push(')');
+                        if let Some(ref ret_ty) = m.value.return_type {
+                            output.push_str(": ");
+                            output.push_str(&type_to_ts_string(ret_ty));
+                        }
+                        output.push_str(";\n");
+                    }
+                    ClassMember::Constructor(cons) => {
+                        output.push_str("    constructor(");
+                        append_params(output, &cons.params);
+                        output.push_str(");\n");
+                    }
+                    ClassMember::IndexSignature(_) => {}
+                }
+            }
+            output.push_str("}\n\n");
+        }
+        Stmt::Interface(i) => {
+            if exported {
+                output.push_str("export ");
+            }
+            output.push_str("interface ");
+            output.push_str(&i.id.sym);
+            append_type_params(output, &i.type_params);
+            output.push_str(" {\n");
+            for member in &i.body.body {
+                match member {
+                    InterfaceMember::Method(m) => {
+                        output.push_str("    ");
+                        output.push_str(&m.id.sym);
+                        append_type_params(output, &m.type_params);
+                        output.push('(');
+                        append_params(output, &m.params);
+                        output.push(')');
+                        if let Some(ref ret_ty) = m.return_type {
+                            output.push_str(": ");
+                            output.push_str(&type_to_ts_string(ret_ty));
+                        }
+                        output.push_str(";\n");
+                    }
+                    InterfaceMember::Property(p) => {
+                        output.push_str("    ");
+                        output.push_str(&p.id.sym);
+                        if p.is_optional {
+                            output.push('?');
+                        }
+                        output.push_str(": ");
+                        if let Some(ref ty) = p.type_annotation {
+                            output.push_str(&type_to_ts_string(ty));
+                        }
+                        output.push_str(";\n");
+                    }
+                    InterfaceMember::IndexSignature(_) => {}
+                }
+            }
+            output.push_str("}\n\n");
+        }
+        Stmt::TypeAlias(t) => {
+            if exported {
+                output.push_str("export ");
+            }
+            output.push_str("type ");
+            output.push_str(&t.id.sym);
+            append_type_params(output, &t.type_params);
+            output.push_str(" = ");
+            output.push_str(&type_to_ts_string(&t.type_annotation));
+            output.push_str(";\n\n");
+        }
+        Stmt::Enum(e) => {
+            if exported {
+                output.push_str("export ");
+            }
+            output.push_str("declare enum ");
+            output.push_str(&e.id.sym);
+            output.push_str(" {\n");
+            for (i, member) in e.members.iter().enumerate() {
+                output.push_str("    ");
+                output.push_str(&member.id.sym);
+                if let Some(init) = &member.init {
+                    output.push_str(" = ");
+                    append_enum_initializer(output, init);
+                }
+                if i < e.members.len() - 1 {
+                    output.push(',');
+                }
+                output.push('\n');
+            }
+            output.push_str("}\n\n");
+        }
+        Stmt::Export(e) => {
+            if let Some(ref decl) = e.declaration {
+                append_declaration_stmt(output, decl.as_ref(), !e.is_type_only || matches!(
+                    decl.as_ref(),
+                    Stmt::Interface(_) | Stmt::TypeAlias(_)
+                ));
+            } else if !e.is_type_only && !e.specifiers.is_empty() {
+                output.push_str("export { ");
+                for (i, spec) in e.specifiers.iter().enumerate() {
+                    if i > 0 {
+                        output.push_str(", ");
+                    }
+                    output.push_str(&spec.orig.sym);
+                    if let Some(ref exported) = spec.exported {
+                        output.push_str(" as ");
+                        output.push_str(&exported.sym);
+                    }
+                }
+                output.push_str(" }");
+                if let Some(ref source) = e.source {
+                    output.push_str(" from ");
+                    output.push_str(&source.value);
+                }
+                output.push_str(";\n\n");
+            }
+        }
+        _ => {}
+    }
+}
+
+fn append_params(output: &mut String, params: &[argon_ast::Param]) {
+    for (i, p) in params.iter().enumerate() {
+        if i > 0 {
+            output.push_str(", ");
+        }
+        if let Pattern::Identifier(id) = &p.pat {
+            output.push_str(&id.name.sym);
+            if p.is_optional {
+                output.push('?');
+            }
+            if let Some(ref ty) = p.ty {
+                output.push_str(": ");
+                output.push_str(&type_to_ts_string(ty));
+            }
+        }
+    }
+}
+
+fn append_type_params(output: &mut String, params: &[TypeParam]) {
+    if params.is_empty() {
+        return;
+    }
+
+    output.push('<');
+    for (i, param) in params.iter().enumerate() {
+        if i > 0 {
+            output.push_str(", ");
+        }
+        output.push_str(&param.name.sym);
+        if let Some(ref constraint) = param.constraint {
+            output.push_str(" extends ");
+            output.push_str(&type_to_ts_string(constraint));
+        }
+        if let Some(ref default) = param.default {
+            output.push_str(" = ");
+            output.push_str(&type_to_ts_string(default));
+        }
+    }
+    output.push('>');
+}
+
+fn append_enum_initializer(output: &mut String, expr: &Expr) {
+    match expr {
+        Expr::Literal(Literal::Number(n)) => output.push_str(&n.raw),
+        Expr::Literal(Literal::String(s)) => output.push_str(&s.value),
+        Expr::Literal(Literal::Boolean(b)) => {
+            output.push_str(if b.value { "true" } else { "false" });
+        }
+        Expr::Identifier(id) => output.push_str(&id.sym),
+        _ => output.push_str("0"),
+    }
 }
 
 fn type_to_ts_string(ty: &argon_ast::Type) -> String {

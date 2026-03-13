@@ -20,25 +20,6 @@ impl WasmCodegen {
         Self {}
     }
 
-    pub fn generate_placeholder_module(&self) -> Vec<u8> {
-        let mut module = Module::new();
-
-        let mut memories = MemorySection::new();
-        memories.memory(MemoryType {
-            minimum: 1,
-            maximum: None,
-            memory64: false,
-            shared: false,
-        });
-        module.section(&memories);
-
-        let mut exports = ExportSection::new();
-        exports.export("memory", ExportKind::Memory, 0);
-        module.section(&exports);
-
-        module.finish()
-    }
-
     pub fn generate_from_ast(
         &mut self,
         source: &argon_ast::SourceFile,

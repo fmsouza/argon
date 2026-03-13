@@ -279,35 +279,21 @@ impl Compiler {
         options: &CompileOptions,
     ) -> Result<CompileArtifacts, DriverError> {
         let mut codegen = WasmCodegen::new();
-        let ir_result = {
-            let mut builder = IrBuilder::new();
-            builder.build(ast)
-        };
+        let mut builder = IrBuilder::new();
+        let mut ir = builder
+            .build(ast)
+            .map_err(|e| self.simple_error_to_driver(source, source_name, "ir error", &e))?;
 
-        let (wasm_host_js, wasm) = match ir_result {
-            Ok(mut ir) => {
-                if options.optimize {
-                    let _ = argon_ir::passes::optimize_module(&mut ir);
-                }
+        if options.optimize {
+            let _ = argon_ir::passes::optimize_module(&mut ir);
+        }
 
-                let wasm_host_js =
-                    self.generate_wasm_host_module_from_ir(source, source_name, &ir)?;
-                let wasm_result = match options.pipeline {
-                    Pipeline::Ast => codegen.generate_from_ast(ast),
-                    Pipeline::Ir => codegen.generate(&ir),
-                };
-                let wasm = match wasm_result {
-                    Ok(wasm) => wasm,
-                    Err(_) => codegen.generate_placeholder_module(),
-                };
-
-                (wasm_host_js, wasm)
-            }
-            Err(_) => (
-                self.generate_wasm_host_module_from_ast(source, source_name, ast)?,
-                codegen.generate_placeholder_module(),
-            ),
-        };
+        let wasm_host_js = self.generate_wasm_host_module_from_ir(source, source_name, &ir)?;
+        let wasm = match options.pipeline {
+            Pipeline::Ast => codegen.generate_from_ast(ast),
+            Pipeline::Ir => codegen.generate(&ir),
+        }
+        .map_err(|e| self.simple_error_to_driver(source, source_name, "codegen error", &e))?;
 
         let wat = wasmprinter::print_bytes(&wasm).ok();
 
@@ -355,51 +341,6 @@ impl Compiler {
             })
             .collect();
 
-        Ok(self.append_host_exports(host_js, &host_only_exports))
-    }
-
-    fn generate_wasm_host_module_from_ast(
-        &self,
-        source: &str,
-        source_name: &str,
-        ast: &SourceFile,
-    ) -> Result<String, DriverError> {
-        let mut js_codegen = JsCodegen::new();
-        let host_js = js_codegen.generate_from_ast(ast).map_err(|e| {
-            self.simple_error_to_driver(source, source_name, "wasm host codegen error", &e)
-        })?;
-
-        let mut explicit_exports = HashSet::new();
-        let mut host_only_exports = Vec::new();
-        for statement in &ast.statements {
-            match statement {
-                argon_ast::Stmt::Function(function) | argon_ast::Stmt::AsyncFunction(function) => {
-                    if let Some(id) = &function.id {
-                        host_only_exports.push(id.sym.clone());
-                    }
-                }
-                argon_ast::Stmt::Export(export) => {
-                    for specifier in &export.specifiers {
-                        explicit_exports.insert(specifier.orig.sym.clone());
-                    }
-
-                    if let Some(declaration) = &export.declaration {
-                        match declaration.as_ref() {
-                            argon_ast::Stmt::Function(function)
-                            | argon_ast::Stmt::AsyncFunction(function) => {
-                                if let Some(id) = &function.id {
-                                    explicit_exports.insert(id.sym.clone());
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        host_only_exports.retain(|name| !explicit_exports.contains(name));
         Ok(self.append_host_exports(host_js, &host_only_exports))
     }
 

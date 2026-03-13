@@ -301,6 +301,7 @@ impl IrBuilder {
                 Stmt::AsyncFunction(f) => self.translate_function(f, true)?,
                 Stmt::Struct(s) => self.translate_struct(s)?,
                 Stmt::Class(c) => self.translate_class(c)?,
+                Stmt::Enum(e) => self.translate_enum(e)?,
                 Stmt::Variable(v) => {
                     self.translate_global_variable_stmt(v)?;
                 }
@@ -310,33 +311,39 @@ impl IrBuilder {
                     // also be lowered into IR so codegen can emit it.
                     if let Some(ref decl) = e.declaration {
                         if e.is_type_only {
-                            return Err(IrError::Unsupported(
-                                "export declarations marked type-only are unsupported in IR pipeline"
-                                    .to_string(),
-                            ));
+                            self.translate_erased_export_declaration(decl.as_ref())?;
+                            self.exports.push(e.clone());
+                            continue;
                         }
 
                         let exported_syms = self.translate_export_declaration(decl.as_ref())?;
 
                         // Convert `export <decl>` into `export { name }` so IR codegen has a single
                         // export emission path.
-                        let mut rewritten = e.clone();
-                        rewritten.declaration = None;
-                        if rewritten.specifiers.is_empty() {
-                            rewritten.specifiers = exported_syms
-                                .into_iter()
-                                .map(|sym| ExportSpecifier {
-                                    orig: Ident { sym, span: 0..0 },
-                                    exported: None,
-                                    span: 0..0,
-                                })
-                                .collect();
+                        if !exported_syms.is_empty() || !e.specifiers.is_empty() {
+                            let mut rewritten = e.clone();
+                            rewritten.declaration = None;
+                            if rewritten.specifiers.is_empty() {
+                                rewritten.specifiers = exported_syms
+                                    .into_iter()
+                                    .map(|sym| ExportSpecifier {
+                                        orig: Ident { sym, span: 0..0 },
+                                        exported: None,
+                                        span: 0..0,
+                                    })
+                                    .collect();
+                            }
+                            self.exports.push(rewritten);
                         }
-                        self.exports.push(rewritten);
                     } else {
                         self.exports.push(e.clone());
                     }
                 }
+                Stmt::Interface(_)
+                | Stmt::TypeAlias(_)
+                | Stmt::Module(_)
+                | Stmt::Empty(_)
+                | Stmt::Debugger(_) => {}
                 _ => init_stmts.push(stmt.clone()),
             }
         }
@@ -404,8 +411,24 @@ impl IrBuilder {
                 let names = self.translate_global_variable_stmt(v)?;
                 Ok(names)
             }
+            Stmt::Enum(e) => {
+                let name = e.id.sym.clone();
+                self.translate_enum(e)?;
+                Ok(vec![name])
+            }
+            Stmt::Interface(_) | Stmt::TypeAlias(_) | Stmt::Module(_) => Ok(Vec::new()),
             _ => Err(IrError::Unsupported(format!(
                 "unsupported export declaration in IR pipeline: {:?}",
+                decl
+            ))),
+        }
+    }
+
+    fn translate_erased_export_declaration(&mut self, decl: &Stmt) -> Result<(), IrError> {
+        match decl {
+            Stmt::Interface(_) | Stmt::TypeAlias(_) | Stmt::Module(_) | Stmt::Enum(_) => Ok(()),
+            _ => Err(IrError::Unsupported(format!(
+                "unsupported type-only export declaration in IR pipeline: {:?}",
                 decl
             ))),
         }
@@ -1516,6 +1539,53 @@ impl IrBuilder {
         self.types.push(TypeDef::Struct {
             name: c.id.sym.clone(),
             fields,
+        });
+
+        Ok(())
+    }
+
+    fn translate_enum(&mut self, e: &EnumDecl) -> Result<(), IrError> {
+        let mut init_insts = Vec::new();
+        let mut props = Vec::with_capacity(e.members.len());
+        let mut next_numeric = Some(0.0);
+
+        for member in &e.members {
+            let value = if let Some(init) = &member.init {
+                let value = self.translate_expression(init, &mut init_insts)?;
+                next_numeric = match init {
+                    Expr::Literal(Literal::Number(n)) => Some(n.value + 1.0),
+                    _ => None,
+                };
+                value
+            } else if let Some(current) = next_numeric {
+                let dest = self.new_value();
+                init_insts.push(Instruction::Const {
+                    dest,
+                    value: ConstValue::Number(current),
+                });
+                next_numeric = Some(current + 1.0);
+                dest
+            } else {
+                return Err(IrError::Unsupported(format!(
+                    "enum member '{}' requires an explicit initializer after a non-numeric member",
+                    member.id.sym
+                )));
+            };
+
+            props.push(ObjectProp {
+                key: member.id.sym.clone(),
+                value,
+            });
+        }
+
+        let dest = self.new_value();
+        init_insts.push(Instruction::ObjectLit { dest, props });
+        self.globals.push(Global {
+            kind: VarKind::Const,
+            name: e.id.sym.clone(),
+            ty: 0,
+            init_insts,
+            init: Some(dest),
         });
 
         Ok(())

@@ -11,6 +11,19 @@ fn test_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+fn repo_root() -> PathBuf {
+    test_dir().join("..").join("..")
+}
+
+fn examples_dir() -> PathBuf {
+    repo_root().join("examples")
+}
+
+fn assert_real_native_wasm(output_file: &PathBuf) {
+    let wat = fs::read_to_string(output_file.with_extension("wat")).unwrap();
+    assert!(wat.contains("(func"), "expected native wasm function body, got:\n{wat}");
+}
+
 #[test]
 fn test_compile_simple() {
     let temp_dir = tempfile::tempdir().unwrap();
@@ -271,6 +284,30 @@ fn test_compile_with_declarations() {
 }
 
 #[test]
+fn test_compile_with_exported_generic_declarations() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("decl_export.arg");
+    fs::write(
+        &source_file,
+        "export function identity<T>(value: T): T {\n    return value;\n}\n\nexport type Identity<T> = T;\n",
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(temp_dir.path().join("output.js"))
+        .arg("--declarations")
+        .assert()
+        .success();
+
+    let dts = fs::read_to_string(temp_dir.path().join("output.d.ts")).unwrap();
+    assert!(dts.contains("export declare function identity<T>(value: T): T;"));
+    assert!(dts.contains("export type Identity<T> = T;"));
+}
+
+#[test]
 fn test_invalid_syntax_fails() {
     let temp_dir = tempfile::tempdir().unwrap();
     let source_file = temp_dir.path().join("invalid.arg");
@@ -388,8 +425,9 @@ fn test_compile_example_esm_import() {
         .success();
 
     let output = fs::read_to_string(temp_dir.path().join("out.js")).unwrap();
+    assert!(output.contains("import \"reflect-metadata\";"));
     assert!(output.contains("import axios from \"axios\";"));
-    assert!(output.contains("import useState from \"react\";"));
+    assert!(output.contains("import { useState } from \"react\";"));
     assert!(output.contains("const apiBase = \"/api\""));
 }
 
@@ -512,6 +550,8 @@ function sumTo(n: i32): i32 {
         .assert()
         .success()
         .stdout(predicate::str::contains("Generating WebAssembly"));
+
+    assert_real_native_wasm(&output_file);
 
     let script = r#"
 const fs = require('fs');
@@ -669,6 +709,8 @@ async function main(): string {
         .arg("ir")
         .assert()
         .success();
+
+    assert_real_native_wasm(&output_file);
 
     let script = r#"
 const fs = require('fs');
@@ -1185,6 +1227,91 @@ WebAssembly.instantiate(bytes, {
     assert!(node_output.status.success(), "{:?}", node_output);
     let stdout = String::from_utf8_lossy(&node_output.stdout);
     assert!(stdout.contains("5"));
+}
+
+#[test]
+fn test_readme_js_examples_compile_on_ir_pipeline() {
+    let cases = [
+        ("enum.arg", Some("const Mode = { Dev: 0, Test: 1, Prod: 2 }")),
+        ("functions.arg", Some("function reduceThree")),
+        ("generic_simple.arg", Some("function Container")),
+        ("interface.arg", Some("function useReader")),
+        ("interop.arg", Some("function processImage")),
+        ("test_lexer.arg", Some("function makeMessage")),
+        ("type_test.arg", Some("const Status = { Ready: 0, Running: 1, Done: 2 }")),
+    ];
+
+    for (file_name, expected_snippet) in cases {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let output_file = temp_dir.path().join("out.js");
+        let source_file = examples_dir().join(file_name);
+
+        let mut cmd = cargo_bin_cmd!("argon");
+        cmd.arg("compile")
+            .arg(&source_file)
+            .arg("--target")
+            .arg("js")
+            .arg("--pipeline")
+            .arg("ir")
+            .arg("-o")
+            .arg(&output_file)
+            .assert()
+            .success();
+
+        let output = fs::read_to_string(&output_file).unwrap();
+        if let Some(expected_snippet) = expected_snippet {
+            assert!(
+                output.contains(expected_snippet),
+                "expected `{expected_snippet}` in output for {file_name}, got:\n{output}"
+            );
+        }
+    }
+}
+
+#[test]
+fn test_run_core_examples_succeed_after_runtime_fixes() {
+    let cases = ["classes.arg", "generic_simple2.arg", "recursion.arg", "type_test.arg"];
+
+    for file_name in cases {
+        let source_file = examples_dir().join(file_name);
+        let mut cmd = cargo_bin_cmd!("argon");
+        cmd.arg("run").arg(&source_file).assert().success();
+    }
+}
+
+#[test]
+fn test_run_compile_only_examples_fail_with_clear_diagnostic() {
+    let cases = ["jsx.arg", "jsx_simple.arg", "esm.arg"];
+
+    for file_name in cases {
+        let source_file = examples_dir().join(file_name);
+        let mut cmd = cargo_bin_cmd!("argon");
+        cmd.arg("run")
+            .arg(&source_file)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("Compile-only feature"));
+    }
+}
+
+#[test]
+fn test_compile_wasm_fails_for_unsupported_native_example() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = examples_dir().join("enum.arg");
+    let output_file = temp_dir.path().join("enum.wasm");
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(&output_file)
+        .arg("--target")
+        .arg("wasm")
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Unsupported"));
 }
 
 #[test]
