@@ -468,6 +468,59 @@ mod try_catch_translation {
     use super::*;
     use crate::Instruction;
 
+    fn nested_contains(instructions: &[Instruction], predicate: fn(&Instruction) -> bool) -> bool {
+        for inst in instructions {
+            if predicate(inst) {
+                return true;
+            }
+
+            let found = match inst {
+                Instruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => nested_contains(then_body, predicate) || nested_contains(else_body, predicate),
+                Instruction::While {
+                    cond_instructions,
+                    body,
+                    ..
+                } => {
+                    nested_contains(cond_instructions, predicate)
+                        || nested_contains(body, predicate)
+                }
+                Instruction::DoWhile {
+                    body,
+                    cond_instructions,
+                    ..
+                } => {
+                    nested_contains(body, predicate)
+                        || nested_contains(cond_instructions, predicate)
+                }
+                Instruction::Loop { body } => nested_contains(body, predicate),
+                Instruction::Try {
+                    try_body,
+                    catch,
+                    finally_body,
+                } => {
+                    nested_contains(try_body, predicate)
+                        || catch
+                            .as_ref()
+                            .is_some_and(|catch| nested_contains(&catch.body, predicate))
+                        || finally_body
+                            .as_ref()
+                            .is_some_and(|body| nested_contains(body, predicate))
+                }
+                _ => false,
+            };
+
+            if found {
+                return true;
+            }
+        }
+
+        false
+    }
+
     #[test]
     fn translates_try_catch_finally() {
         let source = "function f(): void { try { const x = 1; throw x; } catch (e) { const y = e; } finally { const z = 3; } }";
@@ -556,5 +609,61 @@ function recover(flag: bool): i32 {
 
         assert!(saw_nested_if);
         assert!(saw_nested_return);
+    }
+
+    #[test]
+    fn translates_loop_control_inside_try() {
+        let source = r#"
+function countUntil(limit: i32): i32 {
+    let i = 0;
+    try {
+        while (i < limit) {
+            i = i + 1;
+            if (i == 2) {
+                continue;
+            }
+            if (i == 4) {
+                break;
+            }
+        }
+    } finally {
+        const done = true;
+    }
+
+    return i;
+}
+"#;
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+
+        let module = builder.build(&ast).unwrap();
+        let count_until = module
+            .functions
+            .iter()
+            .find(|f| f.id == "countUntil")
+            .unwrap();
+
+        let mut saw_nested_while = false;
+        let mut saw_nested_break = false;
+        let mut saw_nested_continue = false;
+        for block in &count_until.body {
+            for inst in &block.instructions {
+                if let Instruction::Try { try_body, .. } = inst {
+                    if nested_contains(try_body, |inst| matches!(inst, Instruction::While { .. })) {
+                        saw_nested_while = true;
+                    }
+                    if nested_contains(try_body, |inst| matches!(inst, Instruction::Break)) {
+                        saw_nested_break = true;
+                    }
+                    if nested_contains(try_body, |inst| matches!(inst, Instruction::Continue)) {
+                        saw_nested_continue = true;
+                    }
+                }
+            }
+        }
+
+        assert!(saw_nested_while);
+        assert!(saw_nested_break);
+        assert!(saw_nested_continue);
     }
 }

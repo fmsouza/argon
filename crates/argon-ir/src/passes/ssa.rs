@@ -322,6 +322,42 @@ fn inst_values(inst: &Instruction) -> Vec<ValueId> {
             }
             out
         }
+        Instruction::While {
+            cond_instructions,
+            cond,
+            body,
+        } => {
+            let mut out = vec![*cond];
+            for inst in cond_instructions {
+                out.extend(inst_values(inst));
+            }
+            for inst in body {
+                out.extend(inst_values(inst));
+            }
+            out
+        }
+        Instruction::DoWhile {
+            body,
+            cond_instructions,
+            cond,
+        } => {
+            let mut out = vec![*cond];
+            for inst in body {
+                out.extend(inst_values(inst));
+            }
+            for inst in cond_instructions {
+                out.extend(inst_values(inst));
+            }
+            out
+        }
+        Instruction::Loop { body } => {
+            let mut out = Vec::new();
+            for inst in body {
+                out.extend(inst_values(inst));
+            }
+            out
+        }
+        Instruction::Break | Instruction::Continue => Vec::new(),
         Instruction::Return { value } => value.iter().copied().collect(),
         Instruction::Try {
             try_body,

@@ -743,6 +743,72 @@ impl JsCodegen {
                     }
                     self.output.push_str("\n");
                 }
+                IrInst::While {
+                    cond_instructions,
+                    cond,
+                    body,
+                } => {
+                    self.emit_ir_instructions_cfg_with_prefix(cond_instructions, values, prefix)?;
+                    let cond_expr = values
+                        .get(cond)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    self.output.push_str(prefix);
+                    self.output.push_str(&format!("while ({}) {{\n", cond_expr));
+                    let mut nested_prefix = String::new();
+                    nested_prefix.push_str(prefix);
+                    nested_prefix.push_str("    ");
+                    self.emit_ir_instructions_cfg_with_prefix(body, values, &nested_prefix)?;
+                    self.emit_ir_instructions_cfg_with_prefix(
+                        cond_instructions,
+                        values,
+                        &nested_prefix,
+                    )?;
+                    self.output.push_str(prefix);
+                    self.output.push_str("}\n");
+                }
+                IrInst::DoWhile {
+                    body,
+                    cond_instructions,
+                    cond,
+                } => {
+                    self.output.push_str(prefix);
+                    self.output.push_str("do {\n");
+                    let mut nested_prefix = String::new();
+                    nested_prefix.push_str(prefix);
+                    nested_prefix.push_str("    ");
+                    self.emit_ir_instructions_cfg_with_prefix(body, values, &nested_prefix)?;
+                    self.emit_ir_instructions_cfg_with_prefix(
+                        cond_instructions,
+                        values,
+                        &nested_prefix,
+                    )?;
+                    let cond_expr = values
+                        .get(cond)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    self.output.push_str(prefix);
+                    self.output
+                        .push_str(&format!("}} while ({});\n", cond_expr));
+                }
+                IrInst::Loop { body } => {
+                    self.output.push_str(prefix);
+                    self.output.push_str("while (true) {\n");
+                    let mut nested_prefix = String::new();
+                    nested_prefix.push_str(prefix);
+                    nested_prefix.push_str("    ");
+                    self.emit_ir_instructions_cfg_with_prefix(body, values, &nested_prefix)?;
+                    self.output.push_str(prefix);
+                    self.output.push_str("}\n");
+                }
+                IrInst::Break => {
+                    self.output.push_str(prefix);
+                    self.output.push_str("break;\n");
+                }
+                IrInst::Continue => {
+                    self.output.push_str(prefix);
+                    self.output.push_str("continue;\n");
+                }
                 IrInst::Return { value } => {
                     self.output.push_str(prefix);
                     self.output.push_str("return");
@@ -974,6 +1040,72 @@ impl JsCodegen {
                         self.output.push_str("}");
                     }
                     self.output.push_str("\n");
+                }
+                IrInst::While {
+                    cond_instructions,
+                    cond,
+                    body,
+                } => {
+                    self.emit_ir_instructions_block_with_prefix(cond_instructions, values, prefix)?;
+                    let cond_expr = values
+                        .get(cond)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    self.output.push_str(prefix);
+                    self.output.push_str(&format!("while ({}) {{\n", cond_expr));
+                    let mut nested_prefix = String::new();
+                    nested_prefix.push_str(prefix);
+                    nested_prefix.push_str("    ");
+                    self.emit_ir_instructions_block_with_prefix(body, values, &nested_prefix)?;
+                    self.emit_ir_instructions_block_with_prefix(
+                        cond_instructions,
+                        values,
+                        &nested_prefix,
+                    )?;
+                    self.output.push_str(prefix);
+                    self.output.push_str("}\n");
+                }
+                IrInst::DoWhile {
+                    body,
+                    cond_instructions,
+                    cond,
+                } => {
+                    self.output.push_str(prefix);
+                    self.output.push_str("do {\n");
+                    let mut nested_prefix = String::new();
+                    nested_prefix.push_str(prefix);
+                    nested_prefix.push_str("    ");
+                    self.emit_ir_instructions_block_with_prefix(body, values, &nested_prefix)?;
+                    self.emit_ir_instructions_block_with_prefix(
+                        cond_instructions,
+                        values,
+                        &nested_prefix,
+                    )?;
+                    let cond_expr = values
+                        .get(cond)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    self.output.push_str(prefix);
+                    self.output
+                        .push_str(&format!("}} while ({});\n", cond_expr));
+                }
+                IrInst::Loop { body } => {
+                    self.output.push_str(prefix);
+                    self.output.push_str("while (true) {\n");
+                    let mut nested_prefix = String::new();
+                    nested_prefix.push_str(prefix);
+                    nested_prefix.push_str("    ");
+                    self.emit_ir_instructions_block_with_prefix(body, values, &nested_prefix)?;
+                    self.output.push_str(prefix);
+                    self.output.push_str("}\n");
+                }
+                IrInst::Break => {
+                    self.output.push_str(prefix);
+                    self.output.push_str("break;\n");
+                }
+                IrInst::Continue => {
+                    self.output.push_str(prefix);
+                    self.output.push_str("continue;\n");
                 }
                 IrInst::Return { value } => {
                     self.output.push_str(prefix);

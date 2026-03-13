@@ -90,6 +90,21 @@ pub enum Instruction {
         then_body: Vec<Instruction>,
         else_body: Vec<Instruction>,
     },
+    While {
+        cond_instructions: Vec<Instruction>,
+        cond: ValueId,
+        body: Vec<Instruction>,
+    },
+    DoWhile {
+        body: Vec<Instruction>,
+        cond_instructions: Vec<Instruction>,
+        cond: ValueId,
+    },
+    Loop {
+        body: Vec<Instruction>,
+    },
+    Break,
+    Continue,
     Return {
         value: Option<ValueId>,
     },
@@ -776,6 +791,73 @@ impl IrBuilder {
                     None
                 };
                 instructions.push(Instruction::Return { value });
+                Ok(())
+            }
+            Stmt::While(w) => {
+                let mut cond_instructions = Vec::new();
+                let cond = self.translate_expression(&w.condition, &mut cond_instructions)?;
+                let body = self.translate_flat_stmt_to_vec(w.body.as_ref())?;
+                instructions.push(Instruction::While {
+                    cond_instructions,
+                    cond,
+                    body,
+                });
+                Ok(())
+            }
+            Stmt::DoWhile(d) => {
+                let body = self.translate_flat_stmt_to_vec(d.body.as_ref())?;
+                let mut cond_instructions = Vec::new();
+                let cond = self.translate_expression(&d.condition, &mut cond_instructions)?;
+                instructions.push(Instruction::DoWhile {
+                    body,
+                    cond_instructions,
+                    cond,
+                });
+                Ok(())
+            }
+            Stmt::Loop(l) => {
+                let body = self.translate_flat_stmt_to_vec(l.body.as_ref())?;
+                instructions.push(Instruction::Loop { body });
+                Ok(())
+            }
+            Stmt::Break(_) => {
+                instructions.push(Instruction::Break);
+                Ok(())
+            }
+            Stmt::Continue(_) => {
+                instructions.push(Instruction::Continue);
+                Ok(())
+            }
+            Stmt::Try(t) => {
+                let try_body = self.translate_flat_stmt_list(&t.block.statements)?;
+
+                let catch = if let Some(ref h) = t.handler {
+                    let param = match &h.param {
+                        None => None,
+                        Some(Pattern::Identifier(id)) => Some(id.name.sym.clone()),
+                        Some(_) => {
+                            return Err(IrError::Unsupported(
+                                "catch parameter pattern".to_string(),
+                            ));
+                        }
+                    };
+                    let body = self.translate_flat_stmt_list(&h.body.statements)?;
+                    Some(TryCatch { param, body })
+                } else {
+                    None
+                };
+
+                let finally_body = if let Some(ref f) = t.finalizer {
+                    Some(self.translate_flat_stmt_list(&f.statements)?)
+                } else {
+                    None
+                };
+
+                instructions.push(Instruction::Try {
+                    try_body,
+                    catch,
+                    finally_body,
+                });
                 Ok(())
             }
             Stmt::Block(b) => {

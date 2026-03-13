@@ -10,6 +10,8 @@ use wasm_encoder::*;
 const HEAP_PTR_GLOBAL_INDEX: u32 = 0;
 const PENDING_THROW: i32 = 1;
 const PENDING_RETURN: i32 = 2;
+const PENDING_BREAK: i32 = 3;
+const PENDING_CONTINUE: i32 = 4;
 
 pub struct WasmCodegen {}
 
@@ -612,6 +614,37 @@ impl<'a> ModuleLowerer<'a> {
         wasm_fn.instruction(&Instruction::End);
     }
 
+    fn clear_pending_control(&self, wasm_fn: &mut Function, ctx: &FunctionCtx<'_>) {
+        wasm_fn.instruction(&Instruction::I32Const(0));
+        wasm_fn.instruction(&Instruction::LocalSet(ctx.pending_control_kind_local));
+        wasm_fn.instruction(&Instruction::I32Const(0));
+        wasm_fn.instruction(&Instruction::LocalSet(ctx.pending_control_value_local));
+    }
+
+    fn emit_loop_control_handling(
+        &self,
+        wasm_fn: &mut Function,
+        ctx: &FunctionCtx<'_>,
+        continue_depth: u32,
+        break_depth: u32,
+    ) {
+        wasm_fn.instruction(&Instruction::LocalGet(ctx.pending_control_kind_local));
+        wasm_fn.instruction(&Instruction::I32Const(PENDING_CONTINUE));
+        wasm_fn.instruction(&Instruction::I32Eq);
+        wasm_fn.instruction(&Instruction::If(BlockType::Empty));
+        self.clear_pending_control(wasm_fn, ctx);
+        wasm_fn.instruction(&Instruction::Br(continue_depth));
+        wasm_fn.instruction(&Instruction::End);
+
+        wasm_fn.instruction(&Instruction::LocalGet(ctx.pending_control_kind_local));
+        wasm_fn.instruction(&Instruction::I32Const(PENDING_BREAK));
+        wasm_fn.instruction(&Instruction::I32Eq);
+        wasm_fn.instruction(&Instruction::If(BlockType::Empty));
+        self.clear_pending_control(wasm_fn, ctx);
+        wasm_fn.instruction(&Instruction::Br(break_depth));
+        wasm_fn.instruction(&Instruction::End);
+    }
+
     fn emit_instruction(
         &mut self,
         wasm_fn: &mut Function,
@@ -1091,6 +1124,87 @@ impl<'a> ModuleLowerer<'a> {
                 }
                 wasm_fn.instruction(&Instruction::End);
             }
+            IrInstruction::While {
+                cond_instructions,
+                cond,
+                body,
+            } => {
+                wasm_fn.instruction(&Instruction::Block(BlockType::Empty));
+                wasm_fn.instruction(&Instruction::Loop(BlockType::Empty));
+                self.emit_guarded_nested_instructions(wasm_fn, cond_instructions, ctx)?;
+                wasm_fn.instruction(&Instruction::LocalGet(value_local(ctx.params_count, *cond)));
+                wasm_fn.instruction(&Instruction::If(BlockType::Empty));
+                self.emit_guarded_nested_instructions(wasm_fn, body, ctx)?;
+                self.emit_loop_control_handling(wasm_fn, ctx, 2, 3);
+                wasm_fn.instruction(&Instruction::LocalGet(ctx.pending_control_kind_local));
+                wasm_fn.instruction(&Instruction::I32Eqz);
+                wasm_fn.instruction(&Instruction::If(BlockType::Empty));
+                wasm_fn.instruction(&Instruction::Br(2));
+                wasm_fn.instruction(&Instruction::End);
+                wasm_fn.instruction(&Instruction::End);
+                wasm_fn.instruction(&Instruction::End);
+                wasm_fn.instruction(&Instruction::End);
+            }
+            IrInstruction::DoWhile {
+                body,
+                cond_instructions,
+                cond,
+            } => {
+                wasm_fn.instruction(&Instruction::Block(BlockType::Empty));
+                wasm_fn.instruction(&Instruction::Loop(BlockType::Empty));
+                self.emit_guarded_nested_instructions(wasm_fn, body, ctx)?;
+                wasm_fn.instruction(&Instruction::LocalGet(ctx.pending_control_kind_local));
+                wasm_fn.instruction(&Instruction::I32Const(PENDING_CONTINUE));
+                wasm_fn.instruction(&Instruction::I32Eq);
+                wasm_fn.instruction(&Instruction::If(BlockType::Empty));
+                self.clear_pending_control(wasm_fn, ctx);
+                wasm_fn.instruction(&Instruction::End);
+
+                wasm_fn.instruction(&Instruction::LocalGet(ctx.pending_control_kind_local));
+                wasm_fn.instruction(&Instruction::I32Const(PENDING_BREAK));
+                wasm_fn.instruction(&Instruction::I32Eq);
+                wasm_fn.instruction(&Instruction::If(BlockType::Empty));
+                self.clear_pending_control(wasm_fn, ctx);
+                wasm_fn.instruction(&Instruction::Br(2));
+                wasm_fn.instruction(&Instruction::End);
+
+                self.emit_guarded_nested_instructions(wasm_fn, cond_instructions, ctx)?;
+                wasm_fn.instruction(&Instruction::LocalGet(ctx.pending_control_kind_local));
+                wasm_fn.instruction(&Instruction::I32Eqz);
+                wasm_fn.instruction(&Instruction::If(BlockType::Empty));
+                wasm_fn.instruction(&Instruction::LocalGet(value_local(ctx.params_count, *cond)));
+                wasm_fn.instruction(&Instruction::If(BlockType::Empty));
+                wasm_fn.instruction(&Instruction::Br(2));
+                wasm_fn.instruction(&Instruction::End);
+                wasm_fn.instruction(&Instruction::End);
+                wasm_fn.instruction(&Instruction::End);
+                wasm_fn.instruction(&Instruction::End);
+            }
+            IrInstruction::Loop { body } => {
+                wasm_fn.instruction(&Instruction::Block(BlockType::Empty));
+                wasm_fn.instruction(&Instruction::Loop(BlockType::Empty));
+                self.emit_guarded_nested_instructions(wasm_fn, body, ctx)?;
+                self.emit_loop_control_handling(wasm_fn, ctx, 1, 2);
+                wasm_fn.instruction(&Instruction::LocalGet(ctx.pending_control_kind_local));
+                wasm_fn.instruction(&Instruction::I32Eqz);
+                wasm_fn.instruction(&Instruction::If(BlockType::Empty));
+                wasm_fn.instruction(&Instruction::Br(1));
+                wasm_fn.instruction(&Instruction::End);
+                wasm_fn.instruction(&Instruction::End);
+                wasm_fn.instruction(&Instruction::End);
+            }
+            IrInstruction::Break => {
+                wasm_fn.instruction(&Instruction::I32Const(PENDING_BREAK));
+                wasm_fn.instruction(&Instruction::LocalSet(ctx.pending_control_kind_local));
+                wasm_fn.instruction(&Instruction::I32Const(0));
+                wasm_fn.instruction(&Instruction::LocalSet(ctx.pending_control_value_local));
+            }
+            IrInstruction::Continue => {
+                wasm_fn.instruction(&Instruction::I32Const(PENDING_CONTINUE));
+                wasm_fn.instruction(&Instruction::LocalSet(ctx.pending_control_kind_local));
+                wasm_fn.instruction(&Instruction::I32Const(0));
+                wasm_fn.instruction(&Instruction::LocalSet(ctx.pending_control_value_local));
+            }
             IrInstruction::Return { value } => {
                 if let Some(value) = value {
                     wasm_fn.instruction(&Instruction::LocalGet(value_local(
@@ -1320,6 +1434,58 @@ impl<'a> ModuleLowerer<'a> {
                             ));
                         }
                     }
+                    IrInstruction::While {
+                        cond_instructions,
+                        cond,
+                        body,
+                    } => {
+                        touch_value(&mut max_value, *cond);
+                        for inst in cond_instructions {
+                            max_try_depth = max_try_depth.max(self.plan_nested_inst(
+                                inst,
+                                &mut max_value,
+                                &mut var_names,
+                            ));
+                        }
+                        for inst in body {
+                            max_try_depth = max_try_depth.max(self.plan_nested_inst(
+                                inst,
+                                &mut max_value,
+                                &mut var_names,
+                            ));
+                        }
+                    }
+                    IrInstruction::DoWhile {
+                        body,
+                        cond_instructions,
+                        cond,
+                    } => {
+                        touch_value(&mut max_value, *cond);
+                        for inst in body {
+                            max_try_depth = max_try_depth.max(self.plan_nested_inst(
+                                inst,
+                                &mut max_value,
+                                &mut var_names,
+                            ));
+                        }
+                        for inst in cond_instructions {
+                            max_try_depth = max_try_depth.max(self.plan_nested_inst(
+                                inst,
+                                &mut max_value,
+                                &mut var_names,
+                            ));
+                        }
+                    }
+                    IrInstruction::Loop { body } => {
+                        for inst in body {
+                            max_try_depth = max_try_depth.max(self.plan_nested_inst(
+                                inst,
+                                &mut max_value,
+                                &mut var_names,
+                            ));
+                        }
+                    }
+                    IrInstruction::Break | IrInstruction::Continue => {}
                     IrInstruction::Return { value } => {
                         if let Some(value) = value {
                             touch_value(&mut max_value, *value);
@@ -1477,6 +1643,49 @@ impl<'a> ModuleLowerer<'a> {
                 }
                 nested_depth
             }
+            IrInstruction::While {
+                cond_instructions,
+                cond,
+                body,
+            } => {
+                touch_value(max_value, *cond);
+                let mut nested_depth = 0;
+                for inst in cond_instructions {
+                    nested_depth =
+                        nested_depth.max(self.plan_nested_inst(inst, max_value, var_names));
+                }
+                for inst in body {
+                    nested_depth =
+                        nested_depth.max(self.plan_nested_inst(inst, max_value, var_names));
+                }
+                nested_depth
+            }
+            IrInstruction::DoWhile {
+                body,
+                cond_instructions,
+                cond,
+            } => {
+                touch_value(max_value, *cond);
+                let mut nested_depth = 0;
+                for inst in body {
+                    nested_depth =
+                        nested_depth.max(self.plan_nested_inst(inst, max_value, var_names));
+                }
+                for inst in cond_instructions {
+                    nested_depth =
+                        nested_depth.max(self.plan_nested_inst(inst, max_value, var_names));
+                }
+                nested_depth
+            }
+            IrInstruction::Loop { body } => {
+                let mut nested_depth = 0;
+                for inst in body {
+                    nested_depth =
+                        nested_depth.max(self.plan_nested_inst(inst, max_value, var_names));
+                }
+                nested_depth
+            }
+            IrInstruction::Break | IrInstruction::Continue => 0,
             IrInstruction::Return { value } => {
                 if let Some(value) = value {
                     touch_value(max_value, *value);
@@ -1695,8 +1904,11 @@ mod tests {
     use super::*;
     use std::fs;
     use std::process::Command;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
     use wasmparser::Validator;
+
+    static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     fn compile_source(source: &str) -> Vec<u8> {
         // Assign
@@ -1723,7 +1935,13 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock should be valid")
             .as_nanos();
-        let wasm_path = std::env::temp_dir().join(format!("argon_wasm_test_{}.wasm", nonce));
+        let unique = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let wasm_path = std::env::temp_dir().join(format!(
+            "argon_wasm_test_{}_{}_{}.wasm",
+            std::process::id(),
+            nonce,
+            unique
+        ));
         fs::write(&wasm_path, wasm_bytes).expect("should write wasm fixture");
 
         let script = format!(
@@ -2003,6 +2221,41 @@ mod tests {
 
         // Assert
         assert_eq!(output, "1,7");
+    }
+
+    #[test]
+    fn executes_loop_control_inside_try_standalone() {
+        // Assign
+        let source = r#"
+            function countUntil(limit: i32): i32 {
+                let i = 0;
+                try {
+                    while (i < limit) {
+                        i = i + 1;
+                        if (i == 2) {
+                            continue;
+                        }
+                        if (i == 4) {
+                            break;
+                        }
+                    }
+                } finally {
+                    const done = true;
+                }
+
+                return i;
+            }
+        "#;
+        let wasm = compile_source(source);
+
+        // Act
+        let output = run_node_script(
+            &wasm,
+            "console.log(`${instance.exports.countUntil(3)},${instance.exports.countUntil(10)}`);",
+        );
+
+        // Assert
+        assert_eq!(output, "3,4");
     }
 
     #[test]

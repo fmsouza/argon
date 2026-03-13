@@ -48,8 +48,8 @@ The compiler is considered **complete** for this scope only when all gates pass:
 | IR lowering for `loop` and `for..of` | **Implemented (core)** | Lowered into CFG blocks with index-based `for..of` expansion. |
 | JS codegen + source maps | **Implemented** | IR path and source map generation are working and tested in CLI integration tests. |
 | Runtime execution (`argon run`) for core control flow + structs/classes + `new` + match + for-of + loop | **Implemented (core)** | Added behavior and tests; template interpolation supported at runtime AST level. |
-| WASM backend | **Implemented (host-ABI parity + expanded native standalone)** | Replaced hardcoded `42` with IR-driven lowering + memory model for strings/arrays/object literals, heap-backed member access, struct-literal constructor lowering, direct wasm imports for embedder-supplied functions, native synchronous lowering for internal async/await, native flat and structured `try/catch/finally` lowering for nested `if`/`return` control flow, generated `.mjs` loader + `.host.mjs` companion sidecars, and host fallbacks for JS-heavy async/interop paths. |
-| WASM validation/execution tests | **Implemented (host-ABI parity + expanded native standalone)** | Structural validation + Node execution tests cover native numeric control flow, string/array memory, object/member access, struct-literal lowering, raw standalone wasm execution for async/await, flat and structured try/catch, and direct imports, plus CLI host-ABI execution for loader, async/await, try/catch, and module imports. |
+| WASM backend | **Implemented (host-ABI parity + expanded native standalone)** | Replaced hardcoded `42` with IR-driven lowering + memory model for strings/arrays/object literals, heap-backed member access, struct-literal constructor lowering, direct wasm imports for embedder-supplied functions, native synchronous lowering for internal async/await, native flat and structured `try/catch/finally` lowering for nested `if`/`return` and loop-control flow, generated `.mjs` loader + `.host.mjs` companion sidecars, and host fallbacks for JS-heavy async/interop paths. |
+| WASM validation/execution tests | **Implemented (host-ABI parity + expanded native standalone)** | Structural validation + Node execution tests cover native numeric control flow, string/array memory, object/member access, struct-literal lowering, raw standalone wasm execution for async/await, flat and structured try/catch, loop control inside exception regions, and direct imports, plus CLI host-ABI execution for loader, async/await, try/catch, and module imports. |
 | Example suite parity with README/plan-required language features | **Implemented** | Rewrote and expanded `examples/*.arg` to include decorators/declare-module interop, loop/for-of, struct methods, object literals, template interpolation, async/await, try/catch/finally, interfaces/enums, generics, and a wasm-subset fixture. |
 | `argon-interop` crate tests | **Implemented** | Added crate-local tests for import/export/declaration behavior. |
 | `argon-stdlib` crate tests | **Implemented** | Added crate-local tests for primitives/runtime/definitions. |
@@ -101,6 +101,7 @@ The compiler is considered **complete** for this scope only when all gates pass:
 - [x] Host-ABI fallback path for async/await, try/throw, and import/interop-heavy modules when native wasm lowering is unavailable.
 - [x] Native standalone lowering for internal async/await, flat try/catch/throw, and direct function imports supplied at instantiation time.
 - [x] Native standalone lowering for structured `try/catch/finally` control flow with nested `if`/`return`.
+- [x] Native standalone lowering for loop control inside exception regions (`while`/`do while`/`loop` with `break`/`continue`).
 - [x] Explicit unsupported diagnostics for non-subset operations.
 - [x] Structural validation + execution tests for subset fixtures.
 - [x] Full README parity on WASM target via host ABI sidecars.
@@ -116,7 +117,7 @@ The compiler is considered **complete** for this scope only when all gates pass:
 
 ## Remaining Gaps (Post-Scope Completion)
 
-1. **Raw wasm boundary**: the standalone `.wasm` artifact now covers the expanded native subset, including structured `try/catch/finally` with nested `if`/`return`, but JS-module resolution, promise-backed host interop, and broader arbitrary CFG nesting inside exception regions still rely on the generated sidecars.
+1. **Raw wasm boundary**: the standalone `.wasm` artifact now covers the expanded native subset, including structured `try/catch/finally` with nested `if`/`return` and loop control, but JS-module resolution, promise-backed host interop, and the remaining `for`/`for..of`/`switch`/`match`-shaped exception-region CFG lowering still rely on the generated sidecars.
 
 ---
 
@@ -148,6 +149,7 @@ The compiler is considered **complete** for this scope only when all gates pass:
   - Raw standalone WASM async/await execution
   - Raw standalone WASM flat try/catch execution
   - Raw standalone WASM structured try/catch execution
+  - Raw standalone WASM loop-control-in-try execution
   - Raw standalone WASM direct-import execution
   - WASM loader-sidecar generation/import
   - WASM host-sidecar generation/import
