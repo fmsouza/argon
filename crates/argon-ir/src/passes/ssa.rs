@@ -100,10 +100,8 @@ pub fn build(func: &Function) -> Result<SsaFunction, SsaError> {
             }
             for y in df.get(&x).cloned().unwrap_or_default() {
                 let set = phi_vars.entry(y).or_default();
-                if set.insert(var.clone()) {
-                    if !defs.contains(&y) {
-                        work.push(y);
-                    }
+                if set.insert(var.clone()) && !defs.contains(&y) {
+                    work.push(y);
                 }
             }
         }
@@ -178,6 +176,7 @@ pub fn build(func: &Function) -> Result<SsaFunction, SsaError> {
     })
 }
 
+#[allow(clippy::too_many_arguments, clippy::only_used_in_recursion)]
 fn rename_block(
     func: &Function,
     b: BlockId,

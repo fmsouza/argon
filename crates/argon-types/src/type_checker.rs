@@ -61,6 +61,12 @@ pub struct TypeEnvironment {
     this_ty: Option<TypeId>,
 }
 
+impl Default for TypeEnvironment {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TypeEnvironment {
     pub fn new() -> Self {
         Self {
@@ -237,6 +243,12 @@ pub struct TypeChecker {
     errors: Vec<TypeError>,
     #[allow(dead_code)]
     warnings: Vec<String>,
+}
+
+impl Default for TypeChecker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TypeChecker {
@@ -1487,13 +1499,11 @@ impl TypeChecker {
         }
 
         // Unwrap reference-like shells.
-        loop {
-            match self.type_table.get(obj_ty).cloned() {
-                Some(CompType::Ref(inner))
-                | Some(CompType::MutRef(inner))
-                | Some(CompType::Shared(inner)) => obj_ty = inner,
-                _ => break,
-            }
+        while let Some(CompType::Ref(inner))
+        | Some(CompType::MutRef(inner))
+        | Some(CompType::Shared(inner)) = self.type_table.get(obj_ty).cloned()
+        {
+            obj_ty = inner;
         }
 
         let prop_name = match &*m.property {

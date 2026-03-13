@@ -784,6 +784,7 @@ impl<'a> Lexer<'a> {
         Token::new(TokenKind::JsxChild, self.start..self.position)
     }
 
+    #[allow(dead_code)]
     fn make_jsx_attribute_token(&mut self) -> Token {
         let _attr_name = self.read_jsx_identifier();
 

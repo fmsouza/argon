@@ -215,19 +215,10 @@ pub struct TypeParam {
     pub default: Option<TypeId>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TypeTable {
     types: Vec<Type>,
     names: HashMap<String, TypeId>,
-}
-
-impl Default for TypeTable {
-    fn default() -> Self {
-        Self {
-            types: Vec::new(),
-            names: HashMap::new(),
-        }
-    }
 }
 
 impl TypeTable {

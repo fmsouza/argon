@@ -4,6 +4,12 @@ use std::collections::HashMap;
 
 pub struct StdLib;
 
+impl Default for StdLib {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StdLib {
     pub fn new() -> Self {
         Self

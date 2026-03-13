@@ -201,7 +201,7 @@ fn compile(
         Target::Js => {
             println!("Generating JavaScript...");
             let output_path = output
-                .map(|p| p.clone())
+                .cloned()
                 .unwrap_or_else(|| PathBuf::from("output.js"));
 
             let mut js = artifacts.js.unwrap_or_default();
@@ -220,7 +220,7 @@ fn compile(
                         .unwrap_or("output.js.map");
                     js.push_str("\n//# sourceMappingURL=");
                     js.push_str(map_file);
-                    js.push_str("\n");
+                    js.push('\n');
                     println!("Wrote {}", map_path.display());
                 }
             }
@@ -238,7 +238,7 @@ fn compile(
             println!("Generating WebAssembly...");
             let wasm_bytes = artifacts.wasm.unwrap_or_default();
             let output_path = output
-                .map(|p| p.clone())
+                .cloned()
                 .unwrap_or_else(|| PathBuf::from("output.wasm"));
             fs::write(&output_path, &wasm_bytes)?;
             println!("Wrote {}", output_path.display());
@@ -488,7 +488,7 @@ fn run_test_file_with_pipeline(
         .compile(&source, &source_name, &options)
         .map_err(|e| {
             if let Some(diag) = e.diagnostics() {
-                format!("{}", diag.rendered)
+                diag.rendered.to_string()
             } else {
                 format!("{}", e)
             }
@@ -596,7 +596,7 @@ fn format_file(
         prev_char = c;
     }
 
-    let output_path = output.map(|p| p.clone()).unwrap_or_else(|| input.clone());
+    let output_path = output.cloned().unwrap_or_else(|| input.clone());
 
     fs::write(&output_path, &formatted)?;
     println!("Formatted {}", output_path.display());
@@ -611,8 +611,8 @@ fn init_project(name: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     fs::create_dir_all(&dir)?;
-    fs::create_dir_all(&dir.join("src"))?;
-    fs::create_dir_all(&dir.join("dist"))?;
+    fs::create_dir_all(dir.join("src"))?;
+    fs::create_dir_all(dir.join("dist"))?;
 
     fs::write(
         dir.join("package.json"),
@@ -664,6 +664,7 @@ main();
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn watch(
     input: &PathBuf,
     output: Option<&PathBuf>,

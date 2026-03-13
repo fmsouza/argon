@@ -16,6 +16,12 @@ pub struct JsCodegen {
     loop_label_counter: usize,
 }
 
+impl Default for JsCodegen {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl JsCodegen {
     pub fn new() -> Self {
         Self {
@@ -58,7 +64,7 @@ impl JsCodegen {
             // Runtime is currently an IIFE; in ESM contexts this must run with `globalThis` (handled in stdlib).
             let runtime = StdLib::get_runtime();
             self.output.push_str(runtime);
-            self.output.push_str("\n");
+            self.output.push('\n');
         }
 
         // Emit struct constructors.
@@ -97,7 +103,7 @@ impl JsCodegen {
             self.output.push_str(";\n");
         }
         if !_module.globals.is_empty() {
-            self.output.push_str("\n");
+            self.output.push('\n');
         }
 
         // Emit all non-init functions.
@@ -361,7 +367,7 @@ impl JsCodegen {
         let runtime_line_count = if self.include_runtime {
             let runtime = StdLib::get_runtime();
             self.output.push_str(runtime);
-            self.output.push_str("\n");
+            self.output.push('\n');
             runtime.lines().count() + 1
         } else {
             1
@@ -424,7 +430,7 @@ impl JsCodegen {
             }
             self.output.push_str("function ");
             self.output.push_str(&func.id);
-            self.output.push_str("(");
+            self.output.push('(');
             for (i, p) in func.params.iter().enumerate() {
                 if i > 0 {
                     self.output.push_str(", ");
@@ -453,7 +459,7 @@ impl JsCodegen {
             }
             self.output.push_str("function ");
             self.output.push_str(&func.id);
-            self.output.push_str("(");
+            self.output.push('(');
             for (i, p) in func.params.iter().enumerate() {
                 if i > 0 {
                     self.output.push_str(", ");
@@ -739,7 +745,7 @@ impl JsCodegen {
                     nested_prefix.push_str("    ");
                     self.emit_ir_instructions_cfg_with_prefix(then_body, values, &nested_prefix)?;
                     self.output.push_str(prefix);
-                    self.output.push_str("}");
+                    self.output.push('}');
                     if !else_body.is_empty() {
                         self.output.push_str(" else {\n");
                         self.emit_ir_instructions_cfg_with_prefix(
@@ -748,9 +754,9 @@ impl JsCodegen {
                             &nested_prefix,
                         )?;
                         self.output.push_str(prefix);
-                        self.output.push_str("}");
+                        self.output.push('}');
                     }
-                    self.output.push_str("\n");
+                    self.output.push('\n');
                 }
                 IrInst::While {
                     cond_instructions,
@@ -914,29 +920,29 @@ impl JsCodegen {
                     nested_prefix.push_str("    ");
                     self.emit_ir_instructions_cfg_with_prefix(try_body, values, &nested_prefix)?;
                     self.output.push_str(prefix);
-                    self.output.push_str("}");
+                    self.output.push('}');
 
                     if let Some(c) = catch {
                         self.output.push_str(" catch");
                         if let Some(ref p) = c.param {
                             self.output.push_str(" (");
                             self.output.push_str(p);
-                            self.output.push_str(")");
+                            self.output.push(')');
                         }
                         self.output.push_str(" {\n");
                         self.emit_ir_instructions_cfg_with_prefix(&c.body, values, &nested_prefix)?;
                         self.output.push_str(prefix);
-                        self.output.push_str("}");
+                        self.output.push('}');
                     }
 
                     if let Some(f) = finally_body {
                         self.output.push_str(" finally {\n");
                         self.emit_ir_instructions_cfg_with_prefix(f, values, &nested_prefix)?;
                         self.output.push_str(prefix);
-                        self.output.push_str("}");
+                        self.output.push('}');
                     }
 
-                    self.output.push_str("\n");
+                    self.output.push('\n');
                 }
                 IrInst::VarDecl { name, init, .. } => {
                     self.output.push_str(prefix);
@@ -1033,7 +1039,7 @@ impl JsCodegen {
                         continue_prelude,
                     )?;
                     self.output.push_str(prefix);
-                    self.output.push_str("}");
+                    self.output.push('}');
                     if !else_body.is_empty() {
                         self.output.push_str(" else {\n");
                         self.emit_ir_loop_body_cfg_with_prefix(
@@ -1044,9 +1050,9 @@ impl JsCodegen {
                             continue_prelude,
                         )?;
                         self.output.push_str(prefix);
-                        self.output.push_str("}");
+                        self.output.push('}');
                     }
-                    self.output.push_str("\n");
+                    self.output.push('\n');
                 }
                 IrInst::While {
                     cond_instructions,
@@ -1315,7 +1321,7 @@ impl JsCodegen {
                     self.emit_ir_instructions_block_with_prefix(then_body, values, &nested_prefix)?;
 
                     self.output.push_str(prefix);
-                    self.output.push_str("}");
+                    self.output.push('}');
                     if !else_body.is_empty() {
                         self.output.push_str(" else {\n");
                         self.emit_ir_instructions_block_with_prefix(
@@ -1324,9 +1330,9 @@ impl JsCodegen {
                             &nested_prefix,
                         )?;
                         self.output.push_str(prefix);
-                        self.output.push_str("}");
+                        self.output.push('}');
                     }
-                    self.output.push_str("\n");
+                    self.output.push('\n');
                 }
                 IrInst::While {
                     cond_instructions,
@@ -1492,14 +1498,14 @@ impl JsCodegen {
                     self.emit_ir_instructions_block_with_prefix(try_body, values, &nested_prefix)?;
 
                     self.output.push_str(prefix);
-                    self.output.push_str("}");
+                    self.output.push('}');
 
                     if let Some(c) = catch {
                         self.output.push_str(" catch");
                         if let Some(ref p) = c.param {
                             self.output.push_str(" (");
                             self.output.push_str(p);
-                            self.output.push_str(")");
+                            self.output.push(')');
                         }
                         self.output.push_str(" {\n");
                         self.emit_ir_instructions_block_with_prefix(
@@ -1508,17 +1514,17 @@ impl JsCodegen {
                             &nested_prefix,
                         )?;
                         self.output.push_str(prefix);
-                        self.output.push_str("}");
+                        self.output.push('}');
                     }
 
                     if let Some(f) = finally_body {
                         self.output.push_str(" finally {\n");
                         self.emit_ir_instructions_block_with_prefix(f, values, &nested_prefix)?;
                         self.output.push_str(prefix);
-                        self.output.push_str("}");
+                        self.output.push('}');
                     }
 
-                    self.output.push_str("\n");
+                    self.output.push('\n');
                 }
                 IrInst::Member {
                     object,
@@ -1734,7 +1740,7 @@ impl JsCodegen {
                         continue_prelude,
                     )?;
                     self.output.push_str(prefix);
-                    self.output.push_str("}");
+                    self.output.push('}');
                     if !else_body.is_empty() {
                         self.output.push_str(" else {\n");
                         self.emit_ir_loop_body_block_with_prefix(
@@ -1745,9 +1751,9 @@ impl JsCodegen {
                             continue_prelude,
                         )?;
                         self.output.push_str(prefix);
-                        self.output.push_str("}");
+                        self.output.push('}');
                     }
-                    self.output.push_str("\n");
+                    self.output.push('\n');
                 }
                 IrInst::While {
                     cond_instructions,
@@ -1959,7 +1965,7 @@ impl JsCodegen {
             Stmt::Return(r) => {
                 self.output.push_str("return");
                 if let Some(ref arg) = r.argument {
-                    self.output.push_str(" ");
+                    self.output.push(' ');
                     self.generate_expression(arg)?;
                 }
                 self.output.push_str(";\n");
@@ -2135,7 +2141,7 @@ impl JsCodegen {
         };
 
         self.output.push_str(keyword);
-        self.output.push_str(" ");
+        self.output.push(' ');
 
         for (i, decl) in v.declarations.iter().enumerate() {
             if i > 0 {
@@ -2162,7 +2168,7 @@ impl JsCodegen {
         if let Some(ref id) = f.id {
             self.output.push_str(&id.sym);
         }
-        self.output.push_str("(");
+        self.output.push('(');
 
         for (i, p) in f.params.iter().enumerate() {
             if i > 0 {
@@ -2210,7 +2216,7 @@ impl JsCodegen {
         // Generate a constructor function for the class
         self.output.push_str("function ");
         self.output.push_str(&c.id.sym);
-        self.output.push_str("(");
+        self.output.push('(');
 
         // Find constructor and get its params
         let mut has_constructor = false;
@@ -2233,7 +2239,7 @@ impl JsCodegen {
         }
 
         if !has_constructor {
-            self.output.push_str(")");
+            self.output.push(')');
         }
 
         self.output.push_str(") {\n");
@@ -2319,23 +2325,23 @@ impl JsCodegen {
             Expr::New(n) => {
                 self.output.push_str("new ");
                 self.generate_expression(&n.callee)?;
-                self.output.push_str("(");
+                self.output.push('(');
                 for arg in &n.arguments {
                     if let ExprOrSpread::Expr(e) = arg {
                         self.generate_expression(e)?;
                     }
                 }
-                self.output.push_str(")");
+                self.output.push(')');
                 Ok(())
             }
             Expr::Conditional(c) => {
-                self.output.push_str("(");
+                self.output.push('(');
                 self.generate_expression(&c.test)?;
                 self.output.push_str(" ? ");
                 self.generate_expression(&c.consequent)?;
                 self.output.push_str(" : ");
                 self.generate_expression(&c.alternate)?;
-                self.output.push_str(")");
+                self.output.push(')');
                 Ok(())
             }
             Expr::Object(o) => self.generate_object(o),
@@ -2379,7 +2385,7 @@ impl JsCodegen {
     }
 
     fn generate_binary(&mut self, b: &BinaryExpr) -> Result<(), CodegenError> {
-        self.output.push_str("(");
+        self.output.push('(');
         self.generate_expression(&b.left)?;
 
         let op = match b.operator {
@@ -2406,7 +2412,7 @@ impl JsCodegen {
 
         self.output.push_str(&format!(" {} ", op));
         self.generate_expression(&b.right)?;
-        self.output.push_str(")");
+        self.output.push(')');
         Ok(())
     }
 
@@ -2457,7 +2463,7 @@ impl JsCodegen {
             }
         }
 
-        self.output.push_str(")");
+        self.output.push(')');
         Ok(())
     }
 
@@ -2470,7 +2476,7 @@ impl JsCodegen {
             }
             self.generate_jsx_child(child)?;
         }
-        self.output.push_str(")");
+        self.output.push(')');
         Ok(())
     }
 
@@ -2521,7 +2527,7 @@ impl JsCodegen {
                     self.output.push_str(name);
                     self.output.push_str(": (");
                     self.generate_expression(e)?;
-                    self.output.push_str(")");
+                    self.output.push(')');
                 }
                 JsxAttributeValue::Element(_) | JsxAttributeValue::Fragment(_) => {
                     self.output.push_str(name);
@@ -2549,7 +2555,7 @@ impl JsCodegen {
             JsxChild::Element(e) => {
                 self.output.push_str("React.createElement(");
                 self.generate_jsx_element(e)?;
-                self.output.push_str(")");
+                self.output.push(')');
             }
             JsxChild::Fragment(f) => {
                 self.output.push_str("React.Fragment(null, [");
@@ -2583,7 +2589,7 @@ impl JsCodegen {
                             self.generate_expression(e)?;
                         }
                     }
-                    self.output.push_str(")");
+                    self.output.push(')');
                     return Ok(());
                 }
                 "None" => {
@@ -2600,7 +2606,7 @@ impl JsCodegen {
                             self.generate_expression(e)?;
                         }
                     }
-                    self.output.push_str(")");
+                    self.output.push(')');
                     return Ok(());
                 }
                 "Err" => {
@@ -2613,7 +2619,7 @@ impl JsCodegen {
                             self.generate_expression(e)?;
                         }
                     }
-                    self.output.push_str(")");
+                    self.output.push(')');
                     return Ok(());
                 }
                 "Vec" => {
@@ -2626,7 +2632,7 @@ impl JsCodegen {
                             self.generate_expression(e)?;
                         }
                     }
-                    self.output.push_str(")");
+                    self.output.push(')');
                     return Ok(());
                 }
                 "Shared" => {
@@ -2639,7 +2645,7 @@ impl JsCodegen {
                             self.generate_expression(e)?;
                         }
                     }
-                    self.output.push_str(")");
+                    self.output.push(')');
                     return Ok(());
                 }
                 _ => {}
@@ -2666,7 +2672,7 @@ impl JsCodegen {
                                                     self.generate_expression(e)?;
                                                 }
                                             }
-                                            self.output.push_str(")");
+                                            self.output.push(')');
                                             return Ok(());
                                         }
                                         "None" => {
@@ -2688,7 +2694,7 @@ impl JsCodegen {
                                                     self.generate_expression(e)?;
                                                 }
                                             }
-                                            self.output.push_str(")");
+                                            self.output.push(')');
                                             return Ok(());
                                         }
                                         "Err" => {
@@ -2701,7 +2707,7 @@ impl JsCodegen {
                                                     self.generate_expression(e)?;
                                                 }
                                             }
-                                            self.output.push_str(")");
+                                            self.output.push(')');
                                             return Ok(());
                                         }
                                         _ => {}
@@ -2715,7 +2721,7 @@ impl JsCodegen {
         }
 
         self.generate_expression(&c.callee)?;
-        self.output.push_str("(");
+        self.output.push('(');
         for (i, arg) in c.arguments.iter().enumerate() {
             if i > 0 {
                 self.output.push_str(", ");
@@ -2724,7 +2730,7 @@ impl JsCodegen {
                 self.generate_expression(e)?;
             }
         }
-        self.output.push_str(")");
+        self.output.push(')');
         Ok(())
     }
 
@@ -2756,11 +2762,11 @@ impl JsCodegen {
         self.generate_expression(&m.object)?;
 
         if m.computed {
-            self.output.push_str("[");
+            self.output.push('[');
             self.generate_expression(&m.property)?;
-            self.output.push_str("]");
+            self.output.push(']');
         } else {
-            self.output.push_str(".");
+            self.output.push('.');
             self.generate_expression(&m.property)?;
         }
         Ok(())
@@ -2793,7 +2799,7 @@ impl JsCodegen {
             }
             AssignmentTarget::Member(member) => {
                 self.generate_expression(&member.object)?;
-                self.output.push_str(".");
+                self.output.push('.');
                 self.generate_expression(&member.property)?;
             }
             _ => {
@@ -2846,16 +2852,16 @@ impl JsCodegen {
             }
         }
 
-        self.output.push_str(";");
+        self.output.push(';');
 
         if let Some(ref test) = f.test {
-            self.output.push_str(" ");
+            self.output.push(' ');
             self.generate_expression(test)?;
         }
 
-        if f.update.is_some() {
+        if let Some(update) = &f.update {
             self.output.push_str("; ");
-            self.generate_expression(f.update.as_ref().unwrap())?;
+            self.generate_expression(update)?;
         }
 
         self.output.push_str(") ");
@@ -3001,7 +3007,7 @@ impl JsCodegen {
         if let Some(ref id) = f.id {
             self.output.push_str(&id.sym);
         }
-        self.output.push_str("(");
+        self.output.push('(');
 
         for (i, p) in f.params.iter().enumerate() {
             if i > 0 {
@@ -3076,7 +3082,7 @@ impl JsCodegen {
         if let Some(ref handler) = t.handler {
             self.output.push_str("} catch ");
             if let Some(ref param) = handler.param {
-                self.output.push_str("(");
+                self.output.push('(');
                 if let Pattern::Identifier(id) = param {
                     self.output.push_str(&id.name.sym);
                 }
@@ -3422,7 +3428,7 @@ fn append_enum_initializer(output: &mut String, expr: &Expr) {
             output.push_str(if b.value { "true" } else { "false" });
         }
         Expr::Identifier(id) => output.push_str(&id.sym),
-        _ => output.push_str("0"),
+        _ => output.push('0'),
     }
 }
 
@@ -3459,7 +3465,7 @@ fn type_to_ts_string(ty: &argon_ast::Type) -> String {
                     id.sym.clone()
                 } else {
                     let args: Vec<String> =
-                        r.type_args.iter().map(|t| type_to_ts_string(t)).collect();
+                        r.type_args.iter().map(type_to_ts_string).collect();
                     format!("{}<{}>", id.sym, args.join(", "))
                 }
             } else {
@@ -3486,11 +3492,11 @@ fn type_to_ts_string(ty: &argon_ast::Type) -> String {
             )
         }
         argon_ast::Type::Union(u) => {
-            let types: Vec<String> = u.types.iter().map(|t| type_to_ts_string(t)).collect();
+            let types: Vec<String> = u.types.iter().map(type_to_ts_string).collect();
             types.join(" | ")
         }
         argon_ast::Type::Intersection(i) => {
-            let types: Vec<String> = i.types.iter().map(|t| type_to_ts_string(t)).collect();
+            let types: Vec<String> = i.types.iter().map(type_to_ts_string).collect();
             types.join(" & ")
         }
         _ => "any".to_string(),

@@ -46,6 +46,12 @@ pub struct InteropGenerator {
     shared_wrappers: HashMap<String, String>,
 }
 
+impl Default for InteropGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InteropGenerator {
     pub fn new() -> Self {
         let mut gen = Self {

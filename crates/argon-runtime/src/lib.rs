@@ -49,6 +49,12 @@ pub struct Scope {
     values: HashMap<String, Value>,
 }
 
+impl Default for Scope {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Scope {
     pub fn new() -> Self {
         Self {
@@ -81,6 +87,12 @@ pub struct Runtime {
     globals: HashMap<String, Value>,
     struct_defs: HashMap<String, RuntimeStructDef>,
     class_defs: HashMap<String, RuntimeClassDef>,
+}
+
+impl Default for Runtime {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Runtime {

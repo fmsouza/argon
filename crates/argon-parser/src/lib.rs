@@ -2473,6 +2473,7 @@ impl Parser {
     }
 
     fn parse_jsx_element(&mut self) -> Result<argon_ast::Expr, ParseError> {
+        #[allow(unused_imports)]
         use argon_ast::*;
 
         if self.match_one(&[TokenKind::JsxFragmentOpen]) {
@@ -3372,6 +3373,7 @@ impl Parser {
         Ok(args)
     }
 
+    #[allow(dead_code)]
     fn parse_type_args(&mut self) -> Result<Vec<argon_ast::Type>, ParseError> {
         self.parse_type_args_opt()
     }

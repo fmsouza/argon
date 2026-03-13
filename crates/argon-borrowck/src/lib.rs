@@ -120,6 +120,12 @@ pub struct BorrowChecker {
     borrow_bindings: HashMap<String, BorrowBinding>,
 }
 
+impl Default for BorrowChecker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BorrowChecker {
     pub fn new() -> Self {
         Self {
@@ -532,18 +538,16 @@ impl BorrowChecker {
                 }
             }
             Expr::Array(a) => {
-                for elem in &a.elements {
-                    if let Some(elem) = elem {
-                        match elem {
-                            ExprOrSpread::Expr(e) => {
-                                self.collect_called_functions_from_expr(e, functions, called)
-                            }
-                            ExprOrSpread::Spread(s) => self.collect_called_functions_from_expr(
-                                &s.argument,
-                                functions,
-                                called,
-                            ),
+                for elem in a.elements.iter().flatten() {
+                    match elem {
+                        ExprOrSpread::Expr(e) => {
+                            self.collect_called_functions_from_expr(e, functions, called)
                         }
+                        ExprOrSpread::Spread(s) => self.collect_called_functions_from_expr(
+                            &s.argument,
+                            functions,
+                            called,
+                        ),
                     }
                 }
             }
@@ -2329,6 +2333,7 @@ impl BorrowChecker {
         matches!(pattern, Expr::Identifier(id) if id.sym == "_")
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn merge_branch_outcomes(
         &mut self,
         base_locals: &HashMap<String, VariableState>,
@@ -2385,6 +2390,7 @@ impl BorrowChecker {
         Ok(())
     }
 
+    #[allow(clippy::type_complexity)]
     fn evaluate_match_case_branch(
         &mut self,
         case: &MatchCase,
@@ -2425,6 +2431,7 @@ impl BorrowChecker {
         ))
     }
 
+    #[allow(clippy::type_complexity)]
     fn evaluate_switch_case_branch(
         &mut self,
         case: &SwitchCase,
@@ -2466,6 +2473,7 @@ impl BorrowChecker {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn push_base_branch_outcome(
         branch_locals: &mut Vec<HashMap<String, VariableState>>,
         branch_borrows: &mut Vec<HashMap<String, Vec<Borrow>>>,
@@ -2695,13 +2703,11 @@ impl BorrowChecker {
                 }
             }
             Expr::Array(a) => {
-                for elem in &a.elements {
-                    if let Some(elem) = elem {
-                        match elem {
-                            ExprOrSpread::Expr(e) => self.count_identifier_uses_in_expr(e, uses),
-                            ExprOrSpread::Spread(s) => {
-                                self.count_identifier_uses_in_expr(&s.argument, uses)
-                            }
+                for elem in a.elements.iter().flatten() {
+                    match elem {
+                        ExprOrSpread::Expr(e) => self.count_identifier_uses_in_expr(e, uses),
+                        ExprOrSpread::Spread(s) => {
+                            self.count_identifier_uses_in_expr(&s.argument, uses)
                         }
                     }
                 }
@@ -3986,7 +3992,7 @@ impl BorrowChecker {
 
                 self.active_borrows
                     .entry(id.sym.clone())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(borrow);
             }
             self.consume_identifier_use(&id.sym)?;
@@ -4274,7 +4280,7 @@ impl BorrowChecker {
     }
 
     fn check_return_clears_borrows(&mut self) {
-        for (_, state) in &mut self.locals {
+        for state in self.locals.values_mut() {
             state.borrows.clear();
         }
         self.active_borrows.clear();

@@ -93,6 +93,7 @@ pub struct ForStmt {
     pub span: Span,
 }
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum ForInit {
     Variable(VariableStmt),
     Expr(Expr),
@@ -105,6 +106,7 @@ pub struct ForInStmt {
     pub span: Span,
 }
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum ForInLeft {
     Pattern(Pattern),
     Variable(VariableDeclarator),
@@ -594,6 +596,7 @@ pub struct NewExpr {
     pub span: Span,
 }
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum ExprOrSpread {
     Expr(Expr),
     Spread(SpreadElement),
@@ -692,6 +695,7 @@ pub struct AssignmentExpr {
     pub span: Span,
 }
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum AssignmentTarget {
     Simple(Box<Expr>),
     Member(MemberExpr),
@@ -1301,6 +1305,7 @@ pub struct RestAssignmentTarget {
 
 // Patterns
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum Pattern {
     Identifier(IdentPattern),
     Object(Box<ObjectPattern>),
@@ -1321,6 +1326,7 @@ pub struct ObjectPattern {
     pub rest: Option<Box<RestElement>>,
 }
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum ObjectPatternProperty {
     Property(KeyValuePattern),
     Assignment(AssignmentPattern),

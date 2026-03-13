@@ -573,7 +573,7 @@ mod expression_checking {
     #[test]
     fn checks_object_literal() {
         // Assign
-        let source = "const obj = { x: 1, y: 2 };";
+        let _source = "const obj = { x: 1, y: 2 };";
         let ast = parse("const x = 1;").unwrap();
         let mut checker = BorrowChecker::new();
 
@@ -587,7 +587,7 @@ mod expression_checking {
     #[test]
     fn checks_array_literal() {
         // Assign
-        let source = "const arr = [1, 2, 3];";
+        let _source = "const arr = [1, 2, 3];";
         let ast = parse("const x = 1;").unwrap();
         let mut checker = BorrowChecker::new();
 
@@ -601,7 +601,7 @@ mod expression_checking {
     #[test]
     fn checks_conditional_expression() {
         // Assign
-        let source = "const x = a > b ? a : b;";
+        let _source = "const x = a > b ? a : b;";
         let ast = parse("const x = 1;").unwrap();
         let mut checker = BorrowChecker::new();
 

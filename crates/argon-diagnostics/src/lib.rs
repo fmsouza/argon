@@ -134,7 +134,7 @@ impl DiagnosticEngine {
                 output.push_str(&format!("  --> {}:{}\n", source.name, line_num));
 
                 // Show the line
-                output.push_str(&format!("   |\n"));
+                output.push_str("   |\n");
                 output.push_str(&format!("{:>4} | {}\n", line_num, line_content));
 
                 // Show pointer to the span
@@ -205,7 +205,7 @@ impl DiagnosticEngine {
         if let Some(source) = source {
             if let Some((line_num, line_content)) = source.get_line_at(warning.span.start) {
                 output.push_str(&format!("  --> {}:{}\n", source.name, line_num));
-                output.push_str(&format!("   |\n"));
+                output.push_str("   |\n");
                 output.push_str(&format!("{:>4} | {}\n", line_num, line_content));
             }
         }

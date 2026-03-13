@@ -3,7 +3,7 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[allow(dead_code)]
@@ -19,7 +19,7 @@ fn examples_dir() -> PathBuf {
     repo_root().join("examples")
 }
 
-fn assert_real_native_wasm(output_file: &PathBuf) {
+fn assert_real_native_wasm(output_file: &Path) {
     let wat = fs::read_to_string(output_file.with_extension("wat")).unwrap();
     assert!(
         wat.contains("(func"),

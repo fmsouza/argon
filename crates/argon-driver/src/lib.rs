@@ -514,6 +514,12 @@ export async function instantiateArgon(imports = {{}}) {{
     }
 }
 
+impl Default for Compiler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,11 +532,5 @@ mod tests {
         let deps = compiler.collect_deps(&ast, Path::new("/tmp/proj"));
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0], PathBuf::from("/tmp/proj/foo.arg"));
-    }
-}
-
-impl Default for Compiler {
-    fn default() -> Self {
-        Self::new()
     }
 }

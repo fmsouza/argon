@@ -277,6 +277,12 @@ pub struct IrBuilder {
     exports: Vec<ExportStmt>,
 }
 
+impl Default for IrBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IrBuilder {
     pub fn new() -> Self {
         Self {

@@ -339,11 +339,9 @@ mod jsx_translation {
                             saw_class_name_prop = true;
                         }
                     }
-                    Instruction::Const { value, .. } => {
-                        if let crate::ConstValue::String(s) = value {
-                            if s.contains("Hello") {
-                                saw_hello = true;
-                            }
+                    Instruction::Const { value: crate::ConstValue::String(s), .. } => {
+                        if s.contains("Hello") {
+                            saw_hello = true;
                         }
                     }
                     _ => {}
@@ -546,17 +544,14 @@ mod try_catch_translation {
         let mut saw_throw = false;
         for block in &f.body {
             for inst in &block.instructions {
-                match inst {
-                    Instruction::Try { try_body, .. } => {
-                        saw_try = true;
-                        if try_body
-                            .iter()
-                            .any(|i| matches!(i, Instruction::ThrowStmt { .. }))
-                        {
-                            saw_throw = true;
-                        }
+                if let Instruction::Try { try_body, .. } = inst {
+                    saw_try = true;
+                    if try_body
+                        .iter()
+                        .any(|i| matches!(i, Instruction::ThrowStmt { .. }))
+                    {
+                        saw_throw = true;
                     }
-                    _ => {}
                 }
             }
         }
