@@ -1,189 +1,450 @@
-# Argon Compiler
+# Argon
 
-Argon is a TypeScript-like language with Rust-inspired ownership and borrowing checks, implemented in Rust.
+A TypeScript-like language with Rust-inspired ownership and borrowing, compiling to JavaScript and WebAssembly.
 
-This repository contains the full compiler toolchain:
-- Frontend (`lexer` + `parser`)
-- Type checker
-- Borrow checker
-- IR builder + optimization passes
-- JavaScript codegen
-- WebAssembly codegen (core subset)
-- AST runtime (`argon run`)
-- CLI + test tooling
+Argon gives you familiar syntax — classes, interfaces, generics, async/await — while the compiler enforces memory-safety rules at compile time. Write code that looks like TypeScript, get the safety guarantees of Rust, and run it anywhere JavaScript or WebAssembly runs.
 
-## Status (March 13, 2026)
+```ts
+struct Point {
+    x: f64;
+    y: f64;
+}
 
-For the locked scope in [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md), the compiler now has truthful default-path support for the currently supported targets:
-- The preferred JS path (`argon compile --target js --pipeline ir`) handles the README declaration syntax examples, including enums, interfaces, type aliases, and interop declarations.
-- `argon run` executes the host-independent core runtime examples and reports JSX/ESM/interop constructs as compile-only features instead of failing later with generic runtime errors.
-- Native WASM compilation only succeeds for the validated native subset. Unsupported cases now fail clearly instead of emitting placeholder `.wasm` files.
-- Memory-safety baseline is enforced (moves, borrows, NLL-style loop analysis, thread/process capture checks).
-- Post-scope type-system hardening is implemented for interfaces/enums, structural object shapes, and recursive generic inference.
-- Post-scope borrow analysis now computes global interprocedural borrow summaries across the call graph, including alias-aware borrowed returns, multi-source returned-borrow provenance, and transitive thread/process captures.
+function translate(p: &Point, dx: f64): Point {
+    return Point { x: p.x + dx, y: p.y };
+}
 
-Known boundaries:
-- `argon run` is intentionally scoped to host-independent execution. JSX, ESM imports, and JS interop declarations are compile-only features.
-- Raw standalone `.wasm` covers the validated native subset directly. If native lowering is unsupported, `argon compile --target wasm` now fails instead of falling back to a compatibility placeholder binary.
-
-## Quick Start
-
-```bash
-# Build
-cargo build
-
-# Run all tests
-cargo test --all
-
-# Type + borrow check
-argon check examples/interop.arg
-
-# Run on internal AST runtime
-argon run examples/collections.arg
-
-# Compile to JavaScript
-argon compile examples/control-flow.arg --target js -o out.js
-node out.js
-
-# Compile to WebAssembly (native wasm + host-ABI sidecars)
-argon compile examples/wasm-subset.arg --target wasm --pipeline ir -o out.wasm
+const origin = Point { x: 0.0, y: 0.0 };
+const moved = translate(&origin, 5.0);
+console.log(moved.x); // 5.0
 ```
 
-## How the Compiler Works
+```ts
+class Counter {
+    value: i32;
 
-Argon runs a fixed pipeline:
+    constructor(initial: i32) {
+        this.value = initial;
+    }
 
-1. **Lexing** (`argon-lexer`)  
-   Converts source text into tokens (including JSX/template/decorator tokens).
-2. **Parsing** (`argon-parser`)  
-   Builds AST nodes for declarations, expressions, control flow, interop syntax, and templates.
-3. **Type Checking** (`argon-types`)  
-   Resolves and validates types, generics baseline, unions, structs/classes/interfaces/enums.
-4. **Borrow Checking** (`argon-borrowck`)  
-   Enforces ownership and borrow rules, including:
-   - use-after-move checks
-   - borrow conflict checks
-   - branch-aware borrow-state merges (`if`/`switch`/`match`)
-   - loop fixed-point NLL-style analysis
-   - global call-graph borrowed-return and escape summaries, including recursive SCC convergence
-   - alias-aware borrowed-return tracking across local bindings and helper-returned references
-   - Send/Sync-style thread/process capture checks
-5. **Lowering to IR** (`argon-ir`)  
-   Produces a control-flow-oriented IR with optional optimization passes.
-6. **Code Generation**
-   - `argon-codegen-js`: ES2022 JS output (+ experimental source maps and `.d.ts`)
-   - `argon-codegen-wasm`: native `.wasm` + generated `.mjs` loader + `.host.mjs` host companion for the validated native subset
+    increment(): void with &mut this {
+        this.value = this.value + 1;
+    }
 
-For `argon run`, the checked AST is executed by `argon-runtime` directly (no Node fallback as the primary path).
+    getValue(): i32 with &this {
+        return this.value;
+    }
+}
 
-## Pipelines and Targets
+const counter = new Counter(0);
+counter.increment();
+console.log(counter.getValue()); // 1
+```
 
-The CLI supports two internal pipelines:
-- `--pipeline ast` (direct AST codegen path)
-- `--pipeline ir` (default, preferred; enables IR lowering/optimization flow)
+## Getting Started
 
-Supported targets:
-- `--target js`
-- `--target wasm`
+### Prerequisites
 
-Target support matrix:
-- `argon check`: full parser/type-checker/borrow-checker surface, including declaration-only syntax such as interfaces, type aliases, enums, and interop module declarations.
-- `argon compile --target js --pipeline ir`: preferred JS path; supports the README declaration examples plus executable core language features.
-- `argon run`: host-independent runtime subset only; rejects JSX, ESM imports, and interop declarations as compile-only features.
-- `argon compile --target wasm --pipeline ir`: validated native subset only; unsupported native cases fail clearly.
-- Generated WASM sidecars (`.mjs` + `.host.mjs`): JS-host convenience layer for supported native wasm builds.
+- [Rust](https://rustup.rs/) (stable toolchain)
 
-WASM notes:
-- `.wasm` is the binary output format.
-- `argon compile --target wasm ... -o out.wasm` also writes `out.mjs` and `out.host.mjs`.
-- Native standalone wasm covers the validated numeric/control-flow subset used by the current standalone tests: locals/ops, calls, branching, loops, array indexing, heap-backed object/field access for local shapes, internal async/await lowered synchronously, structured `try/catch/finally`, loop control, `for`/`for..of`, nested `switch`/`match`, and direct function imports supplied by the embedder.
-- Unsupported native wasm cases fail at compile time; successful compilation now means the emitted `.wasm` is a real native backend artifact.
-- The loader merges native wasm exports with the generated host companion for JS-host convenience on supported native builds.
-- Linear-memory helpers still exist for native wasm strings, arrays, object literals, and struct-literal constructor lowering.
-
-## CLI Commands
+### Build from source
 
 ```bash
-argon compile <file.arg> [--target js|wasm] [--pipeline ast|ir] [-o output]
-argon check <file.arg>
-argon run <file.arg>
-argon test [--input file.arg] [--directory path] [--pipeline ast|ir]
-argon format <file.arg>
-argon init <project-name>
-argon watch <file.arg> [--check-only]
+cargo build --release
+```
+
+The `argon` binary will be at `target/release/argon`.
+
+### Your first program
+
+Create a file called `hello.arg`:
+
+```ts
+struct Greeting {
+    message: string;
+}
+
+function greet(g: &Greeting): string {
+    return g.message;
+}
+
+const hello = Greeting { message: "Hello, Argon!" };
+console.log(greet(&hello));
+```
+
+```bash
+# Type-check and borrow-check
+argon check hello.arg
+
+# Compile to JavaScript
+argon compile hello.arg --target js -o hello.js
+node hello.js
+
+# Or run directly with the built-in runtime
+argon run hello.arg
+```
+
+### Try the REPL
+
+```bash
 argon repl
 ```
 
-## Language Feature Examples
+The REPL supports multi-line input and has built-in commands: `:load <file>`, `:check`, `:compile [js|wasm]`, `:show`, `:reset`.
 
-The `examples/` directory is organized as executable/checkable feature coverage:
+## CLI Reference
 
-- Ownership/borrowing: `ownership.arg`, `borrowing.arg`
-- Structs/classes/methods/generics: `structs.arg`, `classes.arg`, `simple_method.arg`, `generic_*.arg`
-- Control flow: `control-flow.arg`, `match.arg`, `try-catch.arg`, `recursion.arg`
-- Interop syntax: `interop.arg`, `test_lexer.arg`, `esm.arg`
-- Type declarations: `interface.arg`, `enum.arg`, `type_test.arg`
-- Runtime/basic language: `arithmetic.arg`, `boolean.arg`, `strings.arg`, `functions.arg`, `object.arg`
-- WASM subset fixture: `wasm-subset.arg`
+| Command | Description |
+|---------|-------------|
+| `argon compile <file.arg>` | Compile to JS or WASM |
+| `argon check <file.arg>` | Type-check and borrow-check without emitting code |
+| `argon run <file.arg>` | Execute on the built-in AST runtime |
+| `argon test [--input file] [--directory path]` | Run test suites |
+| `argon format <file.arg>` | Format source code |
+| `argon init <project-name>` | Scaffold a new project |
+| `argon watch <file.arg>` | Rebuild on file changes |
+| `argon repl` | Interactive REPL |
 
-Check all examples:
+### Key flags for `argon compile`
 
-```bash
-for f in examples/*.arg; do argon check "$f"; done
+| Flag | Description |
+|------|-------------|
+| `--target js\|wasm` | Output target (default: `js`) |
+| `--pipeline ast\|ir` | Compilation pipeline (default: `ir`, preferred) |
+| `-o <path>` | Output file path |
+| `--source-map` | Generate source maps (JS target) |
+| `--opt` | Enable optimization passes |
+| `--declarations` | Generate TypeScript `.d.ts` declarations |
+
+## Language Features
+
+### Types and primitives
+
+Argon has sized numeric types, plus the familiar JS types:
+
+```ts
+const count: i32 = 42;
+const ratio: f64 = 3.14;
+const name: string = "argon";
+const active: bool = true;
 ```
 
-## Memory Safety Model (Current Baseline)
+Available numeric types: `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`, `isize`, `usize`.
 
-Argon currently enforces:
-- Move tracking and use-after-move rejection.
-- Shared vs mutable borrow conflict rules.
-- Borrow release based on use/liveness heuristics.
-- Loop fixed-point borrow-state convergence.
-- Borrowed return validation (including reborrow mutability constraints).
-- Global interprocedural borrow-summary propagation for returned borrows, alias bindings, and thread/process captures.
-- Data-race style checks for thread/process captures.
-- Send/Sync-style typed capture constraints.
+### Structs
 
-## Workspace Layout
+```ts
+struct Color {
+    r: u8;
+    g: u8;
+    b: u8;
+}
 
-```text
+const red = Color { r: 255, g: 0, b: 0 };
+console.log(red.r);
+```
+
+### Classes
+
+Classes support constructors, methods, getters/setters, static members, and inheritance:
+
+```ts
+class Counter {
+    value: i32;
+
+    constructor(initial: i32) {
+        this.value = initial;
+    }
+
+    increment(): void with &mut this {
+        this.value = this.value + 1;
+    }
+
+    getValue(): i32 with &this {
+        return this.value;
+    }
+}
+```
+
+The `with &this` and `with &mut this` annotations declare whether a method borrows `this` as shared or mutable — the compiler enforces these at call sites.
+
+### Ownership and move semantics
+
+Non-copy types are moved on assignment. The compiler rejects use-after-move:
+
+```ts
+struct Message {
+    text: string;
+}
+
+function consume(msg: Message): string {
+    return msg.text;
+}
+
+const m = Message { text: "hello" };
+consume(m);
+// console.log(m.text);  // ERROR: use after move
+```
+
+Primitives (`i32`, `f64`, `bool`, etc.) are copy types and can be freely reused.
+
+### Borrowing
+
+Shared references (`&T`) allow read-only access. Mutable references (`&mut T`) give exclusive access. You can have multiple shared references or one mutable reference, but not both at the same time:
+
+```ts
+function readX(p: &Point): f64 {
+    return p.x;
+}
+
+const point = Point { x: 10.0, y: 20.0 };
+const ref = &point;
+console.log(readX(ref));
+```
+
+### Generics and type aliases
+
+```ts
+struct Container<T> {
+    value: T;
+}
+
+type NumberContainer = Container<i32>;
+const box: NumberContainer = { value: 42 };
+```
+
+Generic functions:
+
+```ts
+function identity<T>(x: T): T {
+    return x;
+}
+```
+
+### Interfaces
+
+```ts
+interface Reader {
+    read(key: string): string;
+}
+
+function useReader(reader: Reader): string {
+    return reader.read("config");
+}
+```
+
+### Enums
+
+```ts
+enum Mode { Dev, Test, Prod }
+
+const mode = Mode.Dev;
+```
+
+### Function types
+
+```ts
+type Reducer = (acc: i32, value: i32) => i32;
+
+function reduceThree(a: i32, b: i32, c: i32, reducer: Reducer): i32 {
+    let acc = reducer(0, a);
+    acc = reducer(acc, b);
+    return reducer(acc, c);
+}
+```
+
+### Control flow
+
+Argon supports `if`/`else`, `for`, `while`, `loop`, `switch`, `match`, `break`, `continue`:
+
+```ts
+match (n) {
+    0 => return "zero",
+    1 => return "one",
+    2 => return "two",
+}
+
+loop {
+    count = count + 1;
+    if (count >= 10) {
+        break;
+    }
+}
+```
+
+### Async/await
+
+```ts
+async function fetchLabel(id: i32): string {
+    return `user-${id}`;
+}
+
+async function main(): string {
+    const label = await fetchLabel(7);
+    return label;
+}
+```
+
+### Error handling
+
+```ts
+try {
+    if (flag) {
+        throw 7;
+    }
+    return 1;
+} catch (err) {
+    console.log(err);
+    return 0;
+} finally {
+    console.log("cleanup");
+}
+```
+
+### JavaScript interop
+
+Declare external JS modules with `@js-interop` and export Argon functions with `@export`:
+
+```ts
+@js-interop
+declare module "axios" {
+    function get<T>(url: string): string;
+}
+
+@export
+function processImage(data: i32, width: i32, height: i32): i32 {
+    return data + width + height;
+}
+```
+
+### ES modules
+
+```ts
+import axios from "axios";
+import { useState } from "react";
+
+export function readEnv(): string {
+    return "/api";
+}
+```
+
+## Compilation Targets
+
+### JavaScript
+
+The default target. Emits ES2022 JavaScript:
+
+```bash
+argon compile app.arg --target js -o app.js
+argon compile app.arg --target js -o app.js --source-map --declarations
+```
+
+With `--source-map`, generates `app.js.map` for debugger support. With `--declarations`, generates `app.d.ts` for TypeScript consumers.
+
+### WebAssembly
+
+Compiles the validated native subset to `.wasm` with sidecar loaders:
+
+```bash
+argon compile math.arg --target wasm -o math.wasm
+```
+
+This produces three files:
+- `math.wasm` — binary WebAssembly module
+- `math.mjs` — module loader that merges native exports with host companions
+- `math.host.mjs` — JS host implementations for features that need runtime support
+
+The WASM target supports numeric operations, control flow, function calls, branching, loops, array indexing, heap-backed object access, structured `try`/`catch`/`finally`, async/await (lowered synchronously), and direct function imports. Features outside this subset fail at compile time with a clear error.
+
+## How the Compiler Works
+
+Argon runs a fixed multi-stage pipeline:
+
+```
+Source (.arg)
+    |
+    v
+ Lexer ──────── Tokenize source text
+    |
+    v
+ Parser ─────── Build abstract syntax tree
+    |
+    v
+ Type Checker ── Resolve types, validate generics, check interfaces/enums
+    |
+    v
+ Borrow Checker ── Enforce ownership, move, and borrow rules
+    |
+    v
+ IR Builder ──── Lower to control-flow IR with optional optimization passes
+    |
+    v
+ Code Generator
+    |── JS backend ──── ES2022 JavaScript + source maps + .d.ts
+    |── WASM backend ── Native .wasm + .mjs loader + .host.mjs companion
+```
+
+The `--pipeline ir` path (default) lowers through the IR for optimization. The `--pipeline ast` path generates code directly from the AST.
+
+For `argon run`, the type-checked and borrow-checked AST is executed directly by the built-in runtime — no Node.js required.
+
+### Workspace layout
+
+The compiler is organized as a Rust workspace with 14 crates:
+
+```
 crates/
-  argon-cli          # CLI entrypoint and commands
-  argon-driver       # Pipeline orchestration
-  argon-lexer        # Tokenization
-  argon-parser       # AST parsing
-  argon-ast          # AST definitions
-  argon-types        # Type checker/type model
-  argon-borrowck     # Ownership/borrow checking
-  argon-ir           # IR + optimization passes
-  argon-codegen-js   # JavaScript backend
-  argon-codegen-wasm # WebAssembly backend (core subset)
-  argon-runtime      # AST interpreter for `argon run`
-  argon-interop      # Interop surface helpers
-  argon-stdlib       # Runtime stdlib assets
-  argon-diagnostics  # Error rendering infrastructure
+  argon-cli            CLI entrypoint and commands
+  argon-driver         Pipeline orchestration
+  argon-lexer          Tokenization
+  argon-parser         AST parsing
+  argon-ast            AST node definitions
+  argon-types          Type checker and type model
+  argon-borrowck       Ownership and borrow checking
+  argon-ir             IR representation and optimization passes
+  argon-codegen-js     JavaScript code generation
+  argon-codegen-wasm   WebAssembly code generation
+  argon-runtime        AST interpreter for `argon run`
+  argon-interop        JS/WASM interop helpers
+  argon-stdlib         Runtime standard library
+  argon-diagnostics    Error reporting and rendering
 ```
 
-## Testing and Quality Gates
+## Contributing
 
-Main validation commands:
+### Build and test
 
 ```bash
-cargo test --all
-argon check examples/interop.arg
-argon compile examples/control-flow.arg --pipeline ir -o /tmp/out.js
-argon run examples/collections.arg
-argon compile examples/wasm-subset.arg --target wasm --pipeline ir -o /tmp/out.wasm
+cargo build                                     # Debug build
+cargo test --workspace --all-targets            # All tests
+cargo test --workspace --doc                    # Doc tests
+cargo fmt --all -- --check                      # Format check
+cargo clippy --workspace --all-targets -- -D warnings  # Lint
 ```
 
-CI includes completion-focused coverage for:
-- README example compilation on the preferred JS IR path
-- Runtime execution paths and compile-only runtime diagnostics
-- WASM compile/execute paths, including non-placeholder native artifact checks, standalone async/import coverage, flat and structured standalone try/catch coverage, loop-control/for/switch/match-in-try standalone coverage, loader-sidecar host-ABI coverage, and native heap-backed object/member cases
+### Explore the language
 
-## Roadmap Beyond Current Scope
+The `examples/` directory contains `.arg` files covering every major feature:
 
-- Additional host-side conveniences around JS-heavy module resolution and promise-backed interop without relying on generated host sidecars.
+```bash
+# Check all examples
+for f in examples/*.arg; do argon check "$f"; done
+
+# Run an example
+argon run examples/collections.arg
+
+# Compile and execute
+argon compile examples/control-flow.arg --target js -o /tmp/out.js && node /tmp/out.js
+```
+
+Key examples by topic:
+- **Ownership/borrowing:** `ownership.arg`, `borrowing.arg`
+- **Structs/classes:** `structs.arg`, `classes.arg`, `simple_method.arg`
+- **Generics:** `generic_simple.arg`, `generic_fn.arg`, `generic_struct.arg`
+- **Control flow:** `control-flow.arg`, `match.arg`, `try-catch.arg`, `recursion.arg`
+- **Type system:** `interface.arg`, `enum.arg`, `type_test.arg`
+- **Interop:** `interop.arg`, `esm.arg`
+- **WASM:** `wasm-subset.arg`
 
 ## License
 
