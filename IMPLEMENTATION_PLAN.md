@@ -1,7 +1,7 @@
 # Argon Completion Rebaseline
 
 **Date:** March 13, 2026  
-**Status:** Scope-Complete + Post-Scope Type Hardening/WASM Host-ABI Parity Implemented  
+**Status:** Scope-Complete + Post-Scope Type Hardening/Global Borrow Solver/WASM Host-ABI Parity Implemented  
 **Scope:** README parity + WASM core subset + runtime execution + memory-safety baseline
 
 ---
@@ -43,7 +43,7 @@ The compiler is considered **complete** for this scope only when all gates pass:
 | Parser frontend parity (decorators/declare/loop/for-of/object literals/struct methods/templates) | **Implemented (core)** | Core syntax paths now parse, including template interpolation expressions. |
 | Type checker for README-required constructs | **Implemented (post-scope hardening)** | Added interface/enum registration, structural object-shape typing, generic interface/generic alias resolution, enum member typing, and recursive generic inference across nested parameter shapes. |
 | Borrow checker move/use-after-move | **Implemented (baseline)** | Move state now transitions to `Moved`; use-after-move and move-while-borrowed regressions covered; shared-reference bindings (`&T`) now treated as copyable in move analysis. |
-| Borrow checker NLL / cross-function / reborrow / Send+Sync-style checks | **Implemented (core+)** | Added call-site borrow contracts, borrowed-return validation, helper-summary propagation for returned borrows/thread-process captures, mutually recursive borrow-summary convergence, statement-level end-of-use release, branch-aware merges, loop fixed-point NLL-style analysis, and Send/Sync-style thread/process capture validation (`Send` for owned capture, `Sync` for shared-reference pointees). |
+| Borrow checker NLL / cross-function / reborrow / Send+Sync-style checks | **Implemented (global solver)** | Added call-site borrow contracts, alias-aware borrowed-return validation, persistent helper-return borrow bindings, call-graph SCC summary convergence, multi-source returned-borrow provenance, statement-level end-of-use release, branch-aware merges, loop fixed-point NLL-style analysis, and Send/Sync-style thread/process capture validation (`Send` for owned capture, `Sync` for shared-reference pointees). |
 | Data-race check invocation | **Implemented (baseline)** | Wired into normal check path; model still basic. |
 | IR lowering for `loop` and `for..of` | **Implemented (core)** | Lowered into CFG blocks with index-based `for..of` expansion. |
 | JS codegen + source maps | **Implemented** | IR path and source map generation are working and tested in CLI integration tests. |
@@ -114,8 +114,7 @@ The compiler is considered **complete** for this scope only when all gates pass:
 
 ## Remaining Gaps (Post-Scope Completion)
 
-1. **Interprocedural lifetime depth**: call-site + helper-summary propagation are implemented, but no full interprocedural lifetime-flow solver.
-2. **Raw wasm boundary**: the standalone `.wasm` artifact still contains only the native core subset; full parity relies on the generated host sidecars by design.
+1. **Raw wasm boundary**: the standalone `.wasm` artifact still contains only the native core subset; full parity relies on the generated host sidecars by design.
 
 ---
 
@@ -156,6 +155,8 @@ The compiler is considered **complete** for this scope only when all gates pass:
 - Borrow-check regressions include:
   - borrowed-return escape checks
   - helper-mediated borrowed-return propagation
+  - alias-aware borrowed-return propagation through local bindings
+  - multi-source returned-borrow summary propagation
   - mutually recursive borrowed-return summary convergence
   - thread/process typed capture safety
   - helper-mediated thread/process capture propagation

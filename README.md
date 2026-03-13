@@ -20,10 +20,9 @@ For the locked scope in [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md), the 
 - WASM compilation now supports full README parity through a generated host-ABI companion (`.mjs` loader + `.host.mjs` host module), while still emitting native `.wasm` for the core subset.
 - Memory-safety baseline is enforced (moves, borrows, NLL-style loop analysis, thread/process capture checks).
 - Post-scope type-system hardening is implemented for interfaces/enums, structural object shapes, and recursive generic inference.
-- Post-scope borrow analysis now propagates helper summaries across transitive and mutually recursive borrowed returns plus thread/process captures.
+- Post-scope borrow analysis now computes global interprocedural borrow summaries across the call graph, including alias-aware borrowed returns, multi-source returned-borrow provenance, and transitive thread/process captures.
 
 Known boundaries:
-- Interprocedural lifetime solving is not yet a full global solver.
 - Raw standalone `.wasm` without the generated sidecars is still only the native core subset by design.
 
 ## Quick Start
@@ -65,7 +64,8 @@ Argon runs a fixed pipeline:
    - borrow conflict checks
    - branch-aware borrow-state merges (`if`/`switch`/`match`)
    - loop fixed-point NLL-style analysis
-   - cross-function borrowed return checks with helper-summary propagation
+   - global call-graph borrowed-return and escape summaries, including recursive SCC convergence
+   - alias-aware borrowed-return tracking across local bindings and helper-returned references
    - Send/Sync-style thread/process capture checks
 5. **Lowering to IR** (`argon-ir`)  
    Produces a control-flow-oriented IR with optional optimization passes.
@@ -131,12 +131,9 @@ Argon currently enforces:
 - Borrow release based on use/liveness heuristics.
 - Loop fixed-point borrow-state convergence.
 - Borrowed return validation (including reborrow mutability constraints).
-- Helper-function borrow-summary propagation for returned borrows and thread/process captures.
+- Global interprocedural borrow-summary propagation for returned borrows, alias bindings, and thread/process captures.
 - Data-race style checks for thread/process captures.
 - Send/Sync-style typed capture constraints.
-
-Not yet a full production solver:
-- No complete interprocedural lifetime graph solver across all call chains.
 
 ## Workspace Layout
 
@@ -177,7 +174,7 @@ CI includes completion-focused coverage for:
 
 ## Roadmap Beyond Current Scope
 
-- Deeper global/interprocedural lifetime analysis.
+- Broader native standalone `.wasm` coverage without relying on generated host sidecars.
 
 ## License
 

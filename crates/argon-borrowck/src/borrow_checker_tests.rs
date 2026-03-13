@@ -1141,6 +1141,62 @@ mod cross_function_borrow_regressions {
     }
 
     #[test]
+    fn allows_returning_alias_of_borrowed_parameter() {
+        // Assign
+        let source = "function alias(x: &i32): &i32 { const view = x; return view; }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn allows_multi_source_borrowed_return_summary_through_helper() {
+        // Assign
+        let source = "function choose(a: &i32, b: &i32): &i32 { if (flag) { return a; } return b; } function forward(a: &i32, b: &i32): &i32 { return choose(a, b); }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn rejects_using_helper_returned_borrow_after_mutable_reborrow() {
+        // Assign
+        let source = "function passthrough(x: &i32): &i32 { return x; } function f(a: i32): i32 { const r = passthrough(&a); const m = &mut a; console.log(r); return 0; }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_err(), "{result:?}");
+    }
+
+    #[test]
+    fn rejects_using_multi_source_helper_return_after_mutating_possible_source() {
+        // Assign
+        let source = "function choose(a: &i32, b: &i32): &i32 { if (flag) { return a; } return b; } function f(a: i32, b: i32): i32 { const r = choose(&a, &b); const m = &mut a; console.log(r); return 0; }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_err(), "{result:?}");
+    }
+
+    #[test]
     fn allows_mutually_recursive_borrowed_return_summary() {
         // Assign
         let source = "function left(x: &i32): &i32 { return right(x); } function right(x: &i32): &i32 { if (1 < 2) { return x; } return left(x); }";

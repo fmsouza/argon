@@ -59,7 +59,7 @@ struct LifetimeScope {
     children: Vec<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ReturnBorrowSource {
     param_index: usize,
     kind: BorrowKind,
@@ -69,20 +69,33 @@ struct ReturnBorrowSource {
 struct FunctionBorrowSummary {
     param_borrows: Vec<Option<BorrowKind>>,
     return_borrow: Option<BorrowKind>,
-    return_source: Option<ReturnBorrowSource>,
+    return_sources: Vec<ReturnBorrowSource>,
+    escaped_params: HashSet<usize>,
     thread_captured_params: HashSet<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct BorrowBinding {
+struct BorrowBindingSource {
     source: String,
     kind: BorrowKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BorrowBinding {
+    sources: Vec<BorrowBindingSource>,
 }
 
 #[derive(Debug, Clone)]
 struct FunctionBorrowContext {
     return_borrow: Option<BorrowKind>,
     param_borrows: HashMap<String, Option<BorrowKind>>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SummaryState {
+    bindings: HashMap<String, Vec<ReturnBorrowSource>>,
+    return_sources: HashSet<ReturnBorrowSource>,
+    thread_captured_params: HashSet<usize>,
 }
 
 #[allow(dead_code)]
@@ -171,6 +184,8 @@ impl BorrowChecker {
     fn collect_function_summaries(&mut self, source: &SourceFile) {
         let mut functions = HashMap::new();
         self.collect_functions(source, &mut functions);
+        let call_graph = self.build_call_graph(&functions);
+        let components = self.condense_call_graph(&functions, &call_graph);
 
         self.function_summaries = functions
             .iter()
@@ -184,22 +199,30 @@ impl BorrowChecker {
                             .map(|p| self.param_borrow_kind(p))
                             .collect(),
                         return_borrow: self.return_borrow_kind(&function.return_type),
-                        return_source: None,
+                        return_sources: Vec::new(),
+                        escaped_params: HashSet::new(),
                         thread_captured_params: HashSet::new(),
                     },
                 )
             })
             .collect();
 
-        let mut changed = true;
-        while changed {
-            changed = false;
-            let previous = self.function_summaries.clone();
-            for (name, function) in &functions {
-                let summary = self.compute_function_summary(function, &previous);
-                if previous.get(name) != Some(&summary) {
-                    self.function_summaries.insert(name.clone(), summary);
-                    changed = true;
+        for component in components {
+            loop {
+                let previous = self.function_summaries.clone();
+                let mut changed = false;
+                for name in &component {
+                    if let Some(function) = functions.get(name) {
+                        let summary = self.compute_function_summary(function, &previous);
+                        if previous.get(name) != Some(&summary) {
+                            self.function_summaries.insert(name.clone(), summary);
+                            changed = true;
+                        }
+                    }
+                }
+
+                if !changed {
+                    break;
                 }
             }
         }
@@ -233,6 +256,512 @@ impl BorrowChecker {
             }
             _ => {}
         }
+    }
+
+    fn build_call_graph(
+        &self,
+        functions: &HashMap<String, FunctionDecl>,
+    ) -> HashMap<String, HashSet<String>> {
+        functions
+            .iter()
+            .map(|(name, function)| {
+                (
+                    name.clone(),
+                    self.collect_called_functions(&function.body.statements, functions),
+                )
+            })
+            .collect()
+    }
+
+    fn collect_called_functions(
+        &self,
+        statements: &[Stmt],
+        functions: &HashMap<String, FunctionDecl>,
+    ) -> HashSet<String> {
+        let mut called = HashSet::new();
+        for stmt in statements {
+            self.collect_called_functions_from_stmt(stmt, functions, &mut called);
+        }
+        called
+    }
+
+    fn collect_called_functions_from_stmt(
+        &self,
+        stmt: &Stmt,
+        functions: &HashMap<String, FunctionDecl>,
+        called: &mut HashSet<String>,
+    ) {
+        match stmt {
+            Stmt::Variable(v) => {
+                for decl in &v.declarations {
+                    if let Some(init) = &decl.init {
+                        self.collect_called_functions_from_expr(init, functions, called);
+                    }
+                }
+            }
+            Stmt::Expr(e) => self.collect_called_functions_from_expr(&e.expr, functions, called),
+            Stmt::Return(r) => {
+                if let Some(arg) = &r.argument {
+                    self.collect_called_functions_from_expr(arg, functions, called);
+                }
+            }
+            Stmt::Throw(t) => self.collect_called_functions_from_expr(&t.argument, functions, called),
+            Stmt::Block(b) => {
+                for nested in &b.statements {
+                    self.collect_called_functions_from_stmt(nested, functions, called);
+                }
+            }
+            Stmt::If(i) => {
+                self.collect_called_functions_from_expr(&i.condition, functions, called);
+                self.collect_called_functions_from_stmt(&i.consequent, functions, called);
+                if let Some(alternate) = &i.alternate {
+                    self.collect_called_functions_from_stmt(alternate, functions, called);
+                }
+            }
+            Stmt::While(w) => {
+                self.collect_called_functions_from_expr(&w.condition, functions, called);
+                self.collect_called_functions_from_stmt(&w.body, functions, called);
+            }
+            Stmt::Loop(l) => self.collect_called_functions_from_stmt(&l.body, functions, called),
+            Stmt::DoWhile(d) => {
+                self.collect_called_functions_from_stmt(&d.body, functions, called);
+                self.collect_called_functions_from_expr(&d.condition, functions, called);
+            }
+            Stmt::For(f) => {
+                if let Some(init) = &f.init {
+                    match init {
+                        ForInit::Variable(v) => {
+                            for decl in &v.declarations {
+                                if let Some(init) = &decl.init {
+                                    self.collect_called_functions_from_expr(
+                                        init,
+                                        functions,
+                                        called,
+                                    );
+                                }
+                            }
+                        }
+                        ForInit::Expr(e) => {
+                            self.collect_called_functions_from_expr(e, functions, called)
+                        }
+                    }
+                }
+                if let Some(test) = &f.test {
+                    self.collect_called_functions_from_expr(test, functions, called);
+                }
+                if let Some(update) = &f.update {
+                    self.collect_called_functions_from_expr(update, functions, called);
+                }
+                self.collect_called_functions_from_stmt(&f.body, functions, called);
+            }
+            Stmt::ForIn(f) => {
+                if let ForInLeft::Variable(v) = &f.left {
+                    if let Some(init) = &v.init {
+                        self.collect_called_functions_from_expr(init, functions, called);
+                    }
+                }
+                self.collect_called_functions_from_expr(&f.right, functions, called);
+                self.collect_called_functions_from_stmt(&f.body, functions, called);
+            }
+            Stmt::Switch(s) => {
+                self.collect_called_functions_from_expr(&s.discriminant, functions, called);
+                for case in &s.cases {
+                    if let Some(test) = &case.test {
+                        self.collect_called_functions_from_expr(test, functions, called);
+                    }
+                    for stmt in &case.consequent {
+                        self.collect_called_functions_from_stmt(stmt, functions, called);
+                    }
+                }
+            }
+            Stmt::Match(m) => {
+                self.collect_called_functions_from_expr(&m.discriminant, functions, called);
+                for case in &m.cases {
+                    self.collect_called_functions_from_expr(&case.pattern, functions, called);
+                    if let Some(guard) = &case.guard {
+                        self.collect_called_functions_from_expr(guard, functions, called);
+                    }
+                    self.collect_called_functions_from_stmt(&case.consequent, functions, called);
+                }
+            }
+            Stmt::Try(t) => {
+                for nested in &t.block.statements {
+                    self.collect_called_functions_from_stmt(nested, functions, called);
+                }
+                if let Some(handler) = &t.handler {
+                    for nested in &handler.body.statements {
+                        self.collect_called_functions_from_stmt(nested, functions, called);
+                    }
+                }
+                if let Some(finalizer) = &t.finalizer {
+                    for nested in &finalizer.statements {
+                        self.collect_called_functions_from_stmt(nested, functions, called);
+                    }
+                }
+            }
+            Stmt::With(w) => {
+                self.collect_called_functions_from_expr(&w.object, functions, called);
+                self.collect_called_functions_from_stmt(&w.body, functions, called);
+            }
+            Stmt::Labeled(l) => self.collect_called_functions_from_stmt(&l.body, functions, called),
+            Stmt::Function(_)
+            | Stmt::AsyncFunction(_)
+            | Stmt::Class(_)
+            | Stmt::Struct(_)
+            | Stmt::Trait(_)
+            | Stmt::Impl(_)
+            | Stmt::Interface(_)
+            | Stmt::TypeAlias(_)
+            | Stmt::Enum(_)
+            | Stmt::Module(_)
+            | Stmt::Import(_)
+            | Stmt::Export(_)
+            | Stmt::Break(_)
+            | Stmt::Continue(_)
+            | Stmt::Empty(_)
+            | Stmt::Debugger(_) => {}
+        }
+    }
+
+    fn collect_called_functions_from_expr(
+        &self,
+        expr: &Expr,
+        functions: &HashMap<String, FunctionDecl>,
+        called: &mut HashSet<String>,
+    ) {
+        match expr {
+            Expr::Assignment(a) => self.collect_called_functions_from_expr(&a.right, functions, called),
+            Expr::Call(c) => {
+                if let Expr::Identifier(id) = &*c.callee {
+                    if functions.contains_key(&id.sym) {
+                        called.insert(id.sym.clone());
+                    }
+                }
+                self.collect_called_functions_from_expr(&c.callee, functions, called);
+                for arg in &c.arguments {
+                    match arg {
+                        ExprOrSpread::Expr(e) => {
+                            self.collect_called_functions_from_expr(e, functions, called)
+                        }
+                        ExprOrSpread::Spread(s) => {
+                            self.collect_called_functions_from_expr(&s.argument, functions, called)
+                        }
+                    }
+                }
+            }
+            Expr::OptionalCall(c) => {
+                if let Expr::Identifier(id) = &*c.callee {
+                    if functions.contains_key(&id.sym) {
+                        called.insert(id.sym.clone());
+                    }
+                }
+                self.collect_called_functions_from_expr(&c.callee, functions, called);
+                for arg in &c.arguments {
+                    match arg {
+                        ExprOrSpread::Expr(e) => {
+                            self.collect_called_functions_from_expr(e, functions, called)
+                        }
+                        ExprOrSpread::Spread(s) => {
+                            self.collect_called_functions_from_expr(&s.argument, functions, called)
+                        }
+                    }
+                }
+            }
+            Expr::Binary(b) => {
+                self.collect_called_functions_from_expr(&b.left, functions, called);
+                self.collect_called_functions_from_expr(&b.right, functions, called);
+            }
+            Expr::Unary(u) => self.collect_called_functions_from_expr(&u.argument, functions, called),
+            Expr::Member(m) => {
+                self.collect_called_functions_from_expr(&m.object, functions, called);
+                self.collect_called_functions_from_expr(&m.property, functions, called);
+            }
+            Expr::OptionalMember(m) => {
+                self.collect_called_functions_from_expr(&m.object, functions, called);
+                self.collect_called_functions_from_expr(&m.property, functions, called);
+            }
+            Expr::Ref(r) => {
+                self.collect_called_functions_from_expr(&r.expr, functions, called)
+            }
+            Expr::MutRef(r) => {
+                self.collect_called_functions_from_expr(&r.expr, functions, called)
+            }
+            Expr::New(n) => {
+                self.collect_called_functions_from_expr(&n.callee, functions, called);
+                for arg in &n.arguments {
+                    match arg {
+                        ExprOrSpread::Expr(e) => {
+                            self.collect_called_functions_from_expr(e, functions, called)
+                        }
+                        ExprOrSpread::Spread(s) => {
+                            self.collect_called_functions_from_expr(&s.argument, functions, called)
+                        }
+                    }
+                }
+            }
+            Expr::Conditional(c) => {
+                self.collect_called_functions_from_expr(&c.test, functions, called);
+                self.collect_called_functions_from_expr(&c.consequent, functions, called);
+                self.collect_called_functions_from_expr(&c.alternate, functions, called);
+            }
+            Expr::Logical(l) => {
+                self.collect_called_functions_from_expr(&l.left, functions, called);
+                self.collect_called_functions_from_expr(&l.right, functions, called);
+            }
+            Expr::Object(o) => {
+                for prop in &o.properties {
+                    match prop {
+                        ObjectProperty::Property(p) => match &p.value {
+                            ExprOrSpread::Expr(e) => {
+                                self.collect_called_functions_from_expr(e, functions, called)
+                            }
+                            ExprOrSpread::Spread(s) => self
+                                .collect_called_functions_from_expr(&s.argument, functions, called),
+                        },
+                        ObjectProperty::Spread(s) => {
+                            self.collect_called_functions_from_expr(&s.argument, functions, called)
+                        }
+                        ObjectProperty::Method(_) | ObjectProperty::Getter(_) | ObjectProperty::Setter(_) | ObjectProperty::Shorthand(_) => {}
+                    }
+                }
+            }
+            Expr::Array(a) => {
+                for elem in &a.elements {
+                    if let Some(elem) = elem {
+                        match elem {
+                            ExprOrSpread::Expr(e) => {
+                                self.collect_called_functions_from_expr(e, functions, called)
+                            }
+                            ExprOrSpread::Spread(s) => self
+                                .collect_called_functions_from_expr(&s.argument, functions, called),
+                        }
+                    }
+                }
+            }
+            Expr::Spread(s) => self.collect_called_functions_from_expr(&s.argument, functions, called),
+            Expr::Await(a) | Expr::AwaitPromised(a) => {
+                self.collect_called_functions_from_expr(&a.argument, functions, called)
+            }
+            Expr::Yield(y) => {
+                if let Some(argument) = &y.argument {
+                    self.collect_called_functions_from_expr(argument, functions, called);
+                }
+            }
+            Expr::Update(u) => self.collect_called_functions_from_expr(&u.argument, functions, called),
+            Expr::Chain(c) => {
+                for elem in &c.expressions {
+                    match elem {
+                        ChainElement::Call(call) => {
+                            if let Expr::Identifier(id) = &*call.callee {
+                                if functions.contains_key(&id.sym) {
+                                    called.insert(id.sym.clone());
+                                }
+                            }
+                            self.collect_called_functions_from_expr(&call.callee, functions, called);
+                            for arg in &call.arguments {
+                                match arg {
+                                    ExprOrSpread::Expr(e) => {
+                                        self.collect_called_functions_from_expr(e, functions, called)
+                                    }
+                                    ExprOrSpread::Spread(s) => self.collect_called_functions_from_expr(
+                                        &s.argument,
+                                        functions,
+                                        called,
+                                    ),
+                                }
+                            }
+                        }
+                        ChainElement::OptionalCall(call) => {
+                            if let Expr::Identifier(id) = &*call.callee {
+                                if functions.contains_key(&id.sym) {
+                                    called.insert(id.sym.clone());
+                                }
+                            }
+                            self.collect_called_functions_from_expr(&call.callee, functions, called);
+                            for arg in &call.arguments {
+                                match arg {
+                                    ExprOrSpread::Expr(e) => {
+                                        self.collect_called_functions_from_expr(e, functions, called)
+                                    }
+                                    ExprOrSpread::Spread(s) => self.collect_called_functions_from_expr(
+                                        &s.argument,
+                                        functions,
+                                        called,
+                                    ),
+                                }
+                            }
+                        }
+                        ChainElement::Member(m) => {
+                            self.collect_called_functions_from_expr(&m.object, functions, called);
+                            self.collect_called_functions_from_expr(&m.property, functions, called);
+                        }
+                        ChainElement::OptionalMember(m) => {
+                            self.collect_called_functions_from_expr(&m.object, functions, called);
+                            self.collect_called_functions_from_expr(&m.property, functions, called);
+                        }
+                    }
+                }
+            }
+            Expr::Template(t) => {
+                for expr in &t.expressions {
+                    self.collect_called_functions_from_expr(expr, functions, called);
+                }
+            }
+            Expr::TypeAssertion(t) => {
+                self.collect_called_functions_from_expr(&t.expression, functions, called)
+            }
+            Expr::AsType(a) => {
+                self.collect_called_functions_from_expr(&a.expression, functions, called)
+            }
+            Expr::NonNull(n) => {
+                self.collect_called_functions_from_expr(&n.expression, functions, called)
+            }
+            Expr::Parenthesized(p) => {
+                self.collect_called_functions_from_expr(&p.expression, functions, called)
+            }
+            Expr::Import(i) => self.collect_called_functions_from_expr(&i.source, functions, called),
+            Expr::TaggedTemplate(t) => {
+                self.collect_called_functions_from_expr(&t.tag, functions, called);
+                for expr in &t.template.expressions {
+                    self.collect_called_functions_from_expr(expr, functions, called);
+                }
+            }
+            Expr::Identifier(_)
+            | Expr::Function(_)
+            | Expr::ArrowFunction(_)
+            | Expr::This(_)
+            | Expr::Literal(_)
+            | Expr::Super(_)
+            | Expr::JsxElement(_)
+            | Expr::JsxFragment(_)
+            | Expr::Class(_)
+            | Expr::MetaProperty(_)
+            | Expr::Regex(_)
+            | Expr::AssignmentTargetPattern(_) => {}
+        }
+    }
+
+    fn condense_call_graph(
+        &self,
+        functions: &HashMap<String, FunctionDecl>,
+        call_graph: &HashMap<String, HashSet<String>>,
+    ) -> Vec<Vec<String>> {
+        let components = self.compute_sccs(functions, call_graph);
+        let mut component_index = HashMap::new();
+        for (index, component) in components.iter().enumerate() {
+            for name in component {
+                component_index.insert(name.clone(), index);
+            }
+        }
+
+        let mut indegree = vec![0usize; components.len()];
+        let mut edges = vec![HashSet::new(); components.len()];
+        for (name, callees) in call_graph {
+            let Some(&from) = component_index.get(name) else {
+                continue;
+            };
+            for callee in callees {
+                let Some(&to) = component_index.get(callee) else {
+                    continue;
+                };
+                if from != to && edges[from].insert(to) {
+                    indegree[to] += 1;
+                }
+            }
+        }
+
+        let mut ready: Vec<usize> = indegree
+            .iter()
+            .enumerate()
+            .filter_map(|(index, degree)| (*degree == 0).then_some(index))
+            .collect();
+        let mut ordered = Vec::new();
+        while let Some(index) = ready.pop() {
+            ordered.push(components[index].clone());
+            let outgoing: Vec<usize> = edges[index].iter().copied().collect();
+            for next in outgoing {
+                indegree[next] -= 1;
+                if indegree[next] == 0 {
+                    ready.push(next);
+                }
+            }
+        }
+
+        if ordered.len() == components.len() {
+            ordered
+        } else {
+            components
+        }
+    }
+
+    fn compute_sccs(
+        &self,
+        functions: &HashMap<String, FunctionDecl>,
+        call_graph: &HashMap<String, HashSet<String>>,
+    ) -> Vec<Vec<String>> {
+        #[derive(Default)]
+        struct TarjanState {
+            index: usize,
+            stack: Vec<String>,
+            on_stack: HashSet<String>,
+            indices: HashMap<String, usize>,
+            lowlinks: HashMap<String, usize>,
+            components: Vec<Vec<String>>,
+        }
+
+        fn strong_connect(
+            node: &str,
+            graph: &HashMap<String, HashSet<String>>,
+            state: &mut TarjanState,
+        ) {
+            let node_name = node.to_string();
+            state.indices.insert(node_name.clone(), state.index);
+            state.lowlinks.insert(node_name.clone(), state.index);
+            state.index += 1;
+            state.stack.push(node_name.clone());
+            state.on_stack.insert(node_name.clone());
+
+            let neighbors = graph.get(node).cloned().unwrap_or_default();
+            for neighbor in neighbors {
+                if !state.indices.contains_key(&neighbor) {
+                    strong_connect(&neighbor, graph, state);
+                    let neighbor_low = state.lowlinks.get(&neighbor).copied().unwrap_or(usize::MAX);
+                    if let Some(lowlink) = state.lowlinks.get_mut(node) {
+                        *lowlink = (*lowlink).min(neighbor_low);
+                    }
+                } else if state.on_stack.contains(&neighbor) {
+                    let neighbor_index = state.indices.get(&neighbor).copied().unwrap_or(usize::MAX);
+                    if let Some(lowlink) = state.lowlinks.get_mut(node) {
+                        *lowlink = (*lowlink).min(neighbor_index);
+                    }
+                }
+            }
+
+            let is_root = state.lowlinks.get(node) == state.indices.get(node);
+            if is_root {
+                let mut component = Vec::new();
+                while let Some(entry) = state.stack.pop() {
+                    state.on_stack.remove(&entry);
+                    component.push(entry.clone());
+                    if entry == node {
+                        break;
+                    }
+                }
+                component.sort();
+                state.components.push(component);
+            }
+        }
+
+        let mut state = TarjanState::default();
+        let mut names: Vec<String> = functions.keys().cloned().collect();
+        names.sort();
+        for name in names {
+            if !state.indices.contains_key(&name) {
+                strong_connect(&name, call_graph, &mut state);
+            }
+        }
+
+        state.components
     }
 
     fn param_borrow_kind(&self, param: &Param) -> Option<BorrowKind> {
@@ -273,24 +802,38 @@ impl BorrowChecker {
                 _ => None,
             })
             .collect();
-
-        let mut return_source = None;
-        let mut thread_captured_params = HashSet::new();
+        let mut state = SummaryState::default();
+        for (name, index) in &param_indices {
+            if let Some(kind) = param_borrows[*index] {
+                state.bindings.insert(
+                    name.clone(),
+                    vec![ReturnBorrowSource {
+                        param_index: *index,
+                        kind,
+                    }],
+                );
+            }
+        }
 
         self.collect_summary_from_statements(
             &function.body.statements,
             &param_indices,
             return_borrow,
             known_summaries,
-            &mut return_source,
-            &mut thread_captured_params,
+            &mut state,
         );
+
+        let mut return_sources: Vec<_> = state.return_sources.into_iter().collect();
+        return_sources.sort_by_key(|source| (source.param_index, source.kind as usize));
+        let mut escaped_params = state.thread_captured_params.clone();
+        escaped_params.extend(return_sources.iter().map(|source| source.param_index));
 
         FunctionBorrowSummary {
             param_borrows,
             return_borrow,
-            return_source,
-            thread_captured_params,
+            return_sources,
+            escaped_params,
+            thread_captured_params: state.thread_captured_params,
         }
     }
 
@@ -300,8 +843,7 @@ impl BorrowChecker {
         param_indices: &HashMap<String, usize>,
         expected_return_borrow: Option<BorrowKind>,
         known_summaries: &HashMap<String, FunctionBorrowSummary>,
-        return_source: &mut Option<ReturnBorrowSource>,
-        thread_captured_params: &mut HashSet<usize>,
+        state: &mut SummaryState,
     ) {
         for stmt in statements {
             self.collect_summary_from_stmt(
@@ -309,8 +851,7 @@ impl BorrowChecker {
                 param_indices,
                 expected_return_borrow,
                 known_summaries,
-                return_source,
-                thread_captured_params,
+                state,
             );
         }
     }
@@ -321,27 +862,21 @@ impl BorrowChecker {
         param_indices: &HashMap<String, usize>,
         expected_return_borrow: Option<BorrowKind>,
         known_summaries: &HashMap<String, FunctionBorrowSummary>,
-        return_source: &mut Option<ReturnBorrowSource>,
-        thread_captured_params: &mut HashSet<usize>,
+        state: &mut SummaryState,
     ) {
         match stmt {
             Stmt::Return(r) => {
                 if let Some(expected_kind) = expected_return_borrow {
                     if let Some(expr) = &r.argument {
-                        if let Some(source) = self.return_source_from_expr(
+                        for source in self.return_sources_from_expr(
                             expr,
                             expected_kind,
                             param_indices,
                             known_summaries,
+                            &state.bindings,
                         ) {
-                            match return_source {
-                                Some(existing) if existing != &source => {
-                                    *return_source = None;
-                                }
-                                None => {
-                                    *return_source = Some(source);
-                                }
-                                _ => {}
+                            if Self::borrow_kind_satisfies(source.kind, expected_kind) {
+                                state.return_sources.insert(source);
                             }
                         }
                     }
@@ -352,7 +887,14 @@ impl BorrowChecker {
                     &expr_stmt.expr,
                     param_indices,
                     known_summaries,
-                    thread_captured_params,
+                    &state.bindings,
+                    &mut state.thread_captured_params,
+                );
+                self.update_summary_binding_from_expr_stmt(
+                    &expr_stmt.expr,
+                    param_indices,
+                    known_summaries,
+                    &mut state.bindings,
                 );
             }
             Stmt::Variable(v) => {
@@ -362,80 +904,108 @@ impl BorrowChecker {
                             init,
                             param_indices,
                             known_summaries,
-                            thread_captured_params,
+                            &state.bindings,
+                            &mut state.thread_captured_params,
                         );
+                    }
+                    if let Pattern::Identifier(id) = &decl.id {
+                        if let Some(init) = &decl.init {
+                            if let Some(binding) = self.summary_binding_sources_from_expr(
+                                init,
+                                param_indices,
+                                known_summaries,
+                                &state.bindings,
+                            ) {
+                                state.bindings.insert(id.name.sym.clone(), binding);
+                            } else {
+                                state.bindings.remove(&id.name.sym);
+                            }
+                        } else {
+                            state.bindings.remove(&id.name.sym);
+                        }
                     }
                 }
             }
             Stmt::Block(b) => {
+                let mut block_state = state.clone();
                 self.collect_summary_from_statements(
                     &b.statements,
                     param_indices,
                     expected_return_borrow,
                     known_summaries,
-                    return_source,
-                    thread_captured_params,
+                    &mut block_state,
                 );
+                state.return_sources.extend(block_state.return_sources);
+                state.thread_captured_params.extend(block_state.thread_captured_params);
             }
             Stmt::If(i) => {
                 self.collect_thread_captures_from_expr(
                     &i.condition,
                     param_indices,
                     known_summaries,
-                    thread_captured_params,
+                    &state.bindings,
+                    &mut state.thread_captured_params,
                 );
+                let mut then_state = state.clone();
                 self.collect_summary_from_stmt(
                     &i.consequent,
                     param_indices,
                     expected_return_borrow,
                     known_summaries,
-                    return_source,
-                    thread_captured_params,
+                    &mut then_state,
                 );
+                let mut branch_states = vec![then_state];
                 if let Some(alternate) = &i.alternate {
+                    let mut else_state = state.clone();
                     self.collect_summary_from_stmt(
                         alternate,
                         param_indices,
                         expected_return_borrow,
                         known_summaries,
-                        return_source,
-                        thread_captured_params,
+                        &mut else_state,
                     );
+                    branch_states.push(else_state);
                 }
+                self.merge_summary_branch_states(state, &branch_states);
             }
             Stmt::While(w) => {
                 self.collect_thread_captures_from_expr(
                     &w.condition,
                     param_indices,
                     known_summaries,
-                    thread_captured_params,
+                    &state.bindings,
+                    &mut state.thread_captured_params,
                 );
+                let mut loop_state = state.clone();
                 self.collect_summary_from_stmt(
                     &w.body,
                     param_indices,
                     expected_return_borrow,
                     known_summaries,
-                    return_source,
-                    thread_captured_params,
+                    &mut loop_state,
                 );
+                self.merge_summary_branch_states(state, &[loop_state]);
             }
             Stmt::DoWhile(d) => {
+                let mut loop_state = state.clone();
                 self.collect_summary_from_stmt(
                     &d.body,
                     param_indices,
                     expected_return_borrow,
                     known_summaries,
-                    return_source,
-                    thread_captured_params,
+                    &mut loop_state,
                 );
                 self.collect_thread_captures_from_expr(
                     &d.condition,
                     param_indices,
                     known_summaries,
-                    thread_captured_params,
+                    &state.bindings,
+                    &mut state.thread_captured_params,
                 );
+                self.merge_summary_branch_states(state, &[loop_state]);
             }
             Stmt::For(f) => {
+                let mut loop_state = state.clone();
                 if let Some(init) = &f.init {
                     match init {
                         ForInit::Variable(v) => {
@@ -445,8 +1015,21 @@ impl BorrowChecker {
                                         init,
                                         param_indices,
                                         known_summaries,
-                                        thread_captured_params,
+                                        &loop_state.bindings,
+                                        &mut loop_state.thread_captured_params,
                                     );
+                                }
+                                if let Pattern::Identifier(id) = &decl.id {
+                                    if let Some(init) = &decl.init {
+                                        if let Some(binding) = self.summary_binding_sources_from_expr(
+                                            init,
+                                            param_indices,
+                                            known_summaries,
+                                            &loop_state.bindings,
+                                        ) {
+                                            loop_state.bindings.insert(id.name.sym.clone(), binding);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -454,7 +1037,8 @@ impl BorrowChecker {
                             e,
                             param_indices,
                             known_summaries,
-                            thread_captured_params,
+                            &loop_state.bindings,
+                            &mut loop_state.thread_captured_params,
                         ),
                     }
                 }
@@ -463,7 +1047,8 @@ impl BorrowChecker {
                         test,
                         param_indices,
                         known_summaries,
-                        thread_captured_params,
+                        &loop_state.bindings,
+                        &mut loop_state.thread_captured_params,
                     );
                 }
                 if let Some(update) = &f.update {
@@ -471,7 +1056,14 @@ impl BorrowChecker {
                         update,
                         param_indices,
                         known_summaries,
-                        thread_captured_params,
+                        &loop_state.bindings,
+                        &mut loop_state.thread_captured_params,
+                    );
+                    self.update_summary_binding_from_expr_stmt(
+                        update,
+                        param_indices,
+                        known_summaries,
+                        &mut loop_state.bindings,
                     );
                 }
                 self.collect_summary_from_stmt(
@@ -479,40 +1071,46 @@ impl BorrowChecker {
                     param_indices,
                     expected_return_borrow,
                     known_summaries,
-                    return_source,
-                    thread_captured_params,
+                    &mut loop_state,
                 );
+                self.merge_summary_branch_states(state, &[loop_state]);
             }
             Stmt::ForIn(f) => {
                 self.collect_thread_captures_from_expr(
                     &f.right,
                     param_indices,
                     known_summaries,
-                    thread_captured_params,
+                    &state.bindings,
+                    &mut state.thread_captured_params,
                 );
+                let mut loop_state = state.clone();
                 self.collect_summary_from_stmt(
                     &f.body,
                     param_indices,
                     expected_return_borrow,
                     known_summaries,
-                    return_source,
-                    thread_captured_params,
+                    &mut loop_state,
                 );
+                self.merge_summary_branch_states(state, &[loop_state]);
             }
             Stmt::Switch(s) => {
                 self.collect_thread_captures_from_expr(
                     &s.discriminant,
                     param_indices,
                     known_summaries,
-                    thread_captured_params,
+                    &state.bindings,
+                    &mut state.thread_captured_params,
                 );
+                let mut branch_states = Vec::new();
                 for case in &s.cases {
+                    let mut case_state = state.clone();
                     if let Some(test) = &case.test {
                         self.collect_thread_captures_from_expr(
                             test,
                             param_indices,
                             known_summaries,
-                            thread_captured_params,
+                            &case_state.bindings,
+                            &mut case_state.thread_captured_params,
                         );
                     }
                     self.collect_summary_from_statements(
@@ -520,175 +1118,248 @@ impl BorrowChecker {
                         param_indices,
                         expected_return_borrow,
                         known_summaries,
-                        return_source,
-                        thread_captured_params,
+                        &mut case_state,
                     );
+                    branch_states.push(case_state);
                 }
+                self.merge_summary_branch_states(state, &branch_states);
             }
             Stmt::Match(m) => {
                 self.collect_thread_captures_from_expr(
                     &m.discriminant,
                     param_indices,
                     known_summaries,
-                    thread_captured_params,
+                    &state.bindings,
+                    &mut state.thread_captured_params,
                 );
+                let mut branch_states = Vec::new();
                 for case in &m.cases {
+                    let mut case_state = state.clone();
                     self.collect_thread_captures_from_expr(
                         &case.pattern,
                         param_indices,
                         known_summaries,
-                        thread_captured_params,
+                        &case_state.bindings,
+                        &mut case_state.thread_captured_params,
                     );
                     self.collect_summary_from_stmt(
                         &case.consequent,
                         param_indices,
                         expected_return_borrow,
                         known_summaries,
-                        return_source,
-                        thread_captured_params,
+                        &mut case_state,
                     );
+                    branch_states.push(case_state);
                 }
+                self.merge_summary_branch_states(state, &branch_states);
             }
             Stmt::Try(t) => {
+                let mut branch_states = Vec::new();
+                let mut block_state = state.clone();
                 self.collect_summary_from_stmt(
                     &Stmt::Block(t.block.clone()),
                     param_indices,
                     expected_return_borrow,
                     known_summaries,
-                    return_source,
-                    thread_captured_params,
+                    &mut block_state,
                 );
+                branch_states.push(block_state);
                 if let Some(handler) = &t.handler {
+                    let mut handler_state = state.clone();
                     self.collect_summary_from_statements(
                         &handler.body.statements,
                         param_indices,
                         expected_return_borrow,
                         known_summaries,
-                        return_source,
-                        thread_captured_params,
+                        &mut handler_state,
                     );
+                    branch_states.push(handler_state);
                 }
                 if let Some(finalizer) = &t.finalizer {
+                    let mut finalizer_state = state.clone();
                     self.collect_summary_from_statements(
                         &finalizer.statements,
                         param_indices,
                         expected_return_borrow,
                         known_summaries,
-                        return_source,
-                        thread_captured_params,
+                        &mut finalizer_state,
                     );
+                    branch_states.push(finalizer_state);
                 }
+                self.merge_summary_branch_states(state, &branch_states);
             }
             Stmt::Throw(t) => {
                 self.collect_thread_captures_from_expr(
                     &t.argument,
                     param_indices,
                     known_summaries,
-                    thread_captured_params,
+                    &state.bindings,
+                    &mut state.thread_captured_params,
                 );
             }
             _ => {}
         }
     }
 
-    fn return_source_from_expr(
+    fn merge_summary_branch_states(&self, state: &mut SummaryState, branch_states: &[SummaryState]) {
+        for branch in branch_states {
+            state.return_sources.extend(branch.return_sources.clone());
+            state.thread_captured_params
+                .extend(branch.thread_captured_params.iter().copied());
+        }
+
+        let mut merged = state.bindings.clone();
+        for branch in branch_states {
+            for (name, sources) in &branch.bindings {
+                let entry = merged.entry(name.clone()).or_default();
+                entry.extend(sources.clone());
+                Self::dedupe_return_sources(entry);
+            }
+        }
+        state.bindings = merged;
+    }
+
+    fn return_sources_from_expr(
         &self,
         expr: &Expr,
         expected_kind: BorrowKind,
         param_indices: &HashMap<String, usize>,
         known_summaries: &HashMap<String, FunctionBorrowSummary>,
-    ) -> Option<ReturnBorrowSource> {
+        bindings: &HashMap<String, Vec<ReturnBorrowSource>>,
+    ) -> Vec<ReturnBorrowSource> {
         match expr {
-            Expr::Identifier(id) => {
-                let &param_index = param_indices.get(&id.sym)?;
-                Some(ReturnBorrowSource {
-                    param_index,
-                    kind: expected_kind,
-                })
-            }
-            Expr::Ref(r) => self.return_source_from_param_expr(
+            Expr::Identifier(id) => bindings
+                .get(&id.sym)
+                .cloned()
+                .unwrap_or_else(|| self.return_sources_for_identifier(id, param_indices)),
+            Expr::Ref(r) => self.return_sources_from_param_expr(
                 &r.expr,
                 BorrowKind::Shared,
                 expected_kind,
                 param_indices,
+                bindings,
             ),
-            Expr::MutRef(r) => self.return_source_from_param_expr(
+            Expr::MutRef(r) => self.return_sources_from_param_expr(
                 &r.expr,
                 BorrowKind::Mutable,
                 expected_kind,
                 param_indices,
+                bindings,
             ),
             Expr::Call(c) => {
-                self.return_source_from_call(c, expected_kind, param_indices, known_summaries)
+                self.return_sources_from_call(c, expected_kind, param_indices, known_summaries, bindings)
             }
-            _ => None,
+            Expr::Parenthesized(p) => self.return_sources_from_expr(
+                &p.expression,
+                expected_kind,
+                param_indices,
+                known_summaries,
+                bindings,
+            ),
+            Expr::TypeAssertion(t) => self.return_sources_from_expr(
+                &t.expression,
+                expected_kind,
+                param_indices,
+                known_summaries,
+                bindings,
+            ),
+            Expr::AsType(a) => self.return_sources_from_expr(
+                &a.expression,
+                expected_kind,
+                param_indices,
+                known_summaries,
+                bindings,
+            ),
+            Expr::NonNull(n) => self.return_sources_from_expr(
+                &n.expression,
+                expected_kind,
+                param_indices,
+                known_summaries,
+                bindings,
+            ),
+            _ => Vec::new(),
         }
     }
 
-    fn return_source_from_param_expr(
+    fn return_sources_for_identifier(
+        &self,
+        id: &Ident,
+        param_indices: &HashMap<String, usize>,
+    ) -> Vec<ReturnBorrowSource> {
+        let Some(&param_index) = param_indices.get(&id.sym) else {
+            return Vec::new();
+        };
+        vec![ReturnBorrowSource {
+            param_index,
+            kind: BorrowKind::Shared,
+        }]
+    }
+
+    fn return_sources_from_param_expr(
         &self,
         expr: &Expr,
         found_kind: BorrowKind,
         expected_kind: BorrowKind,
         param_indices: &HashMap<String, usize>,
-    ) -> Option<ReturnBorrowSource> {
+        bindings: &HashMap<String, Vec<ReturnBorrowSource>>,
+    ) -> Vec<ReturnBorrowSource> {
         if !Self::borrow_kind_satisfies(found_kind, expected_kind) {
-            return None;
+            return Vec::new();
         }
 
-        let Expr::Identifier(id) = expr else {
-            return None;
+        let sources = match expr {
+            Expr::Identifier(id) => bindings
+                .get(&id.sym)
+                .cloned()
+                .unwrap_or_else(|| self.return_sources_for_identifier(id, param_indices)),
+            _ => Vec::new(),
         };
-        let &param_index = param_indices.get(&id.sym)?;
-        Some(ReturnBorrowSource {
-            param_index,
-            kind: found_kind,
-        })
+
+        sources
+            .into_iter()
+            .filter_map(|mut source| {
+                if !Self::borrow_kind_satisfies(source.kind, found_kind) {
+                    return None;
+                }
+                source.kind = found_kind;
+                Some(source)
+            })
+            .collect()
     }
 
-    fn return_source_from_call(
+    fn return_sources_from_call(
         &self,
         call: &CallExpr,
         expected_kind: BorrowKind,
         param_indices: &HashMap<String, usize>,
         known_summaries: &HashMap<String, FunctionBorrowSummary>,
-    ) -> Option<ReturnBorrowSource> {
+        bindings: &HashMap<String, Vec<ReturnBorrowSource>>,
+    ) -> Vec<ReturnBorrowSource> {
         let Expr::Identifier(id) = &*call.callee else {
-            return None;
+            return Vec::new();
         };
-        let summary = known_summaries.get(&id.sym)?;
-        let source = summary.return_source.as_ref()?;
-        if !Self::borrow_kind_satisfies(source.kind, expected_kind) {
-            return None;
-        }
-
-        let arg = call.arguments.get(source.param_index)?;
-        let ExprOrSpread::Expr(arg_expr) = arg else {
-            return None;
+        let Some(summary) = known_summaries.get(&id.sym) else {
+            return Vec::new();
         };
-
-        match arg_expr {
-            Expr::Identifier(arg_id) => {
-                let &param_index = param_indices.get(&arg_id.sym)?;
-                Some(ReturnBorrowSource {
-                    param_index,
-                    kind: source.kind,
-                })
+        let mut mapped = Vec::new();
+        for source in &summary.return_sources {
+            if !Self::borrow_kind_satisfies(source.kind, expected_kind) {
+                continue;
             }
-            Expr::Ref(r) => self.return_source_from_param_expr(
-                &r.expr,
-                BorrowKind::Shared,
+            let Some(ExprOrSpread::Expr(arg_expr)) = call.arguments.get(source.param_index) else {
+                continue;
+            };
+            let mut sources = self.return_sources_from_param_expr(
+                arg_expr,
+                source.kind,
                 expected_kind,
                 param_indices,
-            ),
-            Expr::MutRef(r) => self.return_source_from_param_expr(
-                &r.expr,
-                BorrowKind::Mutable,
-                expected_kind,
-                param_indices,
-            ),
-            _ => None,
+                bindings,
+            );
+            mapped.append(&mut sources);
         }
+        Self::dedupe_return_sources(&mut mapped);
+        mapped
     }
 
     fn collect_thread_captures_from_expr(
@@ -696,6 +1367,7 @@ impl BorrowChecker {
         expr: &Expr,
         param_indices: &HashMap<String, usize>,
         known_summaries: &HashMap<String, FunctionBorrowSummary>,
+        bindings: &HashMap<String, Vec<ReturnBorrowSource>>,
         thread_captured_params: &mut HashSet<usize>,
     ) {
         match expr {
@@ -704,7 +1376,9 @@ impl BorrowChecker {
                     if id.sym == "thread" || id.sym == "process" {
                         for arg in &c.arguments {
                             if let ExprOrSpread::Expr(e) = arg {
-                                if let Some(index) = self.param_index_for_expr(e, param_indices) {
+                                for index in
+                                    self.param_indices_for_expr(e, param_indices, bindings)
+                                {
                                     thread_captured_params.insert(index);
                                 }
                             }
@@ -712,7 +1386,9 @@ impl BorrowChecker {
                     } else if let Some(summary) = known_summaries.get(&id.sym) {
                         for param_index in &summary.thread_captured_params {
                             if let Some(ExprOrSpread::Expr(e)) = c.arguments.get(*param_index) {
-                                if let Some(index) = self.param_index_for_expr(e, param_indices) {
+                                for index in
+                                    self.param_indices_for_expr(e, param_indices, bindings)
+                                {
                                     thread_captured_params.insert(index);
                                 }
                             }
@@ -724,6 +1400,7 @@ impl BorrowChecker {
                     &c.callee,
                     param_indices,
                     known_summaries,
+                    bindings,
                     thread_captured_params,
                 );
                 for arg in &c.arguments {
@@ -732,6 +1409,7 @@ impl BorrowChecker {
                             e,
                             param_indices,
                             known_summaries,
+                            bindings,
                             thread_captured_params,
                         );
                     }
@@ -742,12 +1420,14 @@ impl BorrowChecker {
                     &m.object,
                     param_indices,
                     known_summaries,
+                    bindings,
                     thread_captured_params,
                 );
                 self.collect_thread_captures_from_expr(
                     &m.property,
                     param_indices,
                     known_summaries,
+                    bindings,
                     thread_captured_params,
                 );
             }
@@ -758,6 +1438,7 @@ impl BorrowChecker {
                             e,
                             param_indices,
                             known_summaries,
+                            bindings,
                             thread_captured_params,
                         );
                     }
@@ -772,20 +1453,26 @@ impl BorrowChecker {
                                     e,
                                     param_indices,
                                     known_summaries,
+                                    bindings,
                                     thread_captured_params,
                                 );
                             }
                         }
                         ObjectProperty::Method(m) => {
-                            let mut ignored_return_source = None;
+                            let mut nested_state = SummaryState {
+                                bindings: bindings.clone(),
+                                return_sources: HashSet::new(),
+                                thread_captured_params: HashSet::new(),
+                            };
                             self.collect_summary_from_statements(
                                 &m.value.body.statements,
                                 param_indices,
                                 None,
                                 known_summaries,
-                                &mut ignored_return_source,
-                                thread_captured_params,
+                                &mut nested_state,
                             );
+                            thread_captured_params
+                                .extend(nested_state.thread_captured_params.into_iter());
                         }
                         _ => {}
                     }
@@ -795,12 +1482,14 @@ impl BorrowChecker {
                 &a.argument,
                 param_indices,
                 known_summaries,
+                bindings,
                 thread_captured_params,
             ),
             Expr::Assignment(a) => self.collect_thread_captures_from_expr(
                 &a.right,
                 param_indices,
                 known_summaries,
+                bindings,
                 thread_captured_params,
             ),
             Expr::Binary(b) => {
@@ -808,12 +1497,14 @@ impl BorrowChecker {
                     &b.left,
                     param_indices,
                     known_summaries,
+                    bindings,
                     thread_captured_params,
                 );
                 self.collect_thread_captures_from_expr(
                     &b.right,
                     param_indices,
                     known_summaries,
+                    bindings,
                     thread_captured_params,
                 );
             }
@@ -821,6 +1512,7 @@ impl BorrowChecker {
                 &u.argument,
                 param_indices,
                 known_summaries,
+                bindings,
                 thread_captured_params,
             ),
             Expr::Conditional(c) => {
@@ -828,18 +1520,21 @@ impl BorrowChecker {
                     &c.test,
                     param_indices,
                     known_summaries,
+                    bindings,
                     thread_captured_params,
                 );
                 self.collect_thread_captures_from_expr(
                     &c.consequent,
                     param_indices,
                     known_summaries,
+                    bindings,
                     thread_captured_params,
                 );
                 self.collect_thread_captures_from_expr(
                     &c.alternate,
                     param_indices,
                     known_summaries,
+                    bindings,
                     thread_captured_params,
                 );
             }
@@ -847,23 +1542,156 @@ impl BorrowChecker {
         }
     }
 
-    fn param_index_for_expr(
+    fn update_summary_binding_from_expr_stmt(
         &self,
         expr: &Expr,
         param_indices: &HashMap<String, usize>,
-    ) -> Option<usize> {
+        known_summaries: &HashMap<String, FunctionBorrowSummary>,
+        bindings: &mut HashMap<String, Vec<ReturnBorrowSource>>,
+    ) {
+        let Expr::Assignment(assignment) = expr else {
+            return;
+        };
+        let AssignmentTarget::Simple(target) = &*assignment.left else {
+            return;
+        };
+        let Expr::Identifier(id) = &**target else {
+            return;
+        };
+
+        if let Some(new_binding) = self.summary_binding_sources_from_expr(
+            &assignment.right,
+            param_indices,
+            known_summaries,
+            bindings,
+        ) {
+            bindings.insert(id.sym.clone(), new_binding);
+        } else {
+            bindings.remove(&id.sym);
+        }
+    }
+
+    fn summary_binding_sources_from_expr(
+        &self,
+        expr: &Expr,
+        param_indices: &HashMap<String, usize>,
+        known_summaries: &HashMap<String, FunctionBorrowSummary>,
+        bindings: &HashMap<String, Vec<ReturnBorrowSource>>,
+    ) -> Option<Vec<ReturnBorrowSource>> {
         match expr {
-            Expr::Identifier(id) => param_indices.get(&id.sym).copied(),
-            Expr::Ref(r) => match &*r.expr {
-                Expr::Identifier(id) => param_indices.get(&id.sym).copied(),
-                _ => None,
-            },
-            Expr::MutRef(r) => match &*r.expr {
-                Expr::Identifier(id) => param_indices.get(&id.sym).copied(),
-                _ => None,
-            },
+            Expr::Identifier(id) => bindings
+                .get(&id.sym)
+                .cloned()
+                .or_else(|| {
+                    param_indices.get(&id.sym).map(|param_index| {
+                        vec![ReturnBorrowSource {
+                            param_index: *param_index,
+                            kind: BorrowKind::Shared,
+                        }]
+                    })
+                }),
+            Expr::Ref(r) => Some(self.return_sources_from_param_expr(
+                &r.expr,
+                BorrowKind::Shared,
+                BorrowKind::Shared,
+                param_indices,
+                bindings,
+            )),
+            Expr::MutRef(r) => Some(self.return_sources_from_param_expr(
+                &r.expr,
+                BorrowKind::Mutable,
+                BorrowKind::Mutable,
+                param_indices,
+                bindings,
+            )),
+            Expr::Call(c) => {
+                let Expr::Identifier(id) = &*c.callee else {
+                    return None;
+                };
+                let summary = known_summaries.get(&id.sym)?;
+                if summary.return_sources.is_empty() {
+                    return None;
+                }
+                let mut result = Vec::new();
+                for source in &summary.return_sources {
+                    let ExprOrSpread::Expr(arg_expr) = c.arguments.get(source.param_index)? else {
+                        continue;
+                    };
+                    let mut sources = self.return_sources_from_param_expr(
+                        arg_expr,
+                        source.kind,
+                        source.kind,
+                        param_indices,
+                        bindings,
+                    );
+                    result.append(&mut sources);
+                }
+                Self::dedupe_return_sources(&mut result);
+                Some(result)
+            }
+            Expr::Parenthesized(p) => self.summary_binding_sources_from_expr(
+                &p.expression,
+                param_indices,
+                known_summaries,
+                bindings,
+            ),
+            Expr::TypeAssertion(t) => self.summary_binding_sources_from_expr(
+                &t.expression,
+                param_indices,
+                known_summaries,
+                bindings,
+            ),
+            Expr::AsType(a) => self.summary_binding_sources_from_expr(
+                &a.expression,
+                param_indices,
+                known_summaries,
+                bindings,
+            ),
+            Expr::NonNull(n) => self.summary_binding_sources_from_expr(
+                &n.expression,
+                param_indices,
+                known_summaries,
+                bindings,
+            ),
             _ => None,
         }
+    }
+
+    fn param_indices_for_expr(
+        &self,
+        expr: &Expr,
+        param_indices: &HashMap<String, usize>,
+        bindings: &HashMap<String, Vec<ReturnBorrowSource>>,
+    ) -> Vec<usize> {
+        match expr {
+            Expr::Identifier(id) => {
+                if let Some(bound) = bindings.get(&id.sym) {
+                    let mut indices: Vec<_> =
+                        bound.iter().map(|source| source.param_index).collect();
+                    indices.sort_unstable();
+                    indices.dedup();
+                    indices
+                } else {
+                    param_indices.get(&id.sym).copied().into_iter().collect()
+                }
+            }
+            Expr::Ref(r) => self.param_indices_for_expr(&r.expr, param_indices, bindings),
+            Expr::MutRef(r) => self.param_indices_for_expr(&r.expr, param_indices, bindings),
+            Expr::Parenthesized(p) => {
+                self.param_indices_for_expr(&p.expression, param_indices, bindings)
+            }
+            Expr::TypeAssertion(t) => {
+                self.param_indices_for_expr(&t.expression, param_indices, bindings)
+            }
+            Expr::AsType(a) => self.param_indices_for_expr(&a.expression, param_indices, bindings),
+            Expr::NonNull(n) => self.param_indices_for_expr(&n.expression, param_indices, bindings),
+            _ => Vec::new(),
+        }
+    }
+
+    fn dedupe_return_sources(sources: &mut Vec<ReturnBorrowSource>) {
+        sources.sort_by_key(|source| (source.param_index, source.kind as usize));
+        sources.dedup();
     }
 
     fn record_scope_local(&mut self, name: String) {
@@ -882,30 +1710,25 @@ impl BorrowChecker {
         Ok(())
     }
 
-    fn register_borrow_binding(&mut self, binding_name: &str, init: &Option<Expr>) {
-        let binding = match init {
-            Some(Expr::Ref(r)) => match &*r.expr {
-                Expr::Identifier(id) => Some(BorrowBinding {
-                    source: id.sym.clone(),
-                    kind: BorrowKind::Shared,
-                }),
-                _ => None,
-            },
-            Some(Expr::MutRef(r)) => match &*r.expr {
-                Expr::Identifier(id) => Some(BorrowBinding {
-                    source: id.sym.clone(),
-                    kind: BorrowKind::Mutable,
-                }),
-                _ => None,
-            },
-            _ => None,
+    fn register_borrow_binding(
+        &mut self,
+        binding_name: &str,
+        init: &Option<Expr>,
+    ) -> Result<(), BorrowError> {
+        self.release_borrow_binding(binding_name)?;
+
+        let Some(expr) = init else {
+            return Ok(());
+        };
+        let Some(binding) = self.binding_from_expr(expr) else {
+            return Ok(());
         };
 
-        if let Some(binding) = binding {
-            self.borrow_bindings
-                .insert(binding_name.to_string(), binding);
+        if Self::expr_activates_borrow_during_evaluation(expr) {
+            self.borrow_bindings.insert(binding_name.to_string(), binding);
+            Ok(())
         } else {
-            self.borrow_bindings.remove(binding_name);
+            self.install_borrow_binding(binding_name, binding, expr.span().clone())
         }
     }
 
@@ -951,7 +1774,212 @@ impl BorrowChecker {
             return Ok(());
         };
 
-        self.release_source_borrow(&binding.source, binding.kind)
+        for source in &binding.sources {
+            self.release_source_borrow(&source.source, source.kind)?;
+        }
+        Ok(())
+    }
+
+    fn install_borrow_binding(
+        &mut self,
+        binding_name: &str,
+        mut binding: BorrowBinding,
+        location: Span,
+    ) -> Result<(), BorrowError> {
+        binding.sources.sort_by(|left, right| {
+            left.source
+                .cmp(&right.source)
+                .then((left.kind as usize).cmp(&(right.kind as usize)))
+        });
+        binding.sources.dedup();
+
+        for source in &binding.sources {
+            self.activate_binding_source_borrow(&source.source, source.kind, location.clone())?;
+        }
+
+        self.borrow_bindings.insert(binding_name.to_string(), binding);
+        Ok(())
+    }
+
+    fn activate_binding_source_borrow(
+        &mut self,
+        source: &str,
+        kind: BorrowKind,
+        location: Span,
+    ) -> Result<(), BorrowError> {
+        if let Some(state) = self.locals.get_mut(source) {
+            if kind == BorrowKind::Mutable {
+                if let Ownership::Borrowed(BorrowKind::Shared) = &state.ownership {
+                    self.errors.push(BorrowError::BorrowConflict {
+                        variable: source.to_string(),
+                        location: location.clone(),
+                        message: "Cannot mutably borrow while shared borrow exists".to_string(),
+                    });
+                }
+                if let Ownership::Borrowed(BorrowKind::Mutable) = &state.ownership {
+                    self.errors.push(BorrowError::BorrowConflict {
+                        variable: source.to_string(),
+                        location: location.clone(),
+                        message: "Cannot have multiple mutable borrows".to_string(),
+                    });
+                }
+                if self.loop_scope > 0 {
+                    self.errors.push(BorrowError::MutableBorrowInLoop {
+                        variable: source.to_string(),
+                        location: location.clone(),
+                    });
+                }
+                state.ownership = Ownership::Borrowed(BorrowKind::Mutable);
+            } else {
+                if let Ownership::Borrowed(BorrowKind::Mutable) = &state.ownership {
+                    self.errors.push(BorrowError::BorrowConflict {
+                        variable: source.to_string(),
+                        location: location.clone(),
+                        message: "Cannot immutably borrow while mutable borrow exists"
+                            .to_string(),
+                    });
+                }
+                if matches!(state.ownership, Ownership::Owned | Ownership::Copied) {
+                    state.ownership = Ownership::Borrowed(BorrowKind::Shared);
+                }
+            }
+        }
+
+        let borrow = Borrow {
+            kind,
+            location,
+            lifetime: self.generate_lifetime(),
+            from: source.to_string(),
+        };
+        self.active_borrows
+            .entry(source.to_string())
+            .or_default()
+            .push(borrow);
+        Ok(())
+    }
+
+    fn binding_from_expr(&self, expr: &Expr) -> Option<BorrowBinding> {
+        let mut sources = self.binding_sources_from_expr(expr)?;
+        sources.sort_by(|left, right| {
+            left.source
+                .cmp(&right.source)
+                .then((left.kind as usize).cmp(&(right.kind as usize)))
+        });
+        sources.dedup();
+        Some(BorrowBinding { sources })
+    }
+
+    fn binding_sources_from_expr(&self, expr: &Expr) -> Option<Vec<BorrowBindingSource>> {
+        match expr {
+            Expr::Identifier(id) => {
+                if let Some(binding) = self.borrow_bindings.get(&id.sym) {
+                    return Some(binding.sources.clone());
+                }
+
+                let kind = self
+                    .current_function_context
+                    .as_ref()
+                    .and_then(|ctx| ctx.param_borrows.get(&id.sym))
+                    .copied()
+                    .flatten()?;
+                Some(vec![BorrowBindingSource {
+                    source: id.sym.clone(),
+                    kind,
+                }])
+            }
+            Expr::Ref(r) => self.direct_binding_sources_from_expr(&r.expr, BorrowKind::Shared),
+            Expr::MutRef(r) => self.direct_binding_sources_from_expr(&r.expr, BorrowKind::Mutable),
+            Expr::Call(c) => self.binding_sources_from_call(c),
+            Expr::OptionalCall(c) => self.binding_sources_from_optional_call(c),
+            Expr::Parenthesized(p) => self.binding_sources_from_expr(&p.expression),
+            Expr::TypeAssertion(t) => self.binding_sources_from_expr(&t.expression),
+            Expr::AsType(a) => self.binding_sources_from_expr(&a.expression),
+            Expr::NonNull(n) => self.binding_sources_from_expr(&n.expression),
+            _ => None,
+        }
+    }
+
+    fn direct_binding_sources_from_expr(
+        &self,
+        expr: &Expr,
+        kind: BorrowKind,
+    ) -> Option<Vec<BorrowBindingSource>> {
+        match expr {
+            Expr::Identifier(id) => Some(vec![BorrowBindingSource {
+                source: id.sym.clone(),
+                kind,
+            }]),
+            Expr::Parenthesized(p) => self.direct_binding_sources_from_expr(&p.expression, kind),
+            Expr::TypeAssertion(t) => self.direct_binding_sources_from_expr(&t.expression, kind),
+            Expr::AsType(a) => self.direct_binding_sources_from_expr(&a.expression, kind),
+            Expr::NonNull(n) => self.direct_binding_sources_from_expr(&n.expression, kind),
+            _ => None,
+        }
+    }
+
+    fn binding_sources_from_call(&self, call: &CallExpr) -> Option<Vec<BorrowBindingSource>> {
+        let Expr::Identifier(callee) = &*call.callee else {
+            return None;
+        };
+        let summary = self.function_summaries.get(&callee.sym)?;
+        if summary.return_sources.is_empty() {
+            return None;
+        }
+
+        let mut result = Vec::new();
+        for source in &summary.return_sources {
+            let ExprOrSpread::Expr(argument) = call.arguments.get(source.param_index)? else {
+                continue;
+            };
+            let mut mapped = self.binding_sources_from_expr(argument)?;
+            mapped.retain(|candidate| Self::borrow_kind_satisfies(candidate.kind, source.kind));
+            for candidate in &mut mapped {
+                candidate.kind = source.kind;
+            }
+            result.extend(mapped);
+        }
+
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        }
+    }
+
+    fn binding_sources_from_optional_call(
+        &self,
+        call: &OptionalCallExpr,
+    ) -> Option<Vec<BorrowBindingSource>> {
+        let Expr::Identifier(callee) = &*call.callee else {
+            return None;
+        };
+        let summary = self.function_summaries.get(&callee.sym)?;
+        if summary.return_sources.is_empty() {
+            return None;
+        }
+
+        let mut result = Vec::new();
+        for source in &summary.return_sources {
+            let ExprOrSpread::Expr(argument) = call.arguments.get(source.param_index)? else {
+                continue;
+            };
+            let mut mapped = self.binding_sources_from_expr(argument)?;
+            mapped.retain(|candidate| Self::borrow_kind_satisfies(candidate.kind, source.kind));
+            for candidate in &mut mapped {
+                candidate.kind = source.kind;
+            }
+            result.extend(mapped);
+        }
+
+        if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        }
+    }
+
+    fn expr_activates_borrow_during_evaluation(expr: &Expr) -> bool {
+        matches!(expr, Expr::Ref(_) | Expr::MutRef(_))
     }
 
     fn release_source_borrow(&mut self, source: &str, kind: BorrowKind) -> Result<(), BorrowError> {
@@ -1189,7 +2217,7 @@ impl BorrowChecker {
             names.extend(bindings.keys().cloned());
         }
 
-        let mut seen: HashSet<(String, BorrowKind)> = HashSet::new();
+        let mut seen: HashSet<Vec<(String, BorrowKind)>> = HashSet::new();
         let mut expired = Vec::new();
 
         for name in names {
@@ -1199,7 +2227,11 @@ impl BorrowChecker {
 
             for bindings in branch_bindings {
                 if let Some(binding) = bindings.get(&name) {
-                    let key = (binding.source.clone(), binding.kind);
+                    let key: Vec<_> = binding
+                        .sources
+                        .iter()
+                        .map(|source| (source.source.clone(), source.kind))
+                        .collect();
                     if seen.insert(key) {
                         expired.push(binding.clone());
                     }
@@ -1307,7 +2339,9 @@ impl BorrowChecker {
         self.active_borrows = self.merge_branch_borrows_many(&branch_borrow_refs);
         self.borrow_bindings = merged_bindings;
         for binding in expired_branch_bindings {
-            self.release_source_borrow(&binding.source, binding.kind)?;
+            for source in binding.sources {
+                self.release_source_borrow(&source.source, source.kind)?;
+            }
         }
         if let Some(remaining) = self.remaining_identifier_uses.last_mut() {
             *remaining = merged_remaining_uses;
@@ -1912,7 +2946,7 @@ impl BorrowChecker {
                     },
                 );
                 self.record_scope_local(id.name.sym.clone());
-                self.register_borrow_binding(&id.name.sym, &decl.init);
+                self.register_borrow_binding(&id.name.sym, &decl.init)?;
                 self.release_dead_borrow_binding(&id.name.sym)?;
             }
         }
@@ -1933,6 +2967,15 @@ impl BorrowChecker {
                 if let Some(t) = info.type_table.get(ty) {
                     return t.is_copyable();
                 }
+            }
+        }
+
+        if let Some(expr) = init {
+            if let Some(binding) = self.binding_from_expr(expr) {
+                return binding
+                    .sources
+                    .iter()
+                    .all(|source| source.kind == BorrowKind::Shared);
             }
         }
 
@@ -1984,10 +3027,14 @@ impl BorrowChecker {
                     id.name.sym.clone(),
                     VariableState {
                         name: id.name.sym.clone(),
-                        ownership: Ownership::Owned,
+                        ownership: if self.param_borrow_kind(param).is_some() {
+                            Ownership::Copied
+                        } else {
+                            Ownership::Owned
+                        },
                         borrows: Vec::new(),
                         lifetime: Some(lifetime),
-                        is_copyable: false,
+                        is_copyable: self.param_borrow_kind(param) == Some(BorrowKind::Shared),
                         drop_scope: 0,
                     },
                 );
@@ -2089,7 +3136,9 @@ impl BorrowChecker {
         self.active_borrows = self.merge_branch_borrows(&then_borrows, &else_borrows);
         self.borrow_bindings = merged_bindings;
         for binding in expired_branch_bindings {
-            self.release_source_borrow(&binding.source, binding.kind)?;
+            for source in binding.sources {
+                self.release_source_borrow(&source.source, source.kind)?;
+            }
         }
         if let Some(remaining) = self.remaining_identifier_uses.last_mut() {
             *remaining = merged_remaining_uses;
@@ -2158,7 +3207,14 @@ impl BorrowChecker {
 
         let mut binding_parts: Vec<String> = bindings
             .iter()
-            .map(|(name, binding)| format!("{}:{}:{:?}", name, binding.source, binding.kind))
+            .map(|(name, binding)| {
+                let sources: Vec<String> = binding
+                    .sources
+                    .iter()
+                    .map(|source| format!("{}:{:?}", source.source, source.kind))
+                    .collect();
+                format!("{}:{}", name, sources.join("+"))
+            })
             .collect();
         binding_parts.sort();
 
@@ -2226,7 +3282,9 @@ impl BorrowChecker {
             self.active_borrows = self.merge_branch_borrows(&iter_borrows, &base_borrows);
             self.borrow_bindings = merged_bindings;
             for binding in expired_branch_bindings {
-                self.release_source_borrow(&binding.source, binding.kind)?;
+                for source in binding.sources {
+                    self.release_source_borrow(&source.source, source.kind)?;
+                }
             }
             if let Some(remaining) = self.remaining_identifier_uses.last_mut() {
                 *remaining = merged_remaining_uses;
@@ -2335,8 +3393,8 @@ impl BorrowChecker {
 
     fn check_return(&mut self, r: &ReturnStmt) -> Result<(), BorrowError> {
         if let Some(ref arg) = r.argument {
-            self.check_expression(arg)?;
             self.check_return_borrow(arg)?;
+            self.check_expression(arg)?;
             self.check_return_clears_borrows();
         }
         Ok(())
@@ -2626,6 +3684,7 @@ impl BorrowChecker {
         value: &Expr,
     ) -> Result<(), BorrowError> {
         self.check_expression(value)?;
+        let mut value_ownership = self.check_moveable(value)?;
 
         if let Expr::Identifier(src) = value {
             self.move_identifier_if_needed(src)?;
@@ -2634,14 +3693,30 @@ impl BorrowChecker {
         match target {
             AssignmentTarget::Simple(expr) => {
                 if let Expr::Identifier(id) = &**expr {
-                    if let Some(state) = self.locals.get_mut(&id.sym) {
-                        match state.ownership {
-                            Ownership::Borrowed(BorrowKind::Mutable) => {}
-                            _ => {
-                                state.ownership = Ownership::Owned;
-                            }
-                        }
+                    if self
+                        .active_borrows
+                        .get(&id.sym)
+                        .map(|borrows| !borrows.is_empty())
+                        .unwrap_or(false)
+                    {
+                        self.errors.push(BorrowError::BorrowConflict {
+                            variable: id.sym.clone(),
+                            location: id.span.clone(),
+                            message: "Cannot assign while active borrows exist".to_string(),
+                        });
                     }
+
+                    self.release_borrow_binding(&id.sym)?;
+                    let is_copyable = self.is_copyable_variable(&id.sym, &Some(value.clone()));
+                    if is_copyable && matches!(value_ownership, Ownership::Owned) {
+                        value_ownership = Ownership::Copied;
+                    }
+                    if let Some(state) = self.locals.get_mut(&id.sym) {
+                        state.ownership = value_ownership;
+                        state.is_copyable = is_copyable;
+                    }
+                    self.register_borrow_binding(&id.sym, &Some(value.clone()))?;
+                    self.release_dead_borrow_binding(&id.sym)?;
                 }
             }
             AssignmentTarget::Member(member) => {
@@ -2894,22 +3969,7 @@ impl BorrowChecker {
 
         match expr {
             Expr::Identifier(id) => {
-                let Some(found_kind) = ctx.param_borrows.get(&id.sym).copied().flatten() else {
-                    self.errors.push(BorrowError::LifetimeError(format!(
-                        "borrowed return value '{}' does not outlive function",
-                        id.sym
-                    )));
-                    return Ok(());
-                };
-
-                if !Self::borrow_kind_satisfies(found_kind, expected_kind) {
-                    self.errors.push(BorrowError::InvalidBorrow {
-                        variable: id.sym.clone(),
-                        location: id.span.clone(),
-                        message: "return borrow kind does not match function return type"
-                            .to_string(),
-                    });
-                }
+                self.validate_returned_identifier_or_binding(id, expected_kind)?;
             }
             Expr::Ref(r) => {
                 self.check_return_borrow_reference(&r.expr, BorrowKind::Shared, expected_kind)?;
@@ -2949,46 +4009,56 @@ impl BorrowChecker {
             )));
             return Ok(());
         };
-        let Some(source) = summary.return_source else {
+        if summary.return_sources.is_empty() {
             self.errors.push(BorrowError::LifetimeError(format!(
                 "borrowed return call '{}' does not map to a borrowed parameter",
                 callee.sym
             )));
             return Ok(());
-        };
-
-        if !Self::borrow_kind_satisfies(source.kind, expected_kind) {
-            self.errors.push(BorrowError::InvalidBorrow {
-                variable: callee.sym.clone(),
-                location: callee.span.clone(),
-                message: "returned borrow kind does not match function return type".to_string(),
-            });
-            return Ok(());
         }
 
-        let Some(ExprOrSpread::Expr(arg_expr)) = call.arguments.get(source.param_index) else {
-            self.errors.push(BorrowError::LifetimeError(format!(
-                "borrowed return call '{}' is missing the source argument",
-                callee.sym
-            )));
-            return Ok(());
-        };
+        let mut seen = HashSet::new();
+        for source in summary.return_sources {
+            if !seen.insert((source.param_index, source.kind)) {
+                continue;
+            }
 
-        match arg_expr {
-            Expr::Identifier(id) => {
-                self.validate_returned_param_reference(&id, source.kind, expected_kind)?;
+            if !Self::borrow_kind_satisfies(source.kind, expected_kind) {
+                self.errors.push(BorrowError::InvalidBorrow {
+                    variable: callee.sym.clone(),
+                    location: callee.span.clone(),
+                    message: format!(
+                        "returned borrow from '{}' parameter {} does not match function return type",
+                        callee.sym, source.param_index
+                    ),
+                });
+                continue;
             }
-            Expr::Ref(r) => {
-                self.check_return_borrow_reference(&r.expr, BorrowKind::Shared, expected_kind)?;
-            }
-            Expr::MutRef(r) => {
-                self.check_return_borrow_reference(&r.expr, BorrowKind::Mutable, expected_kind)?;
-            }
-            _ => {
-                self.errors.push(BorrowError::LifetimeError(
-                    "borrowed return call source must be identifier/reference expression"
-                        .to_string(),
-                ));
+
+            let Some(ExprOrSpread::Expr(arg_expr)) = call.arguments.get(source.param_index) else {
+                self.errors.push(BorrowError::LifetimeError(format!(
+                    "borrowed return call '{}' is missing source parameter {}",
+                    callee.sym, source.param_index
+                )));
+                continue;
+            };
+
+            match arg_expr {
+                Expr::Identifier(id) => {
+                    self.validate_returned_identifier_or_binding(id, source.kind)?;
+                }
+                Expr::Ref(r) => {
+                    self.check_return_borrow_reference(&r.expr, BorrowKind::Shared, expected_kind)?;
+                }
+                Expr::MutRef(r) => {
+                    self.check_return_borrow_reference(&r.expr, BorrowKind::Mutable, expected_kind)?;
+                }
+                _ => {
+                    self.errors.push(BorrowError::LifetimeError(format!(
+                        "borrowed return call '{}' source parameter {} must be identifier/reference expression",
+                        callee.sym, source.param_index
+                    )));
+                }
             }
         }
 
@@ -3021,25 +4091,77 @@ impl BorrowChecker {
             return Ok(());
         };
 
-        self.validate_returned_param_reference(id, found_kind, expected_kind)
+        self.validate_returned_identifier_or_binding(id, found_kind)?;
+        if !Self::borrow_kind_satisfies(found_kind, expected_kind) {
+            self.errors.push(BorrowError::InvalidBorrow {
+                variable: id.sym.clone(),
+                location: id.span.clone(),
+                message: "return borrow kind does not match function return type".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_returned_identifier_or_binding(
+        &mut self,
+        id: &Ident,
+        found_kind: BorrowKind,
+    ) -> Result<(), BorrowError> {
+        if self.validate_returned_param_reference(id, found_kind)? {
+            return Ok(());
+        }
+
+        if let Some(binding) = self.borrow_bindings.get(&id.sym).cloned() {
+            let mut saw_valid_param = false;
+            for source in binding.sources {
+                if let Some(ctx) = &self.current_function_context {
+                    if let Some(param_kind) = ctx.param_borrows.get(&source.source).copied().flatten()
+                    {
+                        saw_valid_param = true;
+                        if !Self::borrow_kind_satisfies(param_kind, source.kind)
+                            || !Self::borrow_kind_satisfies(source.kind, found_kind)
+                        {
+                            self.errors.push(BorrowError::InvalidBorrow {
+                                variable: id.sym.clone(),
+                                location: id.span.clone(),
+                                message: format!(
+                                    "borrowed return '{}' reborrows '{}' with incompatible mutability",
+                                    id.sym, source.source
+                                ),
+                            });
+                        }
+                    } else {
+                        self.errors.push(BorrowError::LifetimeError(format!(
+                            "borrowed return '{}' references local '{}' that does not outlive function",
+                            id.sym, source.source
+                        )));
+                    }
+                }
+            }
+
+            if saw_valid_param {
+                return Ok(());
+            }
+        }
+
+        self.errors.push(BorrowError::LifetimeError(format!(
+            "borrowed return value '{}' does not outlive function",
+            id.sym
+        )));
+        Ok(())
     }
 
     fn validate_returned_param_reference(
         &mut self,
         id: &Ident,
         found_kind: BorrowKind,
-        _expected_kind: BorrowKind,
-    ) -> Result<(), BorrowError> {
+    ) -> Result<bool, BorrowError> {
         let Some(ctx) = &self.current_function_context else {
-            return Ok(());
+            return Ok(false);
         };
 
         let Some(param_kind) = ctx.param_borrows.get(&id.sym).copied().flatten() else {
-            self.errors.push(BorrowError::LifetimeError(format!(
-                "borrowed return '{}' references non-borrowed parameter/local",
-                id.sym
-            )));
-            return Ok(());
+            return Ok(false);
         };
 
         if !Self::borrow_kind_satisfies(param_kind, found_kind) {
@@ -3050,7 +4172,7 @@ impl BorrowChecker {
             });
         }
 
-        Ok(())
+        Ok(true)
     }
 
     fn check_object(&mut self, o: &ObjectExpression) -> Result<(), BorrowError> {
@@ -3081,6 +4203,17 @@ impl BorrowChecker {
             Expr::Literal(_) => Ok(Ownership::Copied),
             Expr::Ref(_) => Ok(Ownership::Copied),
             Expr::Identifier(id) => {
+                if let Some(binding) = self.borrow_bindings.get(&id.sym) {
+                    return Ok(if binding
+                        .sources
+                        .iter()
+                        .all(|source| source.kind == BorrowKind::Shared)
+                    {
+                        Ownership::Copied
+                    } else {
+                        Ownership::Owned
+                    });
+                }
                 if let Some(state) = self.locals.get(&id.sym) {
                     if state.is_copyable {
                         Ok(Ownership::Copied)
