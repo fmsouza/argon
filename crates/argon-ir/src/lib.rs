@@ -752,17 +752,71 @@ impl IrBuilder {
     }
 
     fn translate_flat_stmt_list(&mut self, stmts: &[Stmt]) -> Result<Vec<Instruction>, IrError> {
+        self.translate_flat_stmt_list_in_context(stmts, 0, None)
+    }
+
+    fn translate_flat_stmt_list_in_context(
+        &mut self,
+        stmts: &[Stmt],
+        loop_depth: usize,
+        switch_done_var: Option<&str>,
+    ) -> Result<Vec<Instruction>, IrError> {
         let mut instructions = Vec::new();
-        for stmt in stmts {
-            self.translate_flat_stmt(stmt, &mut instructions)?;
+        if let Some(done_var) = switch_done_var {
+            self.translate_switch_stmt_list_in_context(
+                stmts,
+                loop_depth,
+                done_var,
+                &mut instructions,
+            )?;
+        } else {
+            for stmt in stmts {
+                self.translate_flat_stmt_in_context(stmt, &mut instructions, loop_depth, None)?;
+            }
         }
         Ok(instructions)
     }
 
-    fn translate_flat_stmt(
+    fn translate_switch_stmt_list_in_context(
+        &mut self,
+        stmts: &[Stmt],
+        loop_depth: usize,
+        switch_done_var: &str,
+        instructions: &mut Vec<Instruction>,
+    ) -> Result<(), IrError> {
+        if let Some((first, rest)) = stmts.split_first() {
+            self.translate_flat_stmt_in_context(
+                first,
+                instructions,
+                loop_depth,
+                Some(switch_done_var),
+            )?;
+
+            if !rest.is_empty() {
+                let cond = self.build_not_var_condition(switch_done_var, instructions);
+                let mut then_body = Vec::new();
+                self.translate_switch_stmt_list_in_context(
+                    rest,
+                    loop_depth,
+                    switch_done_var,
+                    &mut then_body,
+                )?;
+                instructions.push(Instruction::If {
+                    cond,
+                    then_body,
+                    else_body: Vec::new(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn translate_flat_stmt_in_context(
         &mut self,
         stmt: &Stmt,
         instructions: &mut Vec<Instruction>,
+        loop_depth: usize,
+        switch_done_var: Option<&str>,
     ) -> Result<(), IrError> {
         match stmt {
             Stmt::Variable(v) => self.translate_variable_stmt(v, instructions),
@@ -778,9 +832,17 @@ impl IrBuilder {
             }
             Stmt::If(i) => {
                 let cond = self.translate_expression(&i.condition, instructions)?;
-                let then_body = self.translate_flat_stmt_to_vec(i.consequent.as_ref())?;
+                let then_body = self.translate_flat_stmt_to_vec_in_context(
+                    i.consequent.as_ref(),
+                    loop_depth,
+                    switch_done_var,
+                )?;
                 let else_body = if let Some(alternate) = &i.alternate {
-                    self.translate_flat_stmt_to_vec(alternate.as_ref())?
+                    self.translate_flat_stmt_to_vec_in_context(
+                        alternate.as_ref(),
+                        loop_depth,
+                        switch_done_var,
+                    )?
                 } else {
                     Vec::new()
                 };
@@ -803,7 +865,11 @@ impl IrBuilder {
             Stmt::While(w) => {
                 let mut cond_instructions = Vec::new();
                 let cond = self.translate_expression(&w.condition, &mut cond_instructions)?;
-                let body = self.translate_flat_stmt_to_vec(w.body.as_ref())?;
+                let body = self.translate_flat_stmt_to_vec_in_context(
+                    w.body.as_ref(),
+                    loop_depth + 1,
+                    None,
+                )?;
                 instructions.push(Instruction::While {
                     cond_instructions,
                     cond,
@@ -841,7 +907,11 @@ impl IrBuilder {
                     update.push(Instruction::ExprStmt { value });
                 }
 
-                let body = self.translate_flat_stmt_to_vec(f.body.as_ref())?;
+                let body = self.translate_flat_stmt_to_vec_in_context(
+                    f.body.as_ref(),
+                    loop_depth + 1,
+                    None,
+                )?;
                 instructions.push(Instruction::For {
                     init,
                     cond_instructions,
@@ -852,7 +922,11 @@ impl IrBuilder {
                 Ok(())
             }
             Stmt::DoWhile(d) => {
-                let body = self.translate_flat_stmt_to_vec(d.body.as_ref())?;
+                let body = self.translate_flat_stmt_to_vec_in_context(
+                    d.body.as_ref(),
+                    loop_depth + 1,
+                    None,
+                )?;
                 let mut cond_instructions = Vec::new();
                 let cond = self.translate_expression(&d.condition, &mut cond_instructions)?;
                 instructions.push(Instruction::DoWhile {
@@ -863,7 +937,11 @@ impl IrBuilder {
                 Ok(())
             }
             Stmt::Loop(l) => {
-                let body = self.translate_flat_stmt_to_vec(l.body.as_ref())?;
+                let body = self.translate_flat_stmt_to_vec_in_context(
+                    l.body.as_ref(),
+                    loop_depth + 1,
+                    None,
+                )?;
                 instructions.push(Instruction::Loop { body });
                 Ok(())
             }
@@ -945,7 +1023,12 @@ impl IrBuilder {
                     name: bound_name,
                     init: Some(element),
                 });
-                self.translate_flat_stmt(f.body.as_ref(), &mut body)?;
+                self.translate_flat_stmt_in_context(
+                    f.body.as_ref(),
+                    &mut body,
+                    loop_depth + 1,
+                    None,
+                )?;
 
                 let mut update = Vec::new();
                 let cur_idx = self.new_value();
@@ -980,15 +1063,25 @@ impl IrBuilder {
                 Ok(())
             }
             Stmt::Break(_) => {
-                instructions.push(Instruction::Break);
+                if let Some(done_var) = switch_done_var.filter(|_| loop_depth == 0) {
+                    self.append_assign_bool(instructions, done_var, true);
+                } else {
+                    instructions.push(Instruction::Break);
+                }
                 Ok(())
             }
             Stmt::Continue(_) => {
                 instructions.push(Instruction::Continue);
                 Ok(())
             }
+            Stmt::Switch(s) => self.translate_flat_switch_stmt(s, instructions, loop_depth),
+            Stmt::Match(m) => self.translate_flat_match_stmt(m, instructions, loop_depth),
             Stmt::Try(t) => {
-                let try_body = self.translate_flat_stmt_list(&t.block.statements)?;
+                let try_body = self.translate_flat_stmt_list_in_context(
+                    &t.block.statements,
+                    loop_depth,
+                    switch_done_var,
+                )?;
 
                 let catch = if let Some(ref h) = t.handler {
                     let param = match &h.param {
@@ -1000,14 +1093,22 @@ impl IrBuilder {
                             ));
                         }
                     };
-                    let body = self.translate_flat_stmt_list(&h.body.statements)?;
+                    let body = self.translate_flat_stmt_list_in_context(
+                        &h.body.statements,
+                        loop_depth,
+                        switch_done_var,
+                    )?;
                     Some(TryCatch { param, body })
                 } else {
                     None
                 };
 
                 let finally_body = if let Some(ref f) = t.finalizer {
-                    Some(self.translate_flat_stmt_list(&f.statements)?)
+                    Some(self.translate_flat_stmt_list_in_context(
+                        &f.statements,
+                        loop_depth,
+                        switch_done_var,
+                    )?)
                 } else {
                     None
                 };
@@ -1020,8 +1121,17 @@ impl IrBuilder {
                 Ok(())
             }
             Stmt::Block(b) => {
-                for s in &b.statements {
-                    self.translate_flat_stmt(s, instructions)?;
+                if let Some(done_var) = switch_done_var {
+                    self.translate_switch_stmt_list_in_context(
+                        &b.statements,
+                        loop_depth,
+                        done_var,
+                        instructions,
+                    )?;
+                } else {
+                    for s in &b.statements {
+                        self.translate_flat_stmt_in_context(s, instructions, loop_depth, None)?;
+                    }
                 }
                 Ok(())
             }
@@ -1033,10 +1143,303 @@ impl IrBuilder {
         }
     }
 
-    fn translate_flat_stmt_to_vec(&mut self, stmt: &Stmt) -> Result<Vec<Instruction>, IrError> {
+    fn translate_flat_stmt_to_vec_in_context(
+        &mut self,
+        stmt: &Stmt,
+        loop_depth: usize,
+        switch_done_var: Option<&str>,
+    ) -> Result<Vec<Instruction>, IrError> {
         let mut instructions = Vec::new();
-        self.translate_flat_stmt(stmt, &mut instructions)?;
+        self.translate_flat_stmt_in_context(stmt, &mut instructions, loop_depth, switch_done_var)?;
         Ok(instructions)
+    }
+
+    fn build_not_var_condition(
+        &mut self,
+        var_name: &str,
+        instructions: &mut Vec<Instruction>,
+    ) -> ValueId {
+        let ref_value = self.new_value();
+        instructions.push(Instruction::VarRef {
+            dest: ref_value,
+            name: var_name.to_string(),
+        });
+        let cond = self.new_value();
+        instructions.push(Instruction::UnOp {
+            op: UnOp::Not,
+            arg: ref_value,
+            dest: cond,
+        });
+        cond
+    }
+
+    fn append_assign_bool(&mut self, instructions: &mut Vec<Instruction>, name: &str, value: bool) {
+        let const_value = self.new_value();
+        instructions.push(Instruction::Const {
+            dest: const_value,
+            value: ConstValue::Bool(value),
+        });
+        instructions.push(Instruction::AssignVar {
+            name: name.to_string(),
+            src: const_value,
+        });
+    }
+
+    fn append_assign_case_index(
+        &mut self,
+        instructions: &mut Vec<Instruction>,
+        name: &str,
+        value: usize,
+    ) {
+        let const_value = self.new_value();
+        instructions.push(Instruction::Const {
+            dest: const_value,
+            value: ConstValue::Number(value as f64),
+        });
+        instructions.push(Instruction::AssignVar {
+            name: name.to_string(),
+            src: const_value,
+        });
+    }
+
+    fn build_switch_case_condition(
+        &mut self,
+        instructions: &mut Vec<Instruction>,
+        state_name: &str,
+        done_name: &str,
+        case_index: usize,
+    ) -> ValueId {
+        let not_done = self.build_not_var_condition(done_name, instructions);
+        let state_ref = self.new_value();
+        instructions.push(Instruction::VarRef {
+            dest: state_ref,
+            name: state_name.to_string(),
+        });
+        let case_value = self.new_value();
+        instructions.push(Instruction::Const {
+            dest: case_value,
+            value: ConstValue::Number(case_index as f64),
+        });
+        let state_matches = self.new_value();
+        instructions.push(Instruction::BinOp {
+            op: BinOp::Eq,
+            lhs: state_ref,
+            rhs: case_value,
+            dest: state_matches,
+        });
+        let cond = self.new_value();
+        instructions.push(Instruction::BinOp {
+            op: BinOp::And,
+            lhs: not_done,
+            rhs: state_matches,
+            dest: cond,
+        });
+        cond
+    }
+
+    fn translate_flat_switch_stmt(
+        &mut self,
+        switch_stmt: &SwitchStmt,
+        instructions: &mut Vec<Instruction>,
+        loop_depth: usize,
+    ) -> Result<(), IrError> {
+        let discr_value = self.translate_expression(&switch_stmt.discriminant, instructions)?;
+        let discr_name = format!("__argon_flat_switch_discr_{}", self.new_value());
+        instructions.push(Instruction::VarDecl {
+            kind: VarKind::Const,
+            name: discr_name.clone(),
+            init: Some(discr_value),
+        });
+
+        let state_name = format!("__argon_flat_switch_state_{}", self.new_value());
+        let done_name = format!("__argon_flat_switch_done_{}", self.new_value());
+        let fallback_index = switch_stmt
+            .cases
+            .iter()
+            .position(|case| case.test.is_none())
+            .unwrap_or(switch_stmt.cases.len());
+
+        let initial_state = self.new_value();
+        instructions.push(Instruction::Const {
+            dest: initial_state,
+            value: ConstValue::Number(fallback_index as f64),
+        });
+        instructions.push(Instruction::VarDecl {
+            kind: VarKind::Let,
+            name: state_name.clone(),
+            init: Some(initial_state),
+        });
+
+        let done_init = self.new_value();
+        instructions.push(Instruction::Const {
+            dest: done_init,
+            value: ConstValue::Bool(false),
+        });
+        instructions.push(Instruction::VarDecl {
+            kind: VarKind::Let,
+            name: done_name.clone(),
+            init: Some(done_init),
+        });
+
+        let non_default: Vec<usize> = switch_stmt
+            .cases
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, case)| case.test.as_ref().map(|_| idx))
+            .collect();
+
+        if !non_default.is_empty() {
+            let mut chain = Vec::new();
+            self.append_assign_case_index(&mut chain, &state_name, fallback_index);
+
+            for case_index in non_default.into_iter().rev() {
+                let mut branch = Vec::new();
+                let discr_ref = self.new_value();
+                branch.push(Instruction::VarRef {
+                    dest: discr_ref,
+                    name: discr_name.clone(),
+                });
+                let test_value = self.translate_expression(
+                    switch_stmt.cases[case_index]
+                        .test
+                        .as_ref()
+                        .expect("non-default switch case has test"),
+                    &mut branch,
+                )?;
+                let cond = self.new_value();
+                branch.push(Instruction::BinOp {
+                    op: BinOp::Eq,
+                    lhs: discr_ref,
+                    rhs: test_value,
+                    dest: cond,
+                });
+                let mut then_body = Vec::new();
+                self.append_assign_case_index(&mut then_body, &state_name, case_index);
+                branch.push(Instruction::If {
+                    cond,
+                    then_body,
+                    else_body: chain,
+                });
+                chain = branch;
+            }
+
+            instructions.extend(chain);
+        }
+
+        for (case_index, case) in switch_stmt.cases.iter().enumerate() {
+            let cond =
+                self.build_switch_case_condition(instructions, &state_name, &done_name, case_index);
+            let mut then_body = Vec::new();
+            self.translate_switch_stmt_list_in_context(
+                &case.consequent,
+                loop_depth,
+                &done_name,
+                &mut then_body,
+            )?;
+
+            let advance_cond = self.build_not_var_condition(&done_name, &mut then_body);
+            let mut advance_body = Vec::new();
+            if case_index + 1 < switch_stmt.cases.len() {
+                self.append_assign_case_index(&mut advance_body, &state_name, case_index + 1);
+            } else {
+                self.append_assign_bool(&mut advance_body, &done_name, true);
+            }
+            then_body.push(Instruction::If {
+                cond: advance_cond,
+                then_body: advance_body,
+                else_body: Vec::new(),
+            });
+
+            instructions.push(Instruction::If {
+                cond,
+                then_body,
+                else_body: Vec::new(),
+            });
+        }
+
+        Ok(())
+    }
+
+    fn translate_flat_match_stmt(
+        &mut self,
+        match_stmt: &MatchStmt,
+        instructions: &mut Vec<Instruction>,
+        loop_depth: usize,
+    ) -> Result<(), IrError> {
+        let discr_value = self.translate_expression(&match_stmt.discriminant, instructions)?;
+        let discr_name = format!("__argon_flat_match_discr_{}", self.new_value());
+        instructions.push(Instruction::VarDecl {
+            kind: VarKind::Const,
+            name: discr_name.clone(),
+            init: Some(discr_value),
+        });
+
+        let handled_name = format!("__argon_flat_match_done_{}", self.new_value());
+        let handled_init = self.new_value();
+        instructions.push(Instruction::Const {
+            dest: handled_init,
+            value: ConstValue::Bool(false),
+        });
+        instructions.push(Instruction::VarDecl {
+            kind: VarKind::Let,
+            name: handled_name.clone(),
+            init: Some(handled_init),
+        });
+
+        for case in &match_stmt.cases {
+            let not_handled = self.build_not_var_condition(&handled_name, instructions);
+            let discr_ref = self.new_value();
+            instructions.push(Instruction::VarRef {
+                dest: discr_ref,
+                name: discr_name.clone(),
+            });
+            let pattern_value = self.translate_expression(&case.pattern, instructions)?;
+            let pattern_matches = self.new_value();
+            instructions.push(Instruction::BinOp {
+                op: BinOp::Eq,
+                lhs: discr_ref,
+                rhs: pattern_value,
+                dest: pattern_matches,
+            });
+            let cond = self.new_value();
+            instructions.push(Instruction::BinOp {
+                op: BinOp::And,
+                lhs: not_handled,
+                rhs: pattern_matches,
+                dest: cond,
+            });
+
+            let mut then_body = Vec::new();
+            if let Some(guard) = &case.guard {
+                let guard_cond = self.translate_expression(guard, &mut then_body)?;
+                let mut guarded_body = self.translate_flat_stmt_to_vec_in_context(
+                    case.consequent.as_ref(),
+                    loop_depth,
+                    None,
+                )?;
+                self.append_assign_bool(&mut guarded_body, &handled_name, true);
+                then_body.push(Instruction::If {
+                    cond: guard_cond,
+                    then_body: guarded_body,
+                    else_body: Vec::new(),
+                });
+            } else {
+                then_body.extend(self.translate_flat_stmt_to_vec_in_context(
+                    case.consequent.as_ref(),
+                    loop_depth,
+                    None,
+                )?);
+                self.append_assign_bool(&mut then_body, &handled_name, true);
+            }
+
+            instructions.push(Instruction::If {
+                cond,
+                then_body,
+                else_body: Vec::new(),
+            });
+        }
+
+        Ok(())
     }
 
     fn translate_global_variable_stmt(&mut self, v: &VariableStmt) -> Result<Vec<String>, IrError> {

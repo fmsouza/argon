@@ -993,6 +993,85 @@ WebAssembly.instantiate(bytes, {}).then(({ instance }) => {
 }
 
 #[test]
+fn test_compile_wasm_switch_and_match_inside_try_executes_standalone() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("try_switch_match_native.arg");
+    let output_file = temp_dir.path().join("try_switch_match_native.wasm");
+    fs::write(
+        &source_file,
+        r#"
+function choose(x: i32): i32 {
+    let value = 0;
+    try {
+        switch (x) {
+            case 1:
+                value = 10;
+                break;
+            case 2:
+                value = 20;
+                break;
+            default:
+                value = 30;
+        }
+    } finally {
+        const done = true;
+    }
+
+    return value;
+}
+
+function classify(x: i32): i32 {
+    let value = 0;
+    try {
+        match (x) {
+            1 => value = 100,
+            2 => value = 200,
+        }
+    } finally {
+        const done = true;
+    }
+
+    return value;
+}
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(&output_file)
+        .arg("--target")
+        .arg("wasm")
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
+        .success();
+
+    let script = r#"
+const fs = require('fs');
+const wasmPath = process.argv[1];
+const bytes = fs.readFileSync(wasmPath);
+WebAssembly.instantiate(bytes, {}).then(({ instance }) => {
+  console.log(`${instance.exports.choose(1)},${instance.exports.choose(5)},${instance.exports.classify(2)},${instance.exports.classify(9)}`);
+}).catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+"#;
+    let node_output = Command::new("node")
+        .arg("-e")
+        .arg(script)
+        .arg(&output_file)
+        .output()
+        .unwrap();
+    assert!(node_output.status.success(), "{:?}", node_output);
+    let stdout = String::from_utf8_lossy(&node_output.stdout);
+    assert!(stdout.contains("10,30,200,0"));
+}
+
+#[test]
 fn test_compile_wasm_import_executes_via_host_sidecar() {
     let temp_dir = tempfile::tempdir().unwrap();
     let dep_file = temp_dir.path().join("dep.mjs");

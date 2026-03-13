@@ -2447,6 +2447,56 @@ mod tests {
     }
 
     #[test]
+    fn executes_switch_and_match_inside_try_standalone() {
+        // Assign
+        let source = r#"
+            function choose(x: i32): i32 {
+                let value = 0;
+                try {
+                    switch (x) {
+                        case 1:
+                            value = 10;
+                            break;
+                        case 2:
+                            value = 20;
+                            break;
+                        default:
+                            value = 30;
+                    }
+                } finally {
+                    const done = true;
+                }
+
+                return value;
+            }
+
+            function classify(x: i32): i32 {
+                let value = 0;
+                try {
+                    match (x) {
+                        1 => value = 100,
+                        2 => value = 200,
+                    }
+                } finally {
+                    const done = true;
+                }
+
+                return value;
+            }
+        "#;
+        let wasm = compile_source(source);
+
+        // Act
+        let output = run_node_script(
+            &wasm,
+            "console.log(`${instance.exports.choose(1)},${instance.exports.choose(5)},${instance.exports.classify(2)},${instance.exports.classify(9)}`);",
+        );
+
+        // Assert
+        assert_eq!(output, "10,30,200,0");
+    }
+
+    #[test]
     fn executes_direct_function_import_standalone() {
         // Assign
         let source = r#"

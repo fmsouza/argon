@@ -726,4 +726,88 @@ function sumItems(items: i32[]): i32 {
         assert!(saw_nested_for);
         assert!(saw_nested_break);
     }
+
+    #[test]
+    fn translates_switch_inside_try() {
+        let source = r#"
+function choose(x: i32): i32 {
+    let value = 0;
+    try {
+        switch (x) {
+            case 1:
+                value = 10;
+                break;
+            case 2:
+                value = 20;
+                break;
+            default:
+                value = 30;
+        }
+    } finally {
+        const done = true;
+    }
+
+    return value;
+}
+"#;
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+
+        let module = builder.build(&ast).unwrap();
+        let choose = module.functions.iter().find(|f| f.id == "choose").unwrap();
+
+        let mut saw_nested_if = false;
+        for block in &choose.body {
+            for inst in &block.instructions {
+                if let Instruction::Try { try_body, .. } = inst {
+                    if nested_contains(try_body, |inst| matches!(inst, Instruction::If { .. })) {
+                        saw_nested_if = true;
+                    }
+                }
+            }
+        }
+
+        assert!(saw_nested_if);
+    }
+
+    #[test]
+    fn translates_match_inside_try() {
+        let source = r#"
+function classify(x: i32): i32 {
+    let value = 0;
+    try {
+        match (x) {
+            1 => value = 10,
+            2 => value = 20,
+        }
+    } finally {
+        const done = true;
+    }
+
+    return value;
+}
+"#;
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+
+        let module = builder.build(&ast).unwrap();
+        let classify = module
+            .functions
+            .iter()
+            .find(|f| f.id == "classify")
+            .unwrap();
+
+        let mut saw_nested_if = false;
+        for block in &classify.body {
+            for inst in &block.instructions {
+                if let Instruction::Try { try_body, .. } = inst {
+                    if nested_contains(try_body, |inst| matches!(inst, Instruction::If { .. })) {
+                        saw_nested_if = true;
+                    }
+                }
+            }
+        }
+
+        assert!(saw_nested_if);
+    }
 }
