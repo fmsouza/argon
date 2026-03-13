@@ -14,6 +14,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   gate:
@@ -175,11 +176,6 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Generate checksums
-        run: |
-          cd artifacts
-          sha256sum * > checksums-sha256.txt
-
       - name: Determine canary version
         id: version
         env:
@@ -194,12 +190,29 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Releasing $TAG"
 
+      - name: Rename artifacts with version
+        run: |
+          cd artifacts
+          TAG=${{ steps.version.outputs.tag }}
+          for f in *.tar.gz; do
+            mv "$f" "${f%.tar.gz}-${TAG}.tar.gz"
+          done
+          for f in *.zip; do
+            mv "$f" "${f%.zip}-${TAG}.zip"
+          done
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum * > checksums-sha256.txt
+
       - name: Create release notes
         run: |
+          TAG=${{ steps.version.outputs.tag }}
           cat > release-notes.md <<EOF
           Automated canary build from the latest \`main\` branch.
 
-          **Version:** ${{ steps.version.outputs.tag }}
+          **Version:** ${TAG}
           **Commit:** ${{ github.sha }}
           **Built:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')
 
@@ -209,11 +222,11 @@ jobs:
 
           | Platform | Archive |
           |----------|---------|
-          | Linux x86_64 | \`argon-linux-x86_64.tar.gz\` |
-          | Linux aarch64 | \`argon-linux-aarch64.tar.gz\` |
-          | macOS Intel | \`argon-darwin-x86_64.tar.gz\` |
-          | macOS Apple Silicon | \`argon-darwin-aarch64.tar.gz\` |
-          | Windows x86_64 | \`argon-windows-x86_64.zip\` |
+          | Linux x86_64 | \`argon-linux-x86_64-${TAG}.tar.gz\` |
+          | Linux aarch64 | \`argon-linux-aarch64-${TAG}.tar.gz\` |
+          | macOS Intel | \`argon-darwin-x86_64-${TAG}.tar.gz\` |
+          | macOS Apple Silicon | \`argon-darwin-aarch64-${TAG}.tar.gz\` |
+          | Windows x86_64 | \`argon-windows-x86_64-${TAG}.zip\` |
 
           ### Checksums (SHA256)
           \`\`\`
