@@ -1,8 +1,8 @@
 //! Argon - Type checker
 
 use crate::types::{
-    ClassDef, FieldDef, FunctionSig, MethodDef, StructDef, Type as CompType, TypeId,
-    TypeInstantiator, TypeTable,
+    ClassDef, EnumDef, FieldDef, FunctionSig, InterfaceDef, InterfaceMember, MethodDef,
+    ObjectShapeDef, StructDef, Type as CompType, TypeId, TypeInstantiator, TypeTable,
 };
 use argon_ast::*;
 use std::collections::HashMap;
@@ -39,12 +39,21 @@ struct GenericClassDef {
 }
 
 #[derive(Debug, Clone)]
+struct GenericInterfaceDef {
+    def: InterfaceDef,
+    type_params: Vec<argon_ast::TypeParam>,
+}
+
+#[derive(Debug, Clone)]
 pub struct TypeEnvironment {
     vars: HashMap<String, TypeId>,
     structs: HashMap<String, StructDef>,
     generic_structs: HashMap<String, GenericStructDef>,
     classes: HashMap<String, ClassDef>,
     generic_classes: HashMap<String, GenericClassDef>,
+    interfaces: HashMap<String, InterfaceDef>,
+    generic_interfaces: HashMap<String, GenericInterfaceDef>,
+    enums: HashMap<String, EnumDef>,
     functions: HashMap<String, FunctionSig>,
     generic_functions: HashMap<String, GenericFunctionDef>,
     type_aliases: HashMap<String, TypeAliasDef>,
@@ -60,6 +69,9 @@ impl TypeEnvironment {
             generic_structs: HashMap::new(),
             classes: HashMap::new(),
             generic_classes: HashMap::new(),
+            interfaces: HashMap::new(),
+            generic_interfaces: HashMap::new(),
+            enums: HashMap::new(),
             functions: HashMap::new(),
             generic_functions: HashMap::new(),
             type_aliases: HashMap::new(),
@@ -84,7 +96,7 @@ impl TypeEnvironment {
         self.structs.insert(name, def);
     }
 
-    pub fn get_generic_struct(&self, name: &str) -> Option<&GenericStructDef> {
+    fn get_generic_struct(&self, name: &str) -> Option<&GenericStructDef> {
         self.generic_structs.get(name)
     }
 
@@ -106,7 +118,7 @@ impl TypeEnvironment {
         self.classes.insert(name, def);
     }
 
-    pub fn get_generic_class(&self, name: &str) -> Option<&GenericClassDef> {
+    fn get_generic_class(&self, name: &str) -> Option<&GenericClassDef> {
         self.generic_classes.get(name)
     }
 
@@ -120,6 +132,36 @@ impl TypeEnvironment {
             .insert(name, GenericClassDef { def, type_params });
     }
 
+    pub fn get_interface(&self, name: &str) -> Option<&InterfaceDef> {
+        self.interfaces.get(name)
+    }
+
+    pub fn add_interface(&mut self, name: String, def: InterfaceDef) {
+        self.interfaces.insert(name, def);
+    }
+
+    fn get_generic_interface(&self, name: &str) -> Option<&GenericInterfaceDef> {
+        self.generic_interfaces.get(name)
+    }
+
+    pub fn add_generic_interface(
+        &mut self,
+        name: String,
+        def: InterfaceDef,
+        type_params: Vec<argon_ast::TypeParam>,
+    ) {
+        self.generic_interfaces
+            .insert(name, GenericInterfaceDef { def, type_params });
+    }
+
+    pub fn get_enum(&self, name: &str) -> Option<&EnumDef> {
+        self.enums.get(name)
+    }
+
+    pub fn add_enum(&mut self, name: String, def: EnumDef) {
+        self.enums.insert(name, def);
+    }
+
     pub fn get_function(&self, name: &str) -> Option<&FunctionSig> {
         self.functions.get(name)
     }
@@ -128,7 +170,7 @@ impl TypeEnvironment {
         self.functions.insert(name, sig);
     }
 
-    pub fn get_generic_function(&self, name: &str) -> Option<&GenericFunctionDef> {
+    fn get_generic_function(&self, name: &str) -> Option<&GenericFunctionDef> {
         self.generic_functions.get(name)
     }
 
@@ -173,6 +215,9 @@ impl TypeEnvironment {
             generic_structs: self.generic_structs.clone(),
             classes: self.classes.clone(),
             generic_classes: self.generic_classes.clone(),
+            interfaces: self.interfaces.clone(),
+            generic_interfaces: self.generic_interfaces.clone(),
+            enums: self.enums.clone(),
             functions: self.functions.clone(),
             generic_functions: self.generic_functions.clone(),
             type_aliases: self.type_aliases.clone(),
@@ -377,6 +422,44 @@ impl TypeChecker {
                         );
                     }
                 }
+                Stmt::Interface(i) => {
+                    let mut local_env = self.env.child();
+                    for type_param in &i.type_params {
+                        let constraint =
+                            type_param.constraint.as_ref().map(|c| self.resolve_type(c));
+                        let default = type_param.default.as_ref().map(|d| self.resolve_type(d));
+
+                        let ty = self.type_table.type_param(crate::types::TypeParam {
+                            name: type_param.name.sym.clone(),
+                            constraint,
+                            default,
+                        });
+                        local_env.add_type_param(type_param.name.sym.clone(), ty);
+                    }
+
+                    let old_env = std::mem::replace(&mut self.env, local_env);
+                    let interface_def = self.build_interface_def(Some(i.id.sym.clone()), i);
+                    self.env = old_env;
+
+                    if i.type_params.is_empty() {
+                        self.env.add_interface(i.id.sym.clone(), interface_def);
+                    } else {
+                        self.env.add_generic_interface(
+                            i.id.sym.clone(),
+                            interface_def,
+                            i.type_params.clone(),
+                        );
+                    }
+                }
+                Stmt::Enum(e) => {
+                    let enum_def = EnumDef {
+                        name: e.id.sym.clone(),
+                        variants: e.members.iter().map(|m| m.id.sym.clone()).collect(),
+                    };
+                    let enum_ty = self.type_table.enum_def(enum_def.clone());
+                    self.env.add_enum(e.id.sym.clone(), enum_def);
+                    self.env.add_var(e.id.sym.clone(), enum_ty);
+                }
                 Stmt::Function(f) | Stmt::AsyncFunction(f) => {
                     if let Some(id) = &f.id {
                         let sig = if f.type_params.is_empty() {
@@ -438,6 +521,72 @@ impl TypeChecker {
             params,
             return_type,
             is_async: f.is_async,
+        }
+    }
+
+    fn build_interface_def(
+        &mut self,
+        name: Option<String>,
+        interface: &InterfaceDecl,
+    ) -> InterfaceDef {
+        let extends = interface
+            .extends
+            .iter()
+            .map(|t| self.resolve_type(t))
+            .collect();
+        let members = interface
+            .body
+            .body
+            .iter()
+            .filter_map(|member| self.resolve_interface_member(member))
+            .collect();
+
+        InterfaceDef {
+            name: name.unwrap_or_else(|| "<anonymous>".to_string()),
+            extends,
+            members,
+        }
+    }
+
+    fn resolve_interface_member(
+        &mut self,
+        member: &argon_ast::InterfaceMember,
+    ) -> Option<InterfaceMember> {
+        match member {
+            argon_ast::InterfaceMember::Property(p) => Some(InterfaceMember::Property {
+                name: p.id.sym.clone(),
+                ty: p
+                    .type_annotation
+                    .as_ref()
+                    .map(|t| self.resolve_type(t))
+                    .unwrap_or_else(|| self.type_table.any()),
+            }),
+            argon_ast::InterfaceMember::Method(m) => {
+                let params = m
+                    .params
+                    .iter()
+                    .map(|p| {
+                        p.ty.as_ref()
+                            .map(|t| self.resolve_type(t))
+                            .unwrap_or_else(|| self.type_table.any())
+                    })
+                    .collect();
+                let return_type = m
+                    .return_type
+                    .as_ref()
+                    .map(|t| self.resolve_type(t))
+                    .unwrap_or_else(|| self.type_table.void());
+
+                Some(InterfaceMember::Method {
+                    name: m.id.sym.clone(),
+                    sig: FunctionSig {
+                        params,
+                        return_type,
+                        is_async: false,
+                    },
+                })
+            }
+            argon_ast::InterfaceMember::IndexSignature(_) => None,
         }
     }
 
@@ -517,7 +666,7 @@ impl TypeChecker {
                         && declared_ty != self.type_table.any()
                     {
                         if let Expr::Object(obj) = init {
-                            if self.is_struct_or_class_type(declared_ty) {
+                            if self.supports_object_literal_target(declared_ty) {
                                 self.check_object_literal_assignment(obj, declared_ty);
                                 self.env.add_var(id.name.sym.clone(), declared_ty);
                                 continue;
@@ -537,22 +686,67 @@ impl TypeChecker {
         Ok(())
     }
 
-    fn is_struct_or_class_type(&self, ty: TypeId) -> bool {
+    fn supports_object_literal_target(&self, ty: TypeId) -> bool {
         matches!(
             self.type_table.get(ty),
-            Some(CompType::Struct(_)) | Some(CompType::Class(_))
+            Some(CompType::Struct(_))
+                | Some(CompType::Class(_))
+                | Some(CompType::Interface(_))
+                | Some(CompType::ObjectShape(_))
         )
     }
 
+    fn shape_members(&self, ty: TypeId) -> Option<(String, Vec<FieldDef>, Vec<MethodDef>)> {
+        match self.type_table.get(ty).cloned() {
+            Some(CompType::Struct(def)) => Some((def.name, def.fields, def.methods)),
+            Some(CompType::Class(def)) => Some((def.name, def.fields, def.methods)),
+            Some(CompType::Interface(def)) => {
+                let (fields, methods) = self.flatten_interface_shape(&def);
+                Some((def.name, fields, methods))
+            }
+            Some(CompType::ObjectShape(def)) => {
+                Some(("<object>".to_string(), def.fields, def.methods))
+            }
+            _ => None,
+        }
+    }
+
+    fn flatten_interface_shape(&self, def: &InterfaceDef) -> (Vec<FieldDef>, Vec<MethodDef>) {
+        let mut fields = Vec::new();
+        let mut methods = Vec::new();
+
+        for extends in &def.extends {
+            if let Some((_, extend_fields, extend_methods)) = self.shape_members(*extends) {
+                fields.extend(extend_fields);
+                methods.extend(extend_methods);
+            }
+        }
+
+        for member in &def.members {
+            match member {
+                InterfaceMember::Property { name, ty } => fields.push(FieldDef {
+                    name: name.clone(),
+                    ty: *ty,
+                }),
+                InterfaceMember::Method { name, sig } => methods.push(MethodDef {
+                    name: name.clone(),
+                    sig: sig.clone(),
+                }),
+            }
+        }
+
+        (fields, methods)
+    }
+
     fn check_object_literal_assignment(&mut self, obj: &ObjectExpression, expected_ty: TypeId) {
-        let (target_name, expected_fields): (String, Vec<FieldDef>) =
-            match self.type_table.get(expected_ty).cloned() {
-                Some(CompType::Struct(def)) => (def.name, def.fields),
-                Some(CompType::Class(def)) => (def.name, def.fields),
-                _ => return,
-            };
+        let Some((target_name, expected_fields, expected_methods)) =
+            self.shape_members(expected_ty)
+        else {
+            return;
+        };
 
         let mut provided_values: HashMap<String, TypeId> = HashMap::new();
+        let mut provided_methods: HashMap<String, FunctionSig> = HashMap::new();
         for prop in &obj.properties {
             match prop {
                 ObjectProperty::Property(p) => {
@@ -606,12 +800,25 @@ impl TypeChecker {
                         ),
                     });
                 }
-                ObjectProperty::Method(_)
-                | ObjectProperty::Getter(_)
-                | ObjectProperty::Setter(_) => {
+                ObjectProperty::Method(m) => {
+                    let name = match &m.key {
+                        Expr::Identifier(id) => id.sym.clone(),
+                        _ => {
+                            self.errors.push(TypeError::Invalid {
+                                message: format!(
+                                    "unsupported object method key when assigning to '{}'",
+                                    target_name
+                                ),
+                            });
+                            continue;
+                        }
+                    };
+                    provided_methods.insert(name, self.resolve_function_sig(&m.value));
+                }
+                ObjectProperty::Getter(_) | ObjectProperty::Setter(_) => {
                     self.errors.push(TypeError::Invalid {
                         message: format!(
-                            "method/getter/setter properties are not supported when assigning to '{}'",
+                            "getter/setter properties are not supported when assigning to '{}'",
                             target_name
                         ),
                     });
@@ -626,6 +833,21 @@ impl TypeChecker {
                 self.errors.push(TypeError::Invalid {
                     message: format!(
                         "missing field '{}' when assigning to '{}'",
+                        expected.name, target_name
+                    ),
+                });
+            }
+        }
+
+        for expected in expected_methods {
+            if let Some(found_sig) = provided_methods.get(&expected.name).cloned() {
+                let found_ty = self.type_table.function(found_sig);
+                let expected_ty = self.type_table.function(expected.sig);
+                self.unify(found_ty, expected_ty);
+            } else {
+                self.errors.push(TypeError::Invalid {
+                    message: format!(
+                        "missing method '{}' when assigning to '{}'",
                         expected.name, target_name
                     ),
                 });
@@ -795,6 +1017,19 @@ impl TypeChecker {
                 _ => {}
             }
         }
+
+        for implemented in &c.implements {
+            let interface_ty = self.resolve_type(implemented);
+            if !self.is_assignable(class_ty, interface_ty) {
+                self.errors.push(TypeError::Invalid {
+                    message: format!(
+                        "class '{}' does not satisfy implemented interface",
+                        c.id.sym
+                    ),
+                });
+            }
+        }
+
         Ok(())
     }
 
@@ -1078,24 +1313,169 @@ impl TypeChecker {
         generic_func: &GenericFunctionDef,
         arg_tys: &[TypeId],
     ) -> Vec<TypeId> {
-        let mut type_args = Vec::with_capacity(generic_func.type_params.len());
+        let mut inferred = HashMap::new();
 
-        for (i, _param) in generic_func.type_params.iter().enumerate() {
-            if i < arg_tys.len() && i < generic_func.sig.params.len() {
-                let arg_ty = arg_tys[i];
-                let param_ty = generic_func.sig.params[i];
-
-                if let Some(CompType::TypeParam(_)) = self.type_table.get(param_ty) {
-                    type_args.push(arg_ty);
-                } else {
-                    type_args.push(self.type_table.any());
-                }
-            } else {
-                type_args.push(self.type_table.any());
-            }
+        for (arg_ty, param_ty) in arg_tys.iter().zip(generic_func.sig.params.iter()) {
+            self.collect_type_arg_bindings(*param_ty, *arg_ty, &mut inferred);
         }
 
-        type_args
+        generic_func
+            .type_params
+            .iter()
+            .map(|param| {
+                inferred
+                    .get(&param.name.sym)
+                    .copied()
+                    .or_else(|| param.default.as_ref().map(|d| self.resolve_type(d)))
+                    .unwrap_or_else(|| self.type_table.any())
+            })
+            .collect()
+    }
+
+    fn collect_type_arg_bindings(
+        &self,
+        param_ty: TypeId,
+        arg_ty: TypeId,
+        inferred: &mut HashMap<String, TypeId>,
+    ) {
+        let Some(param_kind) = self.type_table.get(param_ty).cloned() else {
+            return;
+        };
+
+        match param_kind {
+            CompType::TypeParam(param) => {
+                inferred
+                    .entry(param.name)
+                    .and_modify(|existing| {
+                        if *existing != arg_ty {
+                            *existing = self
+                                .common_assignable_type(*existing, arg_ty)
+                                .unwrap_or_else(|| {
+                                    self.type_table.get_by_name("any").unwrap_or(*existing)
+                                });
+                        }
+                    })
+                    .or_insert(arg_ty);
+            }
+            CompType::Array(inner) => {
+                if let Some(CompType::Array(arg_inner)) = self.type_table.get(arg_ty).cloned() {
+                    self.collect_type_arg_bindings(inner, arg_inner, inferred);
+                }
+            }
+            CompType::Tuple(param_items) => {
+                if let Some(CompType::Tuple(arg_items)) = self.type_table.get(arg_ty).cloned() {
+                    for (param_item, arg_item) in param_items.iter().zip(arg_items.iter()) {
+                        self.collect_type_arg_bindings(*param_item, *arg_item, inferred);
+                    }
+                }
+            }
+            CompType::Ref(inner) => {
+                if let Some(CompType::Ref(arg_inner)) = self.type_table.get(arg_ty).cloned() {
+                    self.collect_type_arg_bindings(inner, arg_inner, inferred);
+                }
+            }
+            CompType::MutRef(inner) => {
+                if let Some(CompType::MutRef(arg_inner)) = self.type_table.get(arg_ty).cloned() {
+                    self.collect_type_arg_bindings(inner, arg_inner, inferred);
+                }
+            }
+            CompType::Shared(inner) => {
+                if let Some(CompType::Shared(arg_inner)) = self.type_table.get(arg_ty).cloned() {
+                    self.collect_type_arg_bindings(inner, arg_inner, inferred);
+                }
+            }
+            CompType::Option(inner) => {
+                if let Some(CompType::Option(arg_inner)) = self.type_table.get(arg_ty).cloned() {
+                    self.collect_type_arg_bindings(inner, arg_inner, inferred);
+                }
+            }
+            CompType::Promise(inner) => {
+                if let Some(CompType::Promise(arg_inner)) = self.type_table.get(arg_ty).cloned() {
+                    self.collect_type_arg_bindings(inner, arg_inner, inferred);
+                }
+            }
+            CompType::Result(param_ok, param_err) => {
+                if let Some(CompType::Result(arg_ok, arg_err)) =
+                    self.type_table.get(arg_ty).cloned()
+                {
+                    self.collect_type_arg_bindings(param_ok, arg_ok, inferred);
+                    self.collect_type_arg_bindings(param_err, arg_err, inferred);
+                }
+            }
+            CompType::Function(sig) => {
+                if let Some(CompType::Function(arg_sig)) = self.type_table.get(arg_ty).cloned() {
+                    for (param_item, arg_item) in sig.params.iter().zip(arg_sig.params.iter()) {
+                        self.collect_type_arg_bindings(*param_item, *arg_item, inferred);
+                    }
+                    self.collect_type_arg_bindings(sig.return_type, arg_sig.return_type, inferred);
+                }
+            }
+            CompType::Struct(param_def) => {
+                if let Some((_, arg_fields, _)) = self.shape_members(arg_ty) {
+                    for field in param_def.fields {
+                        if let Some(arg_field) = arg_fields.iter().find(|f| f.name == field.name) {
+                            self.collect_type_arg_bindings(field.ty, arg_field.ty, inferred);
+                        }
+                    }
+                }
+            }
+            CompType::Class(param_def) => {
+                if let Some((_, arg_fields, _)) = self.shape_members(arg_ty) {
+                    for field in param_def.fields {
+                        if let Some(arg_field) = arg_fields.iter().find(|f| f.name == field.name) {
+                            self.collect_type_arg_bindings(field.ty, arg_field.ty, inferred);
+                        }
+                    }
+                }
+            }
+            CompType::Interface(param_def) => {
+                if let Some((_, arg_fields, arg_methods)) = self.shape_members(arg_ty) {
+                    for member in param_def.members {
+                        match member {
+                            InterfaceMember::Property { name, ty } => {
+                                if let Some(arg_field) = arg_fields.iter().find(|f| f.name == name)
+                                {
+                                    self.collect_type_arg_bindings(ty, arg_field.ty, inferred);
+                                }
+                            }
+                            InterfaceMember::Method { name, sig } => {
+                                if let Some(arg_method) =
+                                    arg_methods.iter().find(|m| m.name == name)
+                                {
+                                    for (param_item, arg_item) in
+                                        sig.params.iter().zip(arg_method.sig.params.iter())
+                                    {
+                                        self.collect_type_arg_bindings(
+                                            *param_item,
+                                            *arg_item,
+                                            inferred,
+                                        );
+                                    }
+                                    self.collect_type_arg_bindings(
+                                        sig.return_type,
+                                        arg_method.sig.return_type,
+                                        inferred,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn common_assignable_type(&self, left: TypeId, right: TypeId) -> Option<TypeId> {
+        if left == right {
+            Some(left)
+        } else if self.is_assignable(left, right) {
+            Some(right)
+        } else if self.is_assignable(right, left) {
+            Some(left)
+        } else {
+            None
+        }
     }
 
     fn infer_member(&mut self, m: &MemberExpr) -> TypeId {
@@ -1121,6 +1501,11 @@ impl TypeChecker {
             _ => return self.type_table.unknown(),
         };
 
+        self.lookup_member_type(obj_ty, prop_name)
+            .unwrap_or_else(|| self.type_table.unknown())
+    }
+
+    fn lookup_member_type(&mut self, obj_ty: TypeId, prop_name: &str) -> Option<TypeId> {
         match self.type_table.get(obj_ty).cloned() {
             Some(CompType::Struct(def)) => def
                 .fields
@@ -1131,19 +1516,93 @@ impl TypeChecker {
                     def.methods
                         .iter()
                         .find(|m| m.name == prop_name)
-                        .map(|m| self.type_table.add(CompType::Function(m.sig.clone())))
-                })
-                .unwrap_or_else(|| self.type_table.unknown()),
-            Some(CompType::Class(def)) => {
-                if let Some(field) = def.fields.iter().find(|f| f.name == prop_name) {
-                    return field.ty;
+                        .map(|m| self.type_table.function(m.sig.clone()))
+                }),
+            Some(CompType::Class(def)) => def
+                .fields
+                .iter()
+                .find(|f| f.name == prop_name)
+                .map(|f| f.ty)
+                .or_else(|| {
+                    def.methods
+                        .iter()
+                        .find(|m| m.name == prop_name)
+                        .map(|m| self.type_table.function(m.sig.clone()))
+                }),
+            Some(CompType::ObjectShape(def)) => def
+                .fields
+                .iter()
+                .find(|f| f.name == prop_name)
+                .map(|f| f.ty)
+                .or_else(|| {
+                    def.methods
+                        .iter()
+                        .find(|m| m.name == prop_name)
+                        .map(|m| self.type_table.function(m.sig.clone()))
+                }),
+            Some(CompType::Interface(def)) => {
+                for member in &def.members {
+                    match member {
+                        InterfaceMember::Property { name, ty } if name == prop_name => {
+                            return Some(*ty);
+                        }
+                        InterfaceMember::Method { name, sig } if name == prop_name => {
+                            return Some(self.type_table.function(sig.clone()));
+                        }
+                        _ => {}
+                    }
                 }
-                if let Some(method) = def.methods.iter().find(|m| m.name == prop_name) {
-                    return self.type_table.add(CompType::Function(method.sig.clone()));
+
+                for extends in &def.extends {
+                    if let Some(member_ty) = self.lookup_member_type(*extends, prop_name) {
+                        return Some(member_ty);
+                    }
                 }
-                self.type_table.unknown()
+
+                None
             }
-            _ => self.type_table.unknown(),
+            Some(CompType::Enum(def)) => def
+                .variants
+                .iter()
+                .find(|variant| variant.as_str() == prop_name)
+                .map(|_| obj_ty),
+            Some(CompType::Union(types)) => {
+                let mut member_types = Vec::new();
+                for ty in types {
+                    let member_ty = self.lookup_member_type(ty, prop_name)?;
+                    member_types.push(member_ty);
+                }
+                Some(self.union_or_single(member_types))
+            }
+            Some(CompType::Intersection(types)) => {
+                let member_types: Vec<_> = types
+                    .iter()
+                    .filter_map(|ty| self.lookup_member_type(*ty, prop_name))
+                    .collect();
+                if member_types.is_empty() {
+                    None
+                } else {
+                    Some(self.union_or_single(member_types))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn union_or_single(&mut self, mut tys: Vec<TypeId>) -> TypeId {
+        tys.dedup();
+        if tys.len() == 1 {
+            tys[0]
+        } else {
+            self.type_table.union(tys)
+        }
+    }
+
+    fn object_property_name(&self, key: &Expr) -> Option<String> {
+        match key {
+            Expr::Identifier(id) => Some(id.sym.clone()),
+            Expr::Literal(Literal::String(s)) => Some(s.value.clone()),
+            _ => None,
         }
     }
 
@@ -1364,27 +1823,45 @@ impl TypeChecker {
     }
 
     fn infer_object(&mut self, o: &ObjectExpression) -> TypeId {
+        let mut fields = Vec::new();
+        let mut methods = Vec::new();
+
         for prop in &o.properties {
             match prop {
                 ObjectProperty::Property(p) => {
+                    let Some(key) = self.object_property_name(&p.key) else {
+                        continue;
+                    };
                     if let ExprOrSpread::Expr(e) = &p.value {
-                        self.infer_expression(e);
+                        let ty = self.infer_expression(e);
+                        fields.push(FieldDef { name: key, ty });
                     }
                 }
                 ObjectProperty::Shorthand(id) => {
-                    self.infer_identifier(id);
+                    let ty = self.infer_identifier(id);
+                    fields.push(FieldDef {
+                        name: id.sym.clone(),
+                        ty,
+                    });
                 }
                 ObjectProperty::Spread(s) => {
                     self.infer_expression(&s.argument);
                 }
                 ObjectProperty::Method(m) => {
                     self.check_function(&m.value).ok();
+                    if let Expr::Identifier(id) = &m.key {
+                        methods.push(MethodDef {
+                            name: id.sym.clone(),
+                            sig: self.resolve_function_sig(&m.value),
+                        });
+                    }
                 }
                 ObjectProperty::Getter(_) | ObjectProperty::Setter(_) => {}
             }
         }
 
-        self.type_table.object()
+        self.type_table
+            .object_shape(ObjectShapeDef { fields, methods })
     }
 
     fn infer_array(&mut self, a: &ArrayExpression) -> TypeId {
@@ -1511,6 +1988,133 @@ impl TypeChecker {
         })
     }
 
+    fn instantiate_interface_def(
+        &mut self,
+        def: &InterfaceDef,
+        type_params: &[argon_ast::TypeParam],
+        type_args: &[TypeId],
+    ) -> InterfaceDef {
+        let mut instantiator = TypeInstantiator::new();
+        for (param, arg) in type_params.iter().zip(type_args.iter()) {
+            instantiator.add_substitution(param.name.sym.clone(), *arg);
+        }
+
+        let extends = def
+            .extends
+            .iter()
+            .map(|&t| instantiator.instantiate(&mut self.type_table, t))
+            .collect();
+        let members = def
+            .members
+            .iter()
+            .map(|member| match member {
+                InterfaceMember::Property { name, ty } => InterfaceMember::Property {
+                    name: name.clone(),
+                    ty: instantiator.instantiate(&mut self.type_table, *ty),
+                },
+                InterfaceMember::Method { name, sig } => InterfaceMember::Method {
+                    name: name.clone(),
+                    sig: FunctionSig {
+                        params: sig
+                            .params
+                            .iter()
+                            .map(|&p| instantiator.instantiate(&mut self.type_table, p))
+                            .collect(),
+                        return_type: instantiator
+                            .instantiate(&mut self.type_table, sig.return_type),
+                        is_async: sig.is_async,
+                    },
+                },
+            })
+            .collect();
+
+        InterfaceDef {
+            name: def.name.clone(),
+            extends,
+            members,
+        }
+    }
+
+    fn resolve_type_alias_with_args(
+        &mut self,
+        name: &str,
+        def: &TypeAliasDef,
+        type_args: &[TypeId],
+    ) -> TypeId {
+        if type_args.len() != def.type_params.len() {
+            self.errors.push(TypeError::Invalid {
+                message: format!(
+                    "generic type alias '{}' expects {} type arguments, got {}",
+                    name,
+                    def.type_params.len(),
+                    type_args.len()
+                ),
+            });
+            return self.type_table.unknown();
+        }
+
+        self.check_generic_constraints(&def.type_params, type_args);
+
+        let mut alias_env = self.env.child();
+        for (param, arg) in def.type_params.iter().zip(type_args.iter()) {
+            alias_env.add_type_param(param.name.sym.clone(), *arg);
+        }
+
+        let old_env = std::mem::replace(&mut self.env, alias_env);
+        let resolved = self.resolve_type(&def.type_annotation);
+        self.env = old_env;
+        resolved
+    }
+
+    fn resolve_object_type(&mut self, object: &ObjectType) -> TypeId {
+        let mut fields = Vec::new();
+        let mut methods = Vec::new();
+
+        for member in &object.members {
+            match member {
+                TypeMember::Property(p) => {
+                    let ty = p
+                        .type_annotation
+                        .as_ref()
+                        .map(|t| self.resolve_type(t))
+                        .unwrap_or_else(|| self.type_table.any());
+                    fields.push(FieldDef {
+                        name: p.id.sym.clone(),
+                        ty,
+                    });
+                }
+                TypeMember::Method(m) => {
+                    let params = m
+                        .params
+                        .iter()
+                        .map(|p| {
+                            p.ty.as_ref()
+                                .map(|t| self.resolve_type(t))
+                                .unwrap_or_else(|| self.type_table.any())
+                        })
+                        .collect();
+                    let return_type = m
+                        .return_type
+                        .as_ref()
+                        .map(|t| self.resolve_type(t))
+                        .unwrap_or_else(|| self.type_table.void());
+                    methods.push(MethodDef {
+                        name: m.id.sym.clone(),
+                        sig: FunctionSig {
+                            params,
+                            return_type,
+                            is_async: false,
+                        },
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        self.type_table
+            .object_shape(ObjectShapeDef { fields, methods })
+    }
+
     fn resolve_type(&mut self, ty: &argon_ast::Type) -> TypeId {
         match ty {
             argon_ast::Type::Parenthesized(inner) => self.resolve_type(inner),
@@ -1545,6 +2149,12 @@ impl TypeChecker {
                     }
 
                     if !r.type_args.is_empty() {
+                        if let Some(alias) = self.env.get_type_alias(&id.sym).cloned() {
+                            let type_args: Vec<TypeId> =
+                                r.type_args.iter().map(|t| self.resolve_type(t)).collect();
+                            return self.resolve_type_alias_with_args(&id.sym, &alias, &type_args);
+                        }
+
                         if let Some(generic_struct) = self.env.get_generic_struct(&id.sym).cloned()
                         {
                             let type_args: Vec<TypeId> =
@@ -1672,6 +2282,37 @@ impl TypeChecker {
                                 methods,
                             }));
                         }
+
+                        if let Some(generic_interface) =
+                            self.env.get_generic_interface(&id.sym).cloned()
+                        {
+                            let type_args: Vec<TypeId> =
+                                r.type_args.iter().map(|t| self.resolve_type(t)).collect();
+
+                            if type_args.len() != generic_interface.type_params.len() {
+                                self.errors.push(TypeError::Invalid {
+                                    message: format!(
+                                        "generic interface '{}' expects {} type arguments, got {}",
+                                        id.sym,
+                                        generic_interface.type_params.len(),
+                                        type_args.len()
+                                    ),
+                                });
+                                return self.type_table.unknown();
+                            }
+
+                            self.check_generic_constraints(
+                                &generic_interface.type_params,
+                                &type_args,
+                            );
+
+                            let interface_def = self.instantiate_interface_def(
+                                &generic_interface.def,
+                                &generic_interface.type_params,
+                                &type_args,
+                            );
+                            return self.type_table.interface_def(interface_def);
+                        }
                     }
 
                     if r.type_args.is_empty() {
@@ -1702,6 +2343,12 @@ impl TypeChecker {
                     }
                     if let Some(class_def) = self.env.get_class(&id.sym) {
                         return self.type_table.add(CompType::Class(class_def.clone()));
+                    }
+                    if let Some(interface_def) = self.env.get_interface(&id.sym) {
+                        return self.type_table.interface_def(interface_def.clone());
+                    }
+                    if let Some(enum_def) = self.env.get_enum(&id.sym) {
+                        return self.type_table.enum_def(enum_def.clone());
                     }
                 }
                 self.type_table.unknown()
@@ -1743,7 +2390,7 @@ impl TypeChecker {
                 let types = t.types.iter().map(|t| self.resolve_type(t)).collect();
                 self.type_table.add(CompType::Tuple(types))
             }
-            argon_ast::Type::Object(_) => self.type_table.object(),
+            argon_ast::Type::Object(object) => self.resolve_object_type(object),
             argon_ast::Type::Any(_) => self.type_table.any(),
             argon_ast::Type::Unknown(_) => self.type_table.unknown(),
             argon_ast::Type::Never(_) => self.type_table.never(),
@@ -1840,7 +2487,9 @@ impl TypeChecker {
                 }
             }
             _ => {
-                self.errors.push(TypeError::Mismatch { found, expected });
+                if !self.is_assignable(found, expected) {
+                    self.errors.push(TypeError::Mismatch { found, expected });
+                }
             }
         }
     }
@@ -1868,20 +2517,90 @@ impl TypeChecker {
             (Some(CompType::Null), Some(CompType::Null)) => true,
             (Some(CompType::Undefined), Some(CompType::Undefined)) => true,
             (Some(CompType::Void), Some(CompType::Void)) => true,
+            (Some(CompType::Enum(found_enum)), Some(CompType::Enum(expected_enum))) => {
+                found_enum.name == expected_enum.name
+            }
             (Some(CompType::Array(f)), Some(CompType::Array(e))) => self.is_assignable(*f, *e),
+            (Some(CompType::Tuple(found_types)), Some(CompType::Tuple(expected_types))) => {
+                found_types.len() == expected_types.len()
+                    && found_types
+                        .iter()
+                        .zip(expected_types.iter())
+                        .all(|(f, e)| self.is_assignable(*f, *e))
+            }
             (Some(CompType::Ref(f)), Some(CompType::Ref(e))) => self.is_assignable(*f, *e),
             (Some(CompType::MutRef(f)), Some(CompType::MutRef(e))) => self.is_assignable(*f, *e),
             (Some(CompType::Shared(f)), Some(CompType::Shared(e))) => self.is_assignable(*f, *e),
             (Some(CompType::Struct(fs)), Some(CompType::Struct(es))) => fs.name == es.name,
             (Some(CompType::Class(fc)), Some(CompType::Class(ec))) => fc.name == ec.name,
+            (Some(CompType::Object), Some(CompType::Object)) => true,
+            (_, Some(CompType::Object)) => matches!(
+                self.type_table.get(found),
+                Some(CompType::Object)
+                    | Some(CompType::Struct(_))
+                    | Some(CompType::Class(_))
+                    | Some(CompType::Interface(_))
+                    | Some(CompType::ObjectShape(_))
+                    | Some(CompType::Array(_))
+                    | Some(CompType::Tuple(_))
+            ),
+            (Some(CompType::Struct(_)), Some(CompType::Interface(_)))
+            | (Some(CompType::Class(_)), Some(CompType::Interface(_)))
+            | (Some(CompType::ObjectShape(_)), Some(CompType::Interface(_)))
+            | (Some(CompType::Interface(_)), Some(CompType::Interface(_)))
+            | (Some(CompType::Struct(_)), Some(CompType::ObjectShape(_)))
+            | (Some(CompType::Class(_)), Some(CompType::ObjectShape(_)))
+            | (Some(CompType::ObjectShape(_)), Some(CompType::ObjectShape(_)))
+            | (Some(CompType::Interface(_)), Some(CompType::ObjectShape(_))) => {
+                self.shape_assignable(found, expected)
+            }
             (Some(CompType::Union(types)), _) => {
                 types.iter().all(|t| self.is_assignable(*t, expected))
             }
             (_, Some(CompType::Union(types))) => {
                 types.iter().any(|t| self.is_assignable(found, *t))
             }
+            (Some(CompType::Intersection(types)), _) => {
+                types.iter().all(|t| self.is_assignable(*t, expected))
+            }
+            (_, Some(CompType::Intersection(types))) => {
+                types.iter().all(|t| self.is_assignable(found, *t))
+            }
             _ => false,
         }
+    }
+
+    fn shape_assignable(&self, found: TypeId, expected: TypeId) -> bool {
+        let Some((_, found_fields, found_methods)) = self.shape_members(found) else {
+            return false;
+        };
+        let Some((_, expected_fields, expected_methods)) = self.shape_members(expected) else {
+            return false;
+        };
+
+        expected_fields.iter().all(|expected_field| {
+            found_fields
+                .iter()
+                .find(|field| field.name == expected_field.name)
+                .map(|field| self.is_assignable(field.ty, expected_field.ty))
+                .unwrap_or(false)
+        }) && expected_methods.iter().all(|expected_method| {
+            found_methods
+                .iter()
+                .find(|method| method.name == expected_method.name)
+                .map(|method| self.function_sig_assignable(&method.sig, &expected_method.sig))
+                .unwrap_or(false)
+        })
+    }
+
+    fn function_sig_assignable(&self, found: &FunctionSig, expected: &FunctionSig) -> bool {
+        found.params.len() == expected.params.len()
+            && found
+                .params
+                .iter()
+                .zip(expected.params.iter())
+                .all(|(f, e)| self.is_assignable(*f, *e))
+            && self.is_assignable(found.return_type, expected.return_type)
     }
 
     fn check_generic_constraints(&mut self, params: &[argon_ast::TypeParam], type_args: &[TypeId]) {

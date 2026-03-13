@@ -1,7 +1,7 @@
 # Argon Completion Rebaseline
 
 **Date:** March 13, 2026  
-**Status:** Scope-Complete (README Parity + Runtime + WASM Core Subset)  
+**Status:** Scope-Complete + Post-Scope Type Hardening/WASM Subset Expansion Implemented  
 **Scope:** README parity + WASM core subset + runtime execution + memory-safety baseline
 
 ---
@@ -41,15 +41,15 @@ The compiler is considered **complete** for this scope only when all gates pass:
 |---|---|---|
 | Lexer core + decorator tokenization | **Implemented** | `@` tokenized, `loop` keyword tokenized, template interpolation panic fixed. |
 | Parser frontend parity (decorators/declare/loop/for-of/object literals/struct methods/templates) | **Implemented (core)** | Core syntax paths now parse, including template interpolation expressions. |
-| Type checker for README-required constructs | **Partial** | Struct methods + generic member resolution improved; generic struct-alias object-literal assignment baseline added (e.g. `type NumberContainer = Container<number>; const x: NumberContainer = { ... }`); union assignability for struct/class variants improved; full README type coverage still incomplete. |
+| Type checker for README-required constructs | **Implemented (post-scope hardening)** | Added interface/enum registration, structural object-shape typing, generic interface/generic alias resolution, enum member typing, and recursive generic inference across nested parameter shapes. |
 | Borrow checker move/use-after-move | **Implemented (baseline)** | Move state now transitions to `Moved`; use-after-move and move-while-borrowed regressions covered; shared-reference bindings (`&T`) now treated as copyable in move analysis. |
-| Borrow checker NLL / cross-function / reborrow / Send+Sync-style checks | **Implemented (core)** | Added call-site borrow contracts, borrowed-return validation, statement-level end-of-use release, branch-aware merges, loop fixed-point NLL-style analysis, and Send/Sync-style thread/process capture validation (`Send` for owned capture, `Sync` for shared-reference pointees). |
+| Borrow checker NLL / cross-function / reborrow / Send+Sync-style checks | **Implemented (core+)** | Added call-site borrow contracts, borrowed-return validation, helper-summary propagation for returned borrows/thread-process captures, mutually recursive borrow-summary convergence, statement-level end-of-use release, branch-aware merges, loop fixed-point NLL-style analysis, and Send/Sync-style thread/process capture validation (`Send` for owned capture, `Sync` for shared-reference pointees). |
 | Data-race check invocation | **Implemented (baseline)** | Wired into normal check path; model still basic. |
 | IR lowering for `loop` and `for..of` | **Implemented (core)** | Lowered into CFG blocks with index-based `for..of` expansion. |
 | JS codegen + source maps | **Implemented** | IR path and source map generation are working and tested in CLI integration tests. |
 | Runtime execution (`argon run`) for core control flow + structs/classes + `new` + match + for-of + loop | **Implemented (core)** | Added behavior and tests; template interpolation supported at runtime AST level. |
-| WASM backend | **Implemented (core subset)** | Replaced hardcoded `42` with IR-driven lowering + memory model for string/array subset. |
-| WASM validation/execution tests | **Implemented (core subset)** | Structural validation + Node execution tests added. |
+| WASM backend | **Implemented (core subset+)** | Replaced hardcoded `42` with IR-driven lowering + memory model for strings/arrays/object literals, heap-backed member access, struct-literal constructor lowering, and generated `.mjs` loader sidecars. |
+| WASM validation/execution tests | **Implemented (core subset+)** | Structural validation + Node execution tests cover numeric control flow, string/array memory, object/member access, struct-literal lowering, and CLI loader sidecars. |
 | Example suite parity with README/plan-required language features | **Implemented** | Rewrote and expanded `examples/*.arg` to include decorators/declare-module interop, loop/for-of, struct methods, object literals, template interpolation, async/await, try/catch/finally, interfaces/enums, generics, and a wasm-subset fixture. |
 | `argon-interop` crate tests | **Implemented** | Added crate-local tests for import/export/declaration behavior. |
 | `argon-stdlib` crate tests | **Implemented** | Added crate-local tests for primitives/runtime/definitions. |
@@ -94,6 +94,9 @@ The compiler is considered **complete** for this scope only when all gates pass:
 ### Milestone 4: WASM Backend (Core Subset)
 - [x] IR-driven lowering for constants/locals/ops/calls/branching/loops.
 - [x] Minimal linear memory model for strings and arrays.
+- [x] Heap-backed object literals, field access, and array indexing for local wasm shapes.
+- [x] Struct-literal constructor lowering (`Point { ... }` -> `new Point({ ... })`) in the wasm subset.
+- [x] Generated `.mjs` loader sidecar next to `.wasm` outputs.
 - [x] Explicit unsupported diagnostics for non-subset operations.
 - [x] Structural validation + execution tests for subset fixtures.
 - [ ] Full README parity on WASM target (out of this subset scope).
@@ -109,9 +112,21 @@ The compiler is considered **complete** for this scope only when all gates pass:
 
 ## Remaining Gaps (Post-Scope Completion)
 
-1. **Interprocedural lifetime depth**: call-site + borrowed-return checks are implemented, but no full interprocedural lifetime-flow solver.
-2. **Type-system depth**: README-wide generic/object/method typing still has uncovered edge cases (generic inference breadth and richer object literal compatibility).
-3. **WASM scope boundary**: backend is correct for documented core subset, not full language parity.
+1. **Interprocedural lifetime depth**: call-site + helper-summary propagation are implemented, but no full interprocedural lifetime-flow solver.
+2. **WASM scope boundary**: backend now covers the documented core subset plus heap-backed object/member cases and loader sidecars, but not full language parity.
+3. **Full host ABI parity**: declared-module interop imports/exports, async/await lowering, and try/throw lowering are still outside the current wasm subset.
+
+---
+
+## Post-Scope Hardening
+
+### Milestone 6: Type-System Hardening
+- [x] Register `interface` and `enum` declarations in the type environment.
+- [x] Add structural object-shape typing for object literals and object-type annotations.
+- [x] Support interface/class/object-shape member resolution.
+- [x] Support generic interface references and generic type-alias instantiation.
+- [x] Replace positional generic inference with recursive shape-aware inference for nested parameter types.
+- [x] Add crate-local regressions for interfaces, enums, structural object literals, and generic inference.
 
 ---
 
@@ -128,14 +143,26 @@ The compiler is considered **complete** for this scope only when all gates pass:
   - IR compile + execute of `for..of` snippet
   - `argon run` runtime execution snippet
   - WASM subset compile + execute
+  - WASM loader-sidecar generation/import
+  - WASM struct-literal/object member execution
 - Example validation now includes:
   - Full `examples/*.arg` suite passing `argon check`
   - Coverage examples for: interop annotations (`interop.arg`, `test_lexer.arg`), loop/for-of (`control-flow.arg`, `collections.arg`), template interpolation (`strings.arg`), struct methods (`simple_method.arg`), object literals (`object.arg`), try/catch/finally (`try-catch.arg`), interface/enum (`interface.arg`, `enum.arg`), and wasm subset (`wasm-subset.arg`)
 - Borrow-check regressions include:
   - borrowed-return escape checks
+  - helper-mediated borrowed-return propagation
+  - mutually recursive borrowed-return summary convergence
   - thread/process typed capture safety
+  - helper-mediated thread/process capture propagation
+  - helper-mediated process capture propagation
   - NLL-like last-use borrow-release scenarios
   - loop fixed-point NLL scenarios (zero-iteration path + iterative convergence)
   - `if/else` exclusive-path borrow merge scenarios
   - `switch`/`match` branch-merge borrow liveness scenarios
   - shared-reference binding reuse without move
+- Type-check regressions now include:
+  - structural object-literal assignment to interfaces
+  - generic interface member resolution
+  - generic type-alias instantiation with explicit type arguments
+  - enum member typing
+  - recursive generic inference for nested parameter shapes

@@ -50,6 +50,7 @@ pub struct CompileArtifacts {
     pub js: Option<String>,
     pub wasm: Option<Vec<u8>>,
     pub wat: Option<String>,
+    pub wasm_loader_js: Option<String>,
     pub source_map: Option<String>,
     pub declarations: Option<String>,
 }
@@ -261,6 +262,7 @@ impl Compiler {
             js: Some(js),
             wasm: None,
             wat: None,
+            wasm_loader_js: None,
             source_map,
             declarations,
         })
@@ -295,9 +297,62 @@ impl Compiler {
             js: None,
             wasm: Some(wasm),
             wat,
+            wasm_loader_js: Some(self.generate_wasm_loader("__WASM_FILE__")),
             source_map: None,
             declarations: None,
         })
+    }
+
+    fn generate_wasm_loader(&self, wasm_file_name: &str) -> String {
+        format!(
+            r#"export function createArgonEnv(overrides = {{}}) {{
+  return {{
+    ...overrides,
+  }};
+}}
+
+export async function instantiateArgon(imports = {{}}) {{
+  const fs = await import("node:fs/promises");
+  const wasmUrl = new URL("./{wasm_file_name}", import.meta.url);
+  const bytes = await fs.readFile(wasmUrl);
+  const env = createArgonEnv(imports.argon_env || imports.env || {{}});
+  const {{ instance, module }} = await WebAssembly.instantiate(bytes, {{
+    argon_env: env,
+    env,
+  }});
+
+  const memory = instance.exports.memory || null;
+
+  return {{
+    module,
+    instance,
+    exports: instance.exports,
+    memory,
+    readString(ptr) {{
+      if (!memory) {{
+        throw new Error("Argon wasm module does not export memory");
+      }}
+      const view = new DataView(memory.buffer);
+      const len = view.getUint32(ptr, true);
+      const bytes = new Uint8Array(memory.buffer, ptr + 4, len);
+      return new TextDecoder().decode(bytes);
+    }},
+    readArrayI32(ptr) {{
+      if (!memory) {{
+        throw new Error("Argon wasm module does not export memory");
+      }}
+      const view = new DataView(memory.buffer);
+      const len = view.getInt32(ptr, true);
+      const values = [];
+      for (let i = 0; i < len; i += 1) {{
+        values.push(view.getInt32(ptr + 4 + (i * 4), true));
+      }}
+      return values;
+    }},
+  }};
+}}
+"#
+        )
     }
 
     fn parse_error_to_driver(

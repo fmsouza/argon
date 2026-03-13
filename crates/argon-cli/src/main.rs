@@ -243,6 +243,17 @@ fn compile(
             fs::write(&output_path, &wasm_bytes)?;
             println!("Wrote {}", output_path.display());
 
+            if let Some(loader) = artifacts.wasm_loader_js {
+                let wasm_file = output_path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("output.wasm");
+                let loader_path = output_path.with_extension("mjs");
+                let loader_contents = loader.replace("__WASM_FILE__", wasm_file);
+                fs::write(&loader_path, loader_contents)?;
+                println!("Wrote {}", loader_path.display());
+            }
+
             if let Some(wat) = artifacts.wat {
                 let wat_path = output_path.with_extension("wat");
                 fs::write(&wat_path, &wat)?;

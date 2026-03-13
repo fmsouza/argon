@@ -534,3 +534,108 @@ WebAssembly.instantiate(bytes, {}).then(({ instance }) => {
     let stdout = String::from_utf8_lossy(&node_output.stdout);
     assert!(stdout.contains("15"));
 }
+
+#[test]
+fn test_compile_wasm_writes_loader_sidecar() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("loader.arg");
+    let output_file = temp_dir.path().join("loader.wasm");
+    fs::write(
+        &source_file,
+        r#"
+function greet(): string {
+    return "hello";
+}
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(&output_file)
+        .arg("--target")
+        .arg("wasm")
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
+        .success();
+
+    let loader_file = output_file.with_extension("mjs");
+    let loader_contents = fs::read_to_string(&loader_file).unwrap();
+    assert!(loader_contents.contains("instantiateArgon"));
+    assert!(loader_contents.contains("loader.wasm"));
+
+    let script_file = temp_dir.path().join("check_loader.mjs");
+    fs::write(
+        &script_file,
+        r#"
+import { instantiateArgon } from "./loader.mjs";
+
+const runtime = await instantiateArgon();
+console.log(runtime.readString(runtime.exports.greet()));
+"#,
+    )
+    .unwrap();
+
+    let node_output = Command::new("node").arg(&script_file).output().unwrap();
+    assert!(node_output.status.success(), "{:?}", node_output);
+    let stdout = String::from_utf8_lossy(&node_output.stdout);
+    assert!(stdout.contains("hello"));
+}
+
+#[test]
+fn test_compile_wasm_struct_literal_member_access() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("struct_member.arg");
+    let output_file = temp_dir.path().join("struct_member.wasm");
+    fs::write(
+        &source_file,
+        r#"
+struct Point {
+    x: i32;
+    y: i32;
+}
+
+function getX(): i32 {
+    const point = Point { x: 6, y: 8 };
+    return point.x;
+}
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(&output_file)
+        .arg("--target")
+        .arg("wasm")
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
+        .success();
+
+    let script = r#"
+const fs = require('fs');
+const wasmPath = process.argv[1];
+const bytes = fs.readFileSync(wasmPath);
+WebAssembly.instantiate(bytes, {}).then(({ instance }) => {
+  console.log(String(instance.exports.getX()));
+}).catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+"#;
+    let node_output = Command::new("node")
+        .arg("-e")
+        .arg(script)
+        .arg(&output_file)
+        .output()
+        .unwrap();
+    assert!(node_output.status.success(), "{:?}", node_output);
+    let stdout = String::from_utf8_lossy(&node_output.stdout);
+    assert!(stdout.contains("6"));
+}

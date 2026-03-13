@@ -1124,6 +1124,35 @@ mod cross_function_borrow_regressions {
         // Assert
         assert!(result.is_err());
     }
+
+    #[test]
+    fn allows_transitive_borrowed_return_from_helper_call() {
+        // Assign
+        let source =
+            "function passthrough(x: &i32): &i32 { return x; } function forward(x: &i32): &i32 { return passthrough(x); }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn allows_mutually_recursive_borrowed_return_summary() {
+        // Assign
+        let source = "function left(x: &i32): &i32 { return right(x); } function right(x: &i32): &i32 { if (1 < 2) { return x; } return left(x); }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok(), "{result:?}");
+    }
 }
 
 mod thread_safety_regressions {
@@ -1181,6 +1210,40 @@ mod thread_safety_regressions {
     fn rejects_thread_capture_of_mutable_reference() {
         // Assign
         let source = "let data = [1, 2, 3]; const view = &mut data; thread(view);";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+        let mut type_checker = TypeChecker::new();
+        let type_output = type_checker.check_with_output(&ast).unwrap();
+
+        // Act
+        let result = checker.check_typed(&ast, type_output);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_transitive_thread_capture_of_non_thread_safe_class_value() {
+        // Assign
+        let source =
+            "class Box { value: i32; } function spawn(x: Box): void { thread(x); } const b = new Box(); spawn(b);";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+        let mut type_checker = TypeChecker::new();
+        let type_output = type_checker.check_with_output(&ast).unwrap();
+
+        // Act
+        let result = checker.check_typed(&ast, type_output);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_transitive_process_capture_of_non_thread_safe_class_value() {
+        // Assign
+        let source =
+            "class Box { value: i32; } function queue(x: Box): void { process(x); } const b = new Box(); queue(b);";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
         let mut type_checker = TypeChecker::new();

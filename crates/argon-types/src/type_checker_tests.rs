@@ -546,6 +546,120 @@ mod match_expression_checking {
     }
 }
 
+mod interface_and_object_shape_checking {
+    use super::*;
+
+    #[test]
+    fn allows_structural_object_literal_assignment_to_interface() {
+        // Assign
+        let source = r#"
+interface HasName {
+    name: string;
+}
+
+function render(item: HasName): string {
+    return item.name;
+}
+
+const label: string = render({ name: "argon" });
+"#;
+        let ast = parse(source).unwrap();
+        let mut checker = TypeChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok(), "type check error: {:?}", result.err());
+    }
+
+    #[test]
+    fn resolves_generic_interface_member_types() {
+        // Assign
+        let source = r#"
+interface Box<T> {
+    value: T;
+}
+
+function unwrap<T>(box: Box<T>): T {
+    return box.value;
+}
+
+const value: i32 = unwrap({ value: 7 });
+"#;
+        let ast = parse(source).unwrap();
+        let mut checker = TypeChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok(), "type check error: {:?}", result.err());
+    }
+
+    #[test]
+    fn resolves_generic_object_type_aliases() {
+        // Assign
+        let source = r#"
+struct Container<T> {
+    value: T;
+}
+
+type Box<T> = Container<T>;
+const value: Box<i32> = { value: 7 };
+"#;
+        let ast = parse(source).unwrap();
+        let mut checker = TypeChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok(), "type check error: {:?}", result.err());
+    }
+}
+
+mod enum_and_generic_inference {
+    use super::*;
+
+    #[test]
+    fn resolves_enum_member_access_to_enum_type() {
+        // Assign
+        let source = r#"
+enum Status { Ready, Running }
+const status: Status = Status.Ready;
+"#;
+        let ast = parse(source).unwrap();
+        let mut checker = TypeChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok(), "type check error: {:?}", result.err());
+    }
+
+    #[test]
+    fn infers_generic_type_arguments_from_array_shape() {
+        // Assign
+        let source = r#"
+function first<T>(items: T[]): T {
+    return items[0];
+}
+
+const value: i32 = first([1, 2, 3]);
+"#;
+        let ast = parse(source).unwrap();
+        let mut checker = TypeChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok(), "type check error: {:?}", result.err());
+    }
+}
+
 mod error_recovery {
     use super::*;
 

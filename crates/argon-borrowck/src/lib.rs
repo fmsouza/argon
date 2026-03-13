@@ -59,9 +59,18 @@ struct LifetimeScope {
     children: Vec<usize>,
 }
 
-#[derive(Debug, Clone)]
-struct FunctionBorrowContract {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReturnBorrowSource {
+    param_index: usize,
+    kind: BorrowKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FunctionBorrowSummary {
     param_borrows: Vec<Option<BorrowKind>>,
+    return_borrow: Option<BorrowKind>,
+    return_source: Option<ReturnBorrowSource>,
+    thread_captured_params: HashSet<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,7 +100,7 @@ pub struct BorrowChecker {
     in_unsafe: bool,
     thread_access: HashSet<String>,
     type_info: Option<TypeCheckOutput>,
-    function_contracts: HashMap<String, FunctionBorrowContract>,
+    function_summaries: HashMap<String, FunctionBorrowSummary>,
     current_function_context: Option<FunctionBorrowContext>,
     scope_stack: Vec<Vec<String>>,
     remaining_identifier_uses: Vec<HashMap<String, usize>>,
@@ -114,7 +123,7 @@ impl BorrowChecker {
             in_unsafe: false,
             thread_access: HashSet::new(),
             type_info: None,
-            function_contracts: HashMap::new(),
+            function_summaries: HashMap::new(),
             current_function_context: None,
             scope_stack: vec![Vec::new()],
             remaining_identifier_uses: Vec::new(),
@@ -137,8 +146,8 @@ impl BorrowChecker {
     }
 
     fn check_impl(&mut self, source: &SourceFile) -> Result<(), BorrowError> {
-        self.function_contracts.clear();
-        self.collect_function_contracts(source);
+        self.function_summaries.clear();
+        self.collect_function_summaries(source);
         self.scope_stack.clear();
         self.scope_stack.push(Vec::new());
         self.borrow_bindings.clear();
@@ -159,31 +168,67 @@ impl BorrowChecker {
         Ok(())
     }
 
-    fn collect_function_contracts(&mut self, source: &SourceFile) {
-        for stmt in &source.statements {
-            self.collect_function_contracts_from_stmt(stmt);
+    fn collect_function_summaries(&mut self, source: &SourceFile) {
+        let mut functions = HashMap::new();
+        self.collect_functions(source, &mut functions);
+
+        self.function_summaries = functions
+            .iter()
+            .map(|(name, function)| {
+                (
+                    name.clone(),
+                    FunctionBorrowSummary {
+                        param_borrows: function
+                            .params
+                            .iter()
+                            .map(|p| self.param_borrow_kind(p))
+                            .collect(),
+                        return_borrow: self.return_borrow_kind(&function.return_type),
+                        return_source: None,
+                        thread_captured_params: HashSet::new(),
+                    },
+                )
+            })
+            .collect();
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+            let previous = self.function_summaries.clone();
+            for (name, function) in &functions {
+                let summary = self.compute_function_summary(function, &previous);
+                if previous.get(name) != Some(&summary) {
+                    self.function_summaries.insert(name.clone(), summary);
+                    changed = true;
+                }
+            }
         }
     }
 
-    fn collect_function_contracts_from_stmt(&mut self, stmt: &Stmt) {
+    fn collect_functions(
+        &self,
+        source: &SourceFile,
+        functions: &mut HashMap<String, FunctionDecl>,
+    ) {
+        for stmt in &source.statements {
+            self.collect_functions_from_stmt(stmt, functions);
+        }
+    }
+
+    fn collect_functions_from_stmt(
+        &self,
+        stmt: &Stmt,
+        functions: &mut HashMap<String, FunctionDecl>,
+    ) {
         match stmt {
             Stmt::Function(f) | Stmt::AsyncFunction(f) => {
                 if let Some(id) = &f.id {
-                    self.function_contracts.insert(
-                        id.sym.clone(),
-                        FunctionBorrowContract {
-                            param_borrows: f
-                                .params
-                                .iter()
-                                .map(|p| self.param_borrow_kind(p))
-                                .collect(),
-                        },
-                    );
+                    functions.insert(id.sym.clone(), f.clone());
                 }
             }
             Stmt::Block(b) => {
                 for nested in &b.statements {
-                    self.collect_function_contracts_from_stmt(nested);
+                    self.collect_functions_from_stmt(nested, functions);
                 }
             }
             _ => {}
@@ -204,6 +249,619 @@ impl BorrowChecker {
         match ty.as_ref() {
             Type::Ref(_) => Some(BorrowKind::Shared),
             Type::MutRef(_) => Some(BorrowKind::Mutable),
+            _ => None,
+        }
+    }
+
+    fn compute_function_summary(
+        &self,
+        function: &FunctionDecl,
+        known_summaries: &HashMap<String, FunctionBorrowSummary>,
+    ) -> FunctionBorrowSummary {
+        let param_borrows: Vec<_> = function
+            .params
+            .iter()
+            .map(|p| self.param_borrow_kind(p))
+            .collect();
+        let return_borrow = self.return_borrow_kind(&function.return_type);
+        let param_indices: HashMap<String, usize> = function
+            .params
+            .iter()
+            .enumerate()
+            .filter_map(|(index, param)| match &param.pat {
+                Pattern::Identifier(id) => Some((id.name.sym.clone(), index)),
+                _ => None,
+            })
+            .collect();
+
+        let mut return_source = None;
+        let mut thread_captured_params = HashSet::new();
+
+        self.collect_summary_from_statements(
+            &function.body.statements,
+            &param_indices,
+            return_borrow,
+            known_summaries,
+            &mut return_source,
+            &mut thread_captured_params,
+        );
+
+        FunctionBorrowSummary {
+            param_borrows,
+            return_borrow,
+            return_source,
+            thread_captured_params,
+        }
+    }
+
+    fn collect_summary_from_statements(
+        &self,
+        statements: &[Stmt],
+        param_indices: &HashMap<String, usize>,
+        expected_return_borrow: Option<BorrowKind>,
+        known_summaries: &HashMap<String, FunctionBorrowSummary>,
+        return_source: &mut Option<ReturnBorrowSource>,
+        thread_captured_params: &mut HashSet<usize>,
+    ) {
+        for stmt in statements {
+            self.collect_summary_from_stmt(
+                stmt,
+                param_indices,
+                expected_return_borrow,
+                known_summaries,
+                return_source,
+                thread_captured_params,
+            );
+        }
+    }
+
+    fn collect_summary_from_stmt(
+        &self,
+        stmt: &Stmt,
+        param_indices: &HashMap<String, usize>,
+        expected_return_borrow: Option<BorrowKind>,
+        known_summaries: &HashMap<String, FunctionBorrowSummary>,
+        return_source: &mut Option<ReturnBorrowSource>,
+        thread_captured_params: &mut HashSet<usize>,
+    ) {
+        match stmt {
+            Stmt::Return(r) => {
+                if let Some(expected_kind) = expected_return_borrow {
+                    if let Some(expr) = &r.argument {
+                        if let Some(source) = self.return_source_from_expr(
+                            expr,
+                            expected_kind,
+                            param_indices,
+                            known_summaries,
+                        ) {
+                            match return_source {
+                                Some(existing) if existing != &source => {
+                                    *return_source = None;
+                                }
+                                None => {
+                                    *return_source = Some(source);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+            Stmt::Expr(expr_stmt) => {
+                self.collect_thread_captures_from_expr(
+                    &expr_stmt.expr,
+                    param_indices,
+                    known_summaries,
+                    thread_captured_params,
+                );
+            }
+            Stmt::Variable(v) => {
+                for decl in &v.declarations {
+                    if let Some(init) = &decl.init {
+                        self.collect_thread_captures_from_expr(
+                            init,
+                            param_indices,
+                            known_summaries,
+                            thread_captured_params,
+                        );
+                    }
+                }
+            }
+            Stmt::Block(b) => {
+                self.collect_summary_from_statements(
+                    &b.statements,
+                    param_indices,
+                    expected_return_borrow,
+                    known_summaries,
+                    return_source,
+                    thread_captured_params,
+                );
+            }
+            Stmt::If(i) => {
+                self.collect_thread_captures_from_expr(
+                    &i.condition,
+                    param_indices,
+                    known_summaries,
+                    thread_captured_params,
+                );
+                self.collect_summary_from_stmt(
+                    &i.consequent,
+                    param_indices,
+                    expected_return_borrow,
+                    known_summaries,
+                    return_source,
+                    thread_captured_params,
+                );
+                if let Some(alternate) = &i.alternate {
+                    self.collect_summary_from_stmt(
+                        alternate,
+                        param_indices,
+                        expected_return_borrow,
+                        known_summaries,
+                        return_source,
+                        thread_captured_params,
+                    );
+                }
+            }
+            Stmt::While(w) => {
+                self.collect_thread_captures_from_expr(
+                    &w.condition,
+                    param_indices,
+                    known_summaries,
+                    thread_captured_params,
+                );
+                self.collect_summary_from_stmt(
+                    &w.body,
+                    param_indices,
+                    expected_return_borrow,
+                    known_summaries,
+                    return_source,
+                    thread_captured_params,
+                );
+            }
+            Stmt::DoWhile(d) => {
+                self.collect_summary_from_stmt(
+                    &d.body,
+                    param_indices,
+                    expected_return_borrow,
+                    known_summaries,
+                    return_source,
+                    thread_captured_params,
+                );
+                self.collect_thread_captures_from_expr(
+                    &d.condition,
+                    param_indices,
+                    known_summaries,
+                    thread_captured_params,
+                );
+            }
+            Stmt::For(f) => {
+                if let Some(init) = &f.init {
+                    match init {
+                        ForInit::Variable(v) => {
+                            for decl in &v.declarations {
+                                if let Some(init) = &decl.init {
+                                    self.collect_thread_captures_from_expr(
+                                        init,
+                                        param_indices,
+                                        known_summaries,
+                                        thread_captured_params,
+                                    );
+                                }
+                            }
+                        }
+                        ForInit::Expr(e) => self.collect_thread_captures_from_expr(
+                            e,
+                            param_indices,
+                            known_summaries,
+                            thread_captured_params,
+                        ),
+                    }
+                }
+                if let Some(test) = &f.test {
+                    self.collect_thread_captures_from_expr(
+                        test,
+                        param_indices,
+                        known_summaries,
+                        thread_captured_params,
+                    );
+                }
+                if let Some(update) = &f.update {
+                    self.collect_thread_captures_from_expr(
+                        update,
+                        param_indices,
+                        known_summaries,
+                        thread_captured_params,
+                    );
+                }
+                self.collect_summary_from_stmt(
+                    &f.body,
+                    param_indices,
+                    expected_return_borrow,
+                    known_summaries,
+                    return_source,
+                    thread_captured_params,
+                );
+            }
+            Stmt::ForIn(f) => {
+                self.collect_thread_captures_from_expr(
+                    &f.right,
+                    param_indices,
+                    known_summaries,
+                    thread_captured_params,
+                );
+                self.collect_summary_from_stmt(
+                    &f.body,
+                    param_indices,
+                    expected_return_borrow,
+                    known_summaries,
+                    return_source,
+                    thread_captured_params,
+                );
+            }
+            Stmt::Switch(s) => {
+                self.collect_thread_captures_from_expr(
+                    &s.discriminant,
+                    param_indices,
+                    known_summaries,
+                    thread_captured_params,
+                );
+                for case in &s.cases {
+                    if let Some(test) = &case.test {
+                        self.collect_thread_captures_from_expr(
+                            test,
+                            param_indices,
+                            known_summaries,
+                            thread_captured_params,
+                        );
+                    }
+                    self.collect_summary_from_statements(
+                        &case.consequent,
+                        param_indices,
+                        expected_return_borrow,
+                        known_summaries,
+                        return_source,
+                        thread_captured_params,
+                    );
+                }
+            }
+            Stmt::Match(m) => {
+                self.collect_thread_captures_from_expr(
+                    &m.discriminant,
+                    param_indices,
+                    known_summaries,
+                    thread_captured_params,
+                );
+                for case in &m.cases {
+                    self.collect_thread_captures_from_expr(
+                        &case.pattern,
+                        param_indices,
+                        known_summaries,
+                        thread_captured_params,
+                    );
+                    self.collect_summary_from_stmt(
+                        &case.consequent,
+                        param_indices,
+                        expected_return_borrow,
+                        known_summaries,
+                        return_source,
+                        thread_captured_params,
+                    );
+                }
+            }
+            Stmt::Try(t) => {
+                self.collect_summary_from_stmt(
+                    &Stmt::Block(t.block.clone()),
+                    param_indices,
+                    expected_return_borrow,
+                    known_summaries,
+                    return_source,
+                    thread_captured_params,
+                );
+                if let Some(handler) = &t.handler {
+                    self.collect_summary_from_statements(
+                        &handler.body.statements,
+                        param_indices,
+                        expected_return_borrow,
+                        known_summaries,
+                        return_source,
+                        thread_captured_params,
+                    );
+                }
+                if let Some(finalizer) = &t.finalizer {
+                    self.collect_summary_from_statements(
+                        &finalizer.statements,
+                        param_indices,
+                        expected_return_borrow,
+                        known_summaries,
+                        return_source,
+                        thread_captured_params,
+                    );
+                }
+            }
+            Stmt::Throw(t) => {
+                self.collect_thread_captures_from_expr(
+                    &t.argument,
+                    param_indices,
+                    known_summaries,
+                    thread_captured_params,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn return_source_from_expr(
+        &self,
+        expr: &Expr,
+        expected_kind: BorrowKind,
+        param_indices: &HashMap<String, usize>,
+        known_summaries: &HashMap<String, FunctionBorrowSummary>,
+    ) -> Option<ReturnBorrowSource> {
+        match expr {
+            Expr::Identifier(id) => {
+                let &param_index = param_indices.get(&id.sym)?;
+                Some(ReturnBorrowSource {
+                    param_index,
+                    kind: expected_kind,
+                })
+            }
+            Expr::Ref(r) => self.return_source_from_param_expr(
+                &r.expr,
+                BorrowKind::Shared,
+                expected_kind,
+                param_indices,
+            ),
+            Expr::MutRef(r) => self.return_source_from_param_expr(
+                &r.expr,
+                BorrowKind::Mutable,
+                expected_kind,
+                param_indices,
+            ),
+            Expr::Call(c) => {
+                self.return_source_from_call(c, expected_kind, param_indices, known_summaries)
+            }
+            _ => None,
+        }
+    }
+
+    fn return_source_from_param_expr(
+        &self,
+        expr: &Expr,
+        found_kind: BorrowKind,
+        expected_kind: BorrowKind,
+        param_indices: &HashMap<String, usize>,
+    ) -> Option<ReturnBorrowSource> {
+        if !Self::borrow_kind_satisfies(found_kind, expected_kind) {
+            return None;
+        }
+
+        let Expr::Identifier(id) = expr else {
+            return None;
+        };
+        let &param_index = param_indices.get(&id.sym)?;
+        Some(ReturnBorrowSource {
+            param_index,
+            kind: found_kind,
+        })
+    }
+
+    fn return_source_from_call(
+        &self,
+        call: &CallExpr,
+        expected_kind: BorrowKind,
+        param_indices: &HashMap<String, usize>,
+        known_summaries: &HashMap<String, FunctionBorrowSummary>,
+    ) -> Option<ReturnBorrowSource> {
+        let Expr::Identifier(id) = &*call.callee else {
+            return None;
+        };
+        let summary = known_summaries.get(&id.sym)?;
+        let source = summary.return_source.as_ref()?;
+        if !Self::borrow_kind_satisfies(source.kind, expected_kind) {
+            return None;
+        }
+
+        let arg = call.arguments.get(source.param_index)?;
+        let ExprOrSpread::Expr(arg_expr) = arg else {
+            return None;
+        };
+
+        match arg_expr {
+            Expr::Identifier(arg_id) => {
+                let &param_index = param_indices.get(&arg_id.sym)?;
+                Some(ReturnBorrowSource {
+                    param_index,
+                    kind: source.kind,
+                })
+            }
+            Expr::Ref(r) => self.return_source_from_param_expr(
+                &r.expr,
+                BorrowKind::Shared,
+                expected_kind,
+                param_indices,
+            ),
+            Expr::MutRef(r) => self.return_source_from_param_expr(
+                &r.expr,
+                BorrowKind::Mutable,
+                expected_kind,
+                param_indices,
+            ),
+            _ => None,
+        }
+    }
+
+    fn collect_thread_captures_from_expr(
+        &self,
+        expr: &Expr,
+        param_indices: &HashMap<String, usize>,
+        known_summaries: &HashMap<String, FunctionBorrowSummary>,
+        thread_captured_params: &mut HashSet<usize>,
+    ) {
+        match expr {
+            Expr::Call(c) => {
+                if let Expr::Identifier(id) = &*c.callee {
+                    if id.sym == "thread" || id.sym == "process" {
+                        for arg in &c.arguments {
+                            if let ExprOrSpread::Expr(e) = arg {
+                                if let Some(index) = self.param_index_for_expr(e, param_indices) {
+                                    thread_captured_params.insert(index);
+                                }
+                            }
+                        }
+                    } else if let Some(summary) = known_summaries.get(&id.sym) {
+                        for param_index in &summary.thread_captured_params {
+                            if let Some(ExprOrSpread::Expr(e)) = c.arguments.get(*param_index) {
+                                if let Some(index) = self.param_index_for_expr(e, param_indices) {
+                                    thread_captured_params.insert(index);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                self.collect_thread_captures_from_expr(
+                    &c.callee,
+                    param_indices,
+                    known_summaries,
+                    thread_captured_params,
+                );
+                for arg in &c.arguments {
+                    if let ExprOrSpread::Expr(e) = arg {
+                        self.collect_thread_captures_from_expr(
+                            e,
+                            param_indices,
+                            known_summaries,
+                            thread_captured_params,
+                        );
+                    }
+                }
+            }
+            Expr::Member(m) => {
+                self.collect_thread_captures_from_expr(
+                    &m.object,
+                    param_indices,
+                    known_summaries,
+                    thread_captured_params,
+                );
+                self.collect_thread_captures_from_expr(
+                    &m.property,
+                    param_indices,
+                    known_summaries,
+                    thread_captured_params,
+                );
+            }
+            Expr::Array(a) => {
+                for element in &a.elements {
+                    if let Some(ExprOrSpread::Expr(e)) = element {
+                        self.collect_thread_captures_from_expr(
+                            e,
+                            param_indices,
+                            known_summaries,
+                            thread_captured_params,
+                        );
+                    }
+                }
+            }
+            Expr::Object(o) => {
+                for prop in &o.properties {
+                    match prop {
+                        ObjectProperty::Property(p) => {
+                            if let ExprOrSpread::Expr(e) = &p.value {
+                                self.collect_thread_captures_from_expr(
+                                    e,
+                                    param_indices,
+                                    known_summaries,
+                                    thread_captured_params,
+                                );
+                            }
+                        }
+                        ObjectProperty::Method(m) => {
+                            let mut ignored_return_source = None;
+                            self.collect_summary_from_statements(
+                                &m.value.body.statements,
+                                param_indices,
+                                None,
+                                known_summaries,
+                                &mut ignored_return_source,
+                                thread_captured_params,
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Expr::Await(a) | Expr::AwaitPromised(a) => self.collect_thread_captures_from_expr(
+                &a.argument,
+                param_indices,
+                known_summaries,
+                thread_captured_params,
+            ),
+            Expr::Assignment(a) => self.collect_thread_captures_from_expr(
+                &a.right,
+                param_indices,
+                known_summaries,
+                thread_captured_params,
+            ),
+            Expr::Binary(b) => {
+                self.collect_thread_captures_from_expr(
+                    &b.left,
+                    param_indices,
+                    known_summaries,
+                    thread_captured_params,
+                );
+                self.collect_thread_captures_from_expr(
+                    &b.right,
+                    param_indices,
+                    known_summaries,
+                    thread_captured_params,
+                );
+            }
+            Expr::Unary(u) => self.collect_thread_captures_from_expr(
+                &u.argument,
+                param_indices,
+                known_summaries,
+                thread_captured_params,
+            ),
+            Expr::Conditional(c) => {
+                self.collect_thread_captures_from_expr(
+                    &c.test,
+                    param_indices,
+                    known_summaries,
+                    thread_captured_params,
+                );
+                self.collect_thread_captures_from_expr(
+                    &c.consequent,
+                    param_indices,
+                    known_summaries,
+                    thread_captured_params,
+                );
+                self.collect_thread_captures_from_expr(
+                    &c.alternate,
+                    param_indices,
+                    known_summaries,
+                    thread_captured_params,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn param_index_for_expr(
+        &self,
+        expr: &Expr,
+        param_indices: &HashMap<String, usize>,
+    ) -> Option<usize> {
+        match expr {
+            Expr::Identifier(id) => param_indices.get(&id.sym).copied(),
+            Expr::Ref(r) => match &*r.expr {
+                Expr::Identifier(id) => param_indices.get(&id.sym).copied(),
+                _ => None,
+            },
+            Expr::MutRef(r) => match &*r.expr {
+                Expr::Identifier(id) => param_indices.get(&id.sym).copied(),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -1554,8 +2212,11 @@ impl BorrowChecker {
             self.locals = self.merge_branch_locals(&base_locals, &iter_locals, &base_locals);
             let merged_remaining_uses =
                 self.merge_remaining_uses_after_loop(&base_remaining_uses, &iter_remaining_uses);
-            let expired_branch_bindings =
-                self.expired_branch_bindings(&iter_bindings, &base_bindings, &merged_remaining_uses);
+            let expired_branch_bindings = self.expired_branch_bindings(
+                &iter_bindings,
+                &base_bindings,
+                &merged_remaining_uses,
+            );
             let merged_bindings = self.merge_branch_bindings(
                 &self.locals,
                 &iter_bindings,
@@ -1994,10 +2655,8 @@ impl BorrowChecker {
     fn check_call(&mut self, c: &CallExpr) -> Result<(), BorrowError> {
         self.check_expression(&c.callee)?;
 
-        let param_contracts = if let Expr::Identifier(id) = &*c.callee {
-            self.function_contracts
-                .get(&id.sym)
-                .map(|contract| contract.param_borrows.clone())
+        let function_summary = if let Expr::Identifier(id) = &*c.callee {
+            self.function_summaries.get(&id.sym).cloned()
         } else {
             None
         };
@@ -2007,9 +2666,9 @@ impl BorrowChecker {
 
         for (arg_index, arg) in c.arguments.iter().enumerate() {
             if let ExprOrSpread::Expr(e) = arg {
-                let expected_borrow = param_contracts
+                let expected_borrow = function_summary
                     .as_ref()
-                    .and_then(|params| params.get(arg_index))
+                    .and_then(|summary| summary.param_borrows.get(arg_index))
                     .copied()
                     .flatten();
 
@@ -2049,20 +2708,13 @@ impl BorrowChecker {
             if id.sym == "process" || id.sym == "thread" {
                 for arg in &c.arguments {
                     if let ExprOrSpread::Expr(e) = arg {
-                        if let Some(name) = self.borrowed_argument_name(e) {
-                            self.thread_access.insert(name.clone());
-                            let has_mutable_borrow = self
-                                .active_borrows
-                                .get(&name)
-                                .map(|borrows| {
-                                    borrows.iter().any(|b| b.kind == BorrowKind::Mutable)
-                                })
-                                .unwrap_or(false);
-                            if has_mutable_borrow {
-                                self.errors.push(BorrowError::DataRace { variable: name });
-                            }
-                        }
-                        self.check_thread_safe_argument(e)?;
+                        self.check_thread_capture_argument(e)?;
+                    }
+                }
+            } else if let Some(summary) = function_summary.as_ref() {
+                for param_index in &summary.thread_captured_params {
+                    if let Some(ExprOrSpread::Expr(e)) = c.arguments.get(*param_index) {
+                        self.check_thread_capture_argument(e)?;
                     }
                 }
             }
@@ -2088,6 +2740,21 @@ impl BorrowChecker {
         }
 
         Ok(())
+    }
+
+    fn check_thread_capture_argument(&mut self, expr: &Expr) -> Result<(), BorrowError> {
+        if let Some(name) = self.borrowed_argument_name(expr) {
+            self.thread_access.insert(name.clone());
+            let has_mutable_borrow = self
+                .active_borrows
+                .get(&name)
+                .map(|borrows| borrows.iter().any(|b| b.kind == BorrowKind::Mutable))
+                .unwrap_or(false);
+            if has_mutable_borrow {
+                self.errors.push(BorrowError::DataRace { variable: name });
+            }
+        }
+        self.check_thread_safe_argument(expr)
     }
 
     fn check_borrow_argument(&mut self, expr: &Expr, kind: BorrowKind) -> Result<(), BorrowError> {
@@ -2250,9 +2917,77 @@ impl BorrowChecker {
             Expr::MutRef(r) => {
                 self.check_return_borrow_reference(&r.expr, BorrowKind::Mutable, expected_kind)?;
             }
+            Expr::Call(c) => {
+                self.check_return_borrow_call(c, expected_kind)?;
+            }
             _ => {
                 self.errors.push(BorrowError::LifetimeError(
                     "borrowed return requires identifier/reference expression".to_string(),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn check_return_borrow_call(
+        &mut self,
+        call: &CallExpr,
+        expected_kind: BorrowKind,
+    ) -> Result<(), BorrowError> {
+        let Expr::Identifier(callee) = &*call.callee else {
+            self.errors.push(BorrowError::LifetimeError(
+                "borrowed return call must target a named function".to_string(),
+            ));
+            return Ok(());
+        };
+
+        let Some(summary) = self.function_summaries.get(&callee.sym).cloned() else {
+            self.errors.push(BorrowError::LifetimeError(format!(
+                "borrowed return call '{}' has no borrow summary",
+                callee.sym
+            )));
+            return Ok(());
+        };
+        let Some(source) = summary.return_source else {
+            self.errors.push(BorrowError::LifetimeError(format!(
+                "borrowed return call '{}' does not map to a borrowed parameter",
+                callee.sym
+            )));
+            return Ok(());
+        };
+
+        if !Self::borrow_kind_satisfies(source.kind, expected_kind) {
+            self.errors.push(BorrowError::InvalidBorrow {
+                variable: callee.sym.clone(),
+                location: callee.span.clone(),
+                message: "returned borrow kind does not match function return type".to_string(),
+            });
+            return Ok(());
+        }
+
+        let Some(ExprOrSpread::Expr(arg_expr)) = call.arguments.get(source.param_index) else {
+            self.errors.push(BorrowError::LifetimeError(format!(
+                "borrowed return call '{}' is missing the source argument",
+                callee.sym
+            )));
+            return Ok(());
+        };
+
+        match arg_expr {
+            Expr::Identifier(id) => {
+                self.validate_returned_param_reference(&id, source.kind, expected_kind)?;
+            }
+            Expr::Ref(r) => {
+                self.check_return_borrow_reference(&r.expr, BorrowKind::Shared, expected_kind)?;
+            }
+            Expr::MutRef(r) => {
+                self.check_return_borrow_reference(&r.expr, BorrowKind::Mutable, expected_kind)?;
+            }
+            _ => {
+                self.errors.push(BorrowError::LifetimeError(
+                    "borrowed return call source must be identifier/reference expression"
+                        .to_string(),
                 ));
             }
         }
@@ -2279,14 +3014,23 @@ impl BorrowChecker {
             return Ok(());
         }
 
-        let Some(ctx) = &self.current_function_context else {
-            return Ok(());
-        };
-
         let Expr::Identifier(id) = inner else {
             self.errors.push(BorrowError::LifetimeError(
                 "borrowed return must reference a function parameter".to_string(),
             ));
+            return Ok(());
+        };
+
+        self.validate_returned_param_reference(id, found_kind, expected_kind)
+    }
+
+    fn validate_returned_param_reference(
+        &mut self,
+        id: &Ident,
+        found_kind: BorrowKind,
+        _expected_kind: BorrowKind,
+    ) -> Result<(), BorrowError> {
+        let Some(ctx) = &self.current_function_context else {
             return Ok(());
         };
 
@@ -2552,6 +3296,13 @@ impl BorrowChecker {
                 .fields
                 .iter()
                 .all(|field| self.is_send_type(type_table, field.ty, visited)),
+            Some(CheckedType::ObjectShape(def)) => {
+                def.methods.is_empty()
+                    && def
+                        .fields
+                        .iter()
+                        .all(|field| self.is_send_type(type_table, field.ty, visited))
+            }
             Some(CheckedType::Ref(inner)) => {
                 let mut sync_visited = HashSet::new();
                 self.is_sync_type(type_table, *inner, &mut sync_visited)
@@ -2611,6 +3362,13 @@ impl BorrowChecker {
                 .fields
                 .iter()
                 .all(|field| self.is_sync_type(type_table, field.ty, visited)),
+            Some(CheckedType::ObjectShape(def)) => {
+                def.methods.is_empty()
+                    && def
+                        .fields
+                        .iter()
+                        .all(|field| self.is_sync_type(type_table, field.ty, visited))
+            }
             Some(CheckedType::MutRef(_))
             | Some(CheckedType::Class(_))
             | Some(CheckedType::Interface(_))

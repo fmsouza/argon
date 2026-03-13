@@ -27,6 +27,7 @@ pub enum Type {
     Struct(StructDef),
     Class(ClassDef),
     Interface(InterfaceDef),
+    ObjectShape(ObjectShapeDef),
     Enum(EnumDef),
     Ref(TypeId),
     MutRef(TypeId),
@@ -43,7 +44,7 @@ impl Type {
     pub fn is_truthy(&self) -> bool {
         matches!(
             self,
-            Type::Boolean | Type::Number | Type::String | Type::Object
+            Type::Boolean | Type::Number | Type::String | Type::Object | Type::ObjectShape(_)
         )
     }
 
@@ -121,6 +122,7 @@ impl fmt::Display for Type {
             Type::Struct(def) => write!(f, "struct {}", def.name),
             Type::Class(def) => write!(f, "class {}", def.name),
             Type::Interface(def) => write!(f, "interface {}", def.name),
+            Type::ObjectShape(_) => write!(f, "object"),
             Type::Enum(def) => write!(f, "enum {}", def.name),
             Type::Ref(id) => write!(f, "&{}", id),
             Type::MutRef(id) => write!(f, "&mut {}", id),
@@ -179,6 +181,12 @@ pub struct ClassDef {
 pub struct MethodDef {
     pub name: String,
     pub sig: FunctionSig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ObjectShapeDef {
+    pub fields: Vec<FieldDef>,
+    pub methods: Vec<MethodDef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -370,6 +378,18 @@ impl TypeTable {
         self.get_or_add(Type::Class(def))
     }
 
+    pub fn interface_def(&mut self, def: InterfaceDef) -> TypeId {
+        self.get_or_add(Type::Interface(def))
+    }
+
+    pub fn object_shape(&mut self, def: ObjectShapeDef) -> TypeId {
+        self.get_or_add(Type::ObjectShape(def))
+    }
+
+    pub fn enum_def(&mut self, def: EnumDef) -> TypeId {
+        self.get_or_add(Type::Enum(def))
+    }
+
     pub fn type_param(&mut self, param: TypeParam) -> TypeId {
         self.get_or_add(Type::TypeParam(param))
     }
@@ -456,6 +476,133 @@ impl TypeInstantiator {
                     .collect();
                 type_table.union(new_types)
             }
+            Type::Struct(def) => {
+                let fields = def
+                    .fields
+                    .iter()
+                    .map(|f| FieldDef {
+                        name: f.name.clone(),
+                        ty: self.instantiate(type_table, f.ty),
+                    })
+                    .collect();
+                let methods = def
+                    .methods
+                    .iter()
+                    .map(|m| MethodDef {
+                        name: m.name.clone(),
+                        sig: FunctionSig {
+                            params: m
+                                .sig
+                                .params
+                                .iter()
+                                .map(|&p| self.instantiate(type_table, p))
+                                .collect(),
+                            return_type: self.instantiate(type_table, m.sig.return_type),
+                            is_async: m.sig.is_async,
+                        },
+                    })
+                    .collect();
+                type_table.struct_def(StructDef {
+                    name: def.name,
+                    fields,
+                    methods,
+                })
+            }
+            Type::Class(def) => {
+                let fields = def
+                    .fields
+                    .iter()
+                    .map(|f| FieldDef {
+                        name: f.name.clone(),
+                        ty: self.instantiate(type_table, f.ty),
+                    })
+                    .collect();
+                let methods = def
+                    .methods
+                    .iter()
+                    .map(|m| MethodDef {
+                        name: m.name.clone(),
+                        sig: FunctionSig {
+                            params: m
+                                .sig
+                                .params
+                                .iter()
+                                .map(|&p| self.instantiate(type_table, p))
+                                .collect(),
+                            return_type: self.instantiate(type_table, m.sig.return_type),
+                            is_async: m.sig.is_async,
+                        },
+                    })
+                    .collect();
+                type_table.class_def(ClassDef {
+                    name: def.name,
+                    fields,
+                    methods,
+                })
+            }
+            Type::Interface(def) => {
+                let extends = def
+                    .extends
+                    .iter()
+                    .map(|&t| self.instantiate(type_table, t))
+                    .collect();
+                let members = def
+                    .members
+                    .iter()
+                    .map(|member| match member {
+                        InterfaceMember::Property { name, ty } => InterfaceMember::Property {
+                            name: name.clone(),
+                            ty: self.instantiate(type_table, *ty),
+                        },
+                        InterfaceMember::Method { name, sig } => InterfaceMember::Method {
+                            name: name.clone(),
+                            sig: FunctionSig {
+                                params: sig
+                                    .params
+                                    .iter()
+                                    .map(|&p| self.instantiate(type_table, p))
+                                    .collect(),
+                                return_type: self.instantiate(type_table, sig.return_type),
+                                is_async: sig.is_async,
+                            },
+                        },
+                    })
+                    .collect();
+                type_table.interface_def(InterfaceDef {
+                    name: def.name,
+                    extends,
+                    members,
+                })
+            }
+            Type::ObjectShape(def) => {
+                let fields = def
+                    .fields
+                    .iter()
+                    .map(|f| FieldDef {
+                        name: f.name.clone(),
+                        ty: self.instantiate(type_table, f.ty),
+                    })
+                    .collect();
+                let methods = def
+                    .methods
+                    .iter()
+                    .map(|m| MethodDef {
+                        name: m.name.clone(),
+                        sig: FunctionSig {
+                            params: m
+                                .sig
+                                .params
+                                .iter()
+                                .map(|&p| self.instantiate(type_table, p))
+                                .collect(),
+                            return_type: self.instantiate(type_table, m.sig.return_type),
+                            is_async: m.sig.is_async,
+                        },
+                    })
+                    .collect();
+                type_table.object_shape(ObjectShapeDef { fields, methods })
+            }
+            Type::Enum(def) => type_table.enum_def(def),
             _ => type_id,
         }
     }

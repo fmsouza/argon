@@ -74,9 +74,22 @@ struct DataSegment {
     bytes: Vec<u8>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HeapObjectLayout {
+    properties: HashMap<String, u32>,
+    field_order: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HeapValueShape {
+    Object(HeapObjectLayout),
+    Array,
+}
+
 struct ModuleLowerer<'a> {
     ir_module: &'a IrModule,
     function_indices: HashMap<String, u32>,
+    constructor_layouts: HashMap<String, HeapObjectLayout>,
     signatures: Vec<FunctionSignature>,
     data_segments: Vec<DataSegment>,
     string_pool: HashMap<String, u32>,
@@ -87,6 +100,7 @@ struct ModuleLowerer<'a> {
 impl<'a> ModuleLowerer<'a> {
     fn new(ir_module: &'a IrModule) -> Self {
         let mut function_indices = HashMap::new();
+        let mut constructor_layouts = HashMap::new();
         let mut signatures = Vec::new();
 
         for (idx, func) in ir_module.functions.iter().enumerate() {
@@ -94,9 +108,16 @@ impl<'a> ModuleLowerer<'a> {
             signatures.push(Self::infer_signature(func));
         }
 
+        for ty in &ir_module.types {
+            if let argon_ir::TypeDef::Struct { name, fields } = ty {
+                constructor_layouts.insert(name.clone(), Self::layout_from_fields(fields));
+            }
+        }
+
         Self {
             ir_module,
             function_indices,
+            constructor_layouts,
             signatures,
             data_segments: Vec::new(),
             string_pool: HashMap::new(),
@@ -203,6 +224,20 @@ impl<'a> ModuleLowerer<'a> {
         }
     }
 
+    fn layout_from_fields(fields: &[argon_ir::Field]) -> HeapObjectLayout {
+        let mut properties = HashMap::new();
+        let mut field_order = Vec::with_capacity(fields.len());
+        for (idx, field) in fields.iter().enumerate() {
+            properties.insert(field.name.clone(), 4 + (idx as u32 * 4));
+            field_order.push(field.name.clone());
+        }
+
+        HeapObjectLayout {
+            properties,
+            field_order,
+        }
+    }
+
     fn lower_function(
         &mut self,
         func: &IrFunction,
@@ -237,13 +272,15 @@ impl<'a> ModuleLowerer<'a> {
             blocks.insert(bb.id, bb);
         }
 
-        let mut function_refs: HashMap<ValueId, u32> = HashMap::new();
         let mut ctx = FunctionCtx {
             params_count,
             signature,
             bb_local,
             named_locals,
-            function_refs: &mut function_refs,
+            function_refs: HashMap::new(),
+            constructor_refs: HashMap::new(),
+            value_shapes: HashMap::new(),
+            named_shapes: HashMap::new(),
             func,
         };
 
@@ -363,26 +400,26 @@ impl<'a> ModuleLowerer<'a> {
                     wasm_fn.instruction(&Instruction::I32Const(*n as i32));
                     wasm_fn
                         .instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
-                    ctx.function_refs.remove(dest);
+                    ctx.clear_value_metadata(*dest);
                 }
                 ConstValue::Bool(b) => {
                     wasm_fn.instruction(&Instruction::I32Const(if *b { 1 } else { 0 }));
                     wasm_fn
                         .instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
-                    ctx.function_refs.remove(dest);
+                    ctx.clear_value_metadata(*dest);
                 }
                 ConstValue::Null => {
                     wasm_fn.instruction(&Instruction::I32Const(0));
                     wasm_fn
                         .instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
-                    ctx.function_refs.remove(dest);
+                    ctx.clear_value_metadata(*dest);
                 }
                 ConstValue::String(s) => {
                     let ptr = self.intern_string(s);
                     wasm_fn.instruction(&Instruction::I32Const(ptr as i32));
                     wasm_fn
                         .instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
-                    ctx.function_refs.remove(dest);
+                    ctx.clear_value_metadata(*dest);
                 }
             },
             IrInstruction::VarDecl { name, init, .. } => {
@@ -394,11 +431,15 @@ impl<'a> ModuleLowerer<'a> {
                     wasm_fn.instruction(&Instruction::I32Const(0));
                 }
                 wasm_fn.instruction(&Instruction::LocalSet(local));
+                let shape = init.and_then(|src| ctx.shape_for_value(src));
+                ctx.set_named_shape(name, shape);
             }
             IrInstruction::AssignVar { name, src } => {
                 let local = self.resolve_variable_local(ctx, name)?;
                 wasm_fn.instruction(&Instruction::LocalGet(value_local(ctx.params_count, *src)));
                 wasm_fn.instruction(&Instruction::LocalSet(local));
+                let shape = ctx.shape_for_value(*src);
+                ctx.set_named_shape(name, shape);
             }
             IrInstruction::AssignExpr { name, src, dest } => {
                 let local = self.resolve_variable_local(ctx, name)?;
@@ -406,24 +447,33 @@ impl<'a> ModuleLowerer<'a> {
                 wasm_fn.instruction(&Instruction::LocalSet(local));
                 wasm_fn.instruction(&Instruction::LocalGet(value_local(ctx.params_count, *src)));
                 wasm_fn.instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
-                ctx.function_refs.remove(dest);
+                let shape = ctx.shape_for_value(*src);
+                ctx.set_named_shape(name, shape.clone());
+                ctx.set_value_shape(*dest, shape);
             }
             IrInstruction::VarRef { dest, name } => {
                 if let Some(param_idx) = param_index(ctx.func, name) {
                     wasm_fn.instruction(&Instruction::LocalGet(param_idx));
                     wasm_fn
                         .instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
-                    ctx.function_refs.remove(dest);
+                    ctx.set_value_shape(*dest, ctx.named_shapes.get(name).cloned());
                 } else if let Some(local_idx) = ctx.named_locals.get(name).copied() {
                     wasm_fn.instruction(&Instruction::LocalGet(local_idx));
                     wasm_fn
                         .instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
-                    ctx.function_refs.remove(dest);
+                    ctx.set_value_shape(*dest, ctx.named_shapes.get(name).cloned());
                 } else if let Some(func_idx) = self.function_indices.get(name).copied() {
                     wasm_fn.instruction(&Instruction::I32Const(func_idx as i32));
                     wasm_fn
                         .instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
+                    ctx.clear_value_metadata(*dest);
                     ctx.function_refs.insert(*dest, func_idx);
+                } else if self.constructor_layouts.contains_key(name) {
+                    wasm_fn.instruction(&Instruction::I32Const(0));
+                    wasm_fn
+                        .instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
+                    ctx.clear_value_metadata(*dest);
+                    ctx.constructor_refs.insert(*dest, name.clone());
                 } else {
                     return Err(CodegenError::Unsupported(format!(
                         "unsupported symbol reference '{}' in wasm backend",
@@ -434,18 +484,21 @@ impl<'a> ModuleLowerer<'a> {
             IrInstruction::Load { dest, src } => {
                 wasm_fn.instruction(&Instruction::LocalGet(value_local(ctx.params_count, *src)));
                 wasm_fn.instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
-                ctx.function_refs.remove(dest);
+                let shape = ctx.shape_for_value(*src);
+                ctx.set_value_shape(*dest, shape);
             }
             IrInstruction::Store { dest, src } => {
                 wasm_fn.instruction(&Instruction::LocalGet(value_local(ctx.params_count, *src)));
                 wasm_fn.instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
+                let shape = ctx.shape_for_value(*src);
+                ctx.set_value_shape(*dest, shape);
             }
             IrInstruction::BinOp { op, lhs, rhs, dest } => {
                 wasm_fn.instruction(&Instruction::LocalGet(value_local(ctx.params_count, *lhs)));
                 wasm_fn.instruction(&Instruction::LocalGet(value_local(ctx.params_count, *rhs)));
                 self.emit_binop(wasm_fn, *op);
                 wasm_fn.instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
-                ctx.function_refs.remove(dest);
+                ctx.clear_value_metadata(*dest);
             }
             IrInstruction::UnOp { op, arg, dest } => {
                 match op {
@@ -466,7 +519,7 @@ impl<'a> ModuleLowerer<'a> {
                     }
                 }
                 wasm_fn.instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
-                ctx.function_refs.remove(dest);
+                ctx.clear_value_metadata(*dest);
             }
             IrInstruction::LogicalOp { op, lhs, rhs, dest } => {
                 match op {
@@ -499,7 +552,7 @@ impl<'a> ModuleLowerer<'a> {
                     }
                 }
                 wasm_fn.instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
-                ctx.function_refs.remove(dest);
+                ctx.clear_value_metadata(*dest);
             }
             IrInstruction::Conditional {
                 cond,
@@ -518,7 +571,7 @@ impl<'a> ModuleLowerer<'a> {
                 wasm_fn.instruction(&Instruction::LocalGet(value_local(ctx.params_count, *cond)));
                 wasm_fn.instruction(&Instruction::Select);
                 wasm_fn.instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
-                ctx.function_refs.remove(dest);
+                ctx.clear_value_metadata(*dest);
             }
             IrInstruction::Call { callee, args, dest } => {
                 let callee_idx = ctx.function_refs.get(callee).copied().ok_or_else(|| {
@@ -547,7 +600,7 @@ impl<'a> ModuleLowerer<'a> {
                     wasm_fn
                         .instruction(&Instruction::LocalSet(value_local(ctx.params_count, *dest)));
                 }
-                ctx.function_refs.remove(dest);
+                ctx.clear_value_metadata(*dest);
             }
             IrInstruction::ArrayLit { dest, elements } => {
                 self.uses_memory = true;
@@ -577,14 +630,206 @@ impl<'a> ModuleLowerer<'a> {
                     wasm_fn.instruction(&Instruction::I32Store(memarg(((idx + 1) * 4) as u64)));
                 }
 
-                ctx.function_refs.remove(dest);
+                ctx.set_value_shape(*dest, Some(HeapValueShape::Array));
+            }
+            IrInstruction::ObjectLit { dest, props } => {
+                self.uses_memory = true;
+                let dest_local = value_local(ctx.params_count, *dest);
+                let bytes = ((props.len() + 1) * 4) as i32;
+
+                wasm_fn.instruction(&Instruction::GlobalGet(HEAP_PTR_GLOBAL_INDEX));
+                wasm_fn.instruction(&Instruction::LocalTee(dest_local));
+                wasm_fn.instruction(&Instruction::I32Const(bytes));
+                wasm_fn.instruction(&Instruction::I32Add);
+                wasm_fn.instruction(&Instruction::GlobalSet(HEAP_PTR_GLOBAL_INDEX));
+
+                wasm_fn.instruction(&Instruction::LocalGet(dest_local));
+                wasm_fn.instruction(&Instruction::I32Const(props.len() as i32));
+                wasm_fn.instruction(&Instruction::I32Store(memarg(0)));
+
+                let mut properties = HashMap::new();
+                let mut field_order = Vec::with_capacity(props.len());
+                for (idx, prop) in props.iter().enumerate() {
+                    let offset = 4 + (idx as u32 * 4);
+                    properties.insert(prop.key.clone(), offset);
+                    field_order.push(prop.key.clone());
+                    wasm_fn.instruction(&Instruction::LocalGet(dest_local));
+                    wasm_fn.instruction(&Instruction::LocalGet(value_local(
+                        ctx.params_count,
+                        prop.value,
+                    )));
+                    wasm_fn.instruction(&Instruction::I32Store(memarg(offset as u64)));
+                }
+
+                ctx.set_value_shape(
+                    *dest,
+                    Some(HeapValueShape::Object(HeapObjectLayout {
+                        properties,
+                        field_order,
+                    })),
+                );
+            }
+            IrInstruction::Member {
+                object,
+                property,
+                dest,
+            } => {
+                let shape = ctx.shape_for_value(*object).ok_or_else(|| {
+                    CodegenError::Unsupported(format!(
+                        "member access requires a known heap-backed shape in wasm backend: {}",
+                        property
+                    ))
+                })?;
+
+                match shape {
+                    HeapValueShape::Object(layout) => {
+                        let offset = layout.properties.get(property).copied().ok_or_else(|| {
+                            CodegenError::Unsupported(format!(
+                                "unknown object property '{}' in wasm backend",
+                                property
+                            ))
+                        })?;
+                        wasm_fn.instruction(&Instruction::LocalGet(value_local(
+                            ctx.params_count,
+                            *object,
+                        )));
+                        wasm_fn.instruction(&Instruction::I32Load(memarg(offset as u64)));
+                        wasm_fn.instruction(&Instruction::LocalSet(value_local(
+                            ctx.params_count,
+                            *dest,
+                        )));
+                        ctx.clear_value_metadata(*dest);
+                    }
+                    HeapValueShape::Array => {
+                        if property != "length" {
+                            return Err(CodegenError::Unsupported(format!(
+                                "unsupported array member '{}' in wasm backend",
+                                property
+                            )));
+                        }
+                        wasm_fn.instruction(&Instruction::LocalGet(value_local(
+                            ctx.params_count,
+                            *object,
+                        )));
+                        wasm_fn.instruction(&Instruction::I32Load(memarg(0)));
+                        wasm_fn.instruction(&Instruction::LocalSet(value_local(
+                            ctx.params_count,
+                            *dest,
+                        )));
+                        ctx.clear_value_metadata(*dest);
+                    }
+                }
+            }
+            IrInstruction::MemberComputed {
+                object,
+                property,
+                dest,
+            } => {
+                let shape = ctx.shape_for_value(*object).ok_or_else(|| {
+                    CodegenError::Unsupported(
+                        "computed member access requires a known heap-backed shape in wasm backend"
+                            .to_string(),
+                    )
+                })?;
+
+                match shape {
+                    HeapValueShape::Array => {
+                        wasm_fn.instruction(&Instruction::LocalGet(value_local(
+                            ctx.params_count,
+                            *object,
+                        )));
+                        wasm_fn.instruction(&Instruction::LocalGet(value_local(
+                            ctx.params_count,
+                            *property,
+                        )));
+                        wasm_fn.instruction(&Instruction::I32Const(4));
+                        wasm_fn.instruction(&Instruction::I32Mul);
+                        wasm_fn.instruction(&Instruction::I32Const(4));
+                        wasm_fn.instruction(&Instruction::I32Add);
+                        wasm_fn.instruction(&Instruction::I32Add);
+                        wasm_fn.instruction(&Instruction::I32Load(memarg(0)));
+                        wasm_fn.instruction(&Instruction::LocalSet(value_local(
+                            ctx.params_count,
+                            *dest,
+                        )));
+                        ctx.clear_value_metadata(*dest);
+                    }
+                    HeapValueShape::Object(_) => {
+                        return Err(CodegenError::Unsupported(
+                            "computed object property access is unsupported for wasm backend"
+                                .to_string(),
+                        ))
+                    }
+                }
+            }
+            IrInstruction::New { callee, args, dest } => {
+                let constructor = ctx.constructor_refs.get(callee).cloned().ok_or_else(|| {
+                    CodegenError::Unsupported(
+                        "dynamic constructors are unsupported for wasm backend".to_string(),
+                    )
+                })?;
+
+                if args.len() == 1 {
+                    if let Some(HeapValueShape::Object(layout)) = ctx.shape_for_value(args[0]) {
+                        wasm_fn.instruction(&Instruction::LocalGet(value_local(
+                            ctx.params_count,
+                            args[0],
+                        )));
+                        wasm_fn.instruction(&Instruction::LocalSet(value_local(
+                            ctx.params_count,
+                            *dest,
+                        )));
+                        ctx.set_value_shape(*dest, Some(HeapValueShape::Object(layout)));
+                        return Ok(());
+                    }
+                }
+
+                let layout = self
+                    .constructor_layouts
+                    .get(&constructor)
+                    .cloned()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "unknown constructor '{}' in wasm backend",
+                            constructor
+                        ))
+                    })?;
+
+                if args.len() != layout.field_order.len() {
+                    return Err(CodegenError::Unsupported(format!(
+                        "constructor '{}' expects {} field value(s) in wasm backend, found {}",
+                        constructor,
+                        layout.field_order.len(),
+                        args.len()
+                    )));
+                }
+
+                self.uses_memory = true;
+                let dest_local = value_local(ctx.params_count, *dest);
+                let bytes = ((layout.field_order.len() + 1) * 4) as i32;
+
+                wasm_fn.instruction(&Instruction::GlobalGet(HEAP_PTR_GLOBAL_INDEX));
+                wasm_fn.instruction(&Instruction::LocalTee(dest_local));
+                wasm_fn.instruction(&Instruction::I32Const(bytes));
+                wasm_fn.instruction(&Instruction::I32Add);
+                wasm_fn.instruction(&Instruction::GlobalSet(HEAP_PTR_GLOBAL_INDEX));
+
+                wasm_fn.instruction(&Instruction::LocalGet(dest_local));
+                wasm_fn.instruction(&Instruction::I32Const(layout.field_order.len() as i32));
+                wasm_fn.instruction(&Instruction::I32Store(memarg(0)));
+
+                for (idx, arg) in args.iter().enumerate() {
+                    wasm_fn.instruction(&Instruction::LocalGet(dest_local));
+                    wasm_fn
+                        .instruction(&Instruction::LocalGet(value_local(ctx.params_count, *arg)));
+                    wasm_fn
+                        .instruction(&Instruction::I32Store(memarg((4 + idx as u64 * 4) as u64)));
+                }
+
+                ctx.set_value_shape(*dest, Some(HeapValueShape::Object(layout)));
             }
             IrInstruction::ExprStmt { .. } => {}
-            IrInstruction::ObjectLit { .. }
-            | IrInstruction::Member { .. }
-            | IrInstruction::MemberComputed { .. }
-            | IrInstruction::New { .. }
-            | IrInstruction::Await { .. }
+            IrInstruction::Await { .. }
             | IrInstruction::ThrowStmt { .. }
             | IrInstruction::Try { .. } => {
                 return Err(CodegenError::Unsupported(format!(
@@ -863,8 +1108,38 @@ struct FunctionCtx<'a> {
     signature: FunctionSignature,
     bb_local: u32,
     named_locals: HashMap<String, u32>,
-    function_refs: &'a mut HashMap<ValueId, u32>,
+    function_refs: HashMap<ValueId, u32>,
+    constructor_refs: HashMap<ValueId, String>,
+    value_shapes: HashMap<ValueId, HeapValueShape>,
+    named_shapes: HashMap<String, HeapValueShape>,
     func: &'a IrFunction,
+}
+
+impl<'a> FunctionCtx<'a> {
+    fn clear_value_metadata(&mut self, value: ValueId) {
+        self.function_refs.remove(&value);
+        self.constructor_refs.remove(&value);
+        self.value_shapes.remove(&value);
+    }
+
+    fn set_value_shape(&mut self, value: ValueId, shape: Option<HeapValueShape>) {
+        self.clear_value_metadata(value);
+        if let Some(shape) = shape {
+            self.value_shapes.insert(value, shape);
+        }
+    }
+
+    fn set_named_shape(&mut self, name: &str, shape: Option<HeapValueShape>) {
+        if let Some(shape) = shape {
+            self.named_shapes.insert(name.to_string(), shape);
+        } else {
+            self.named_shapes.remove(name);
+        }
+    }
+
+    fn shape_for_value(&self, value: ValueId) -> Option<HeapValueShape> {
+        self.value_shapes.get(&value).cloned()
+    }
 }
 
 fn value_local(params_count: u32, value: ValueId) -> u32 {
@@ -1059,5 +1334,73 @@ mod tests {
 
         // Assert
         assert_eq!(output, "3,1,2,3");
+    }
+
+    #[test]
+    fn executes_object_literal_member_access() {
+        // Assign
+        let source = r#"
+            function getValue(): i32 {
+                const payload = { value: 42, other: 7 };
+                return payload.value;
+            }
+        "#;
+        let wasm = compile_source(source);
+
+        // Act
+        let output = run_node_script(
+            &wasm,
+            "const result = instance.exports.getValue(); console.log(String(result));",
+        );
+
+        // Assert
+        assert_eq!(output, "42");
+    }
+
+    #[test]
+    fn executes_struct_literal_constructor_and_member_access() {
+        // Assign
+        let source = r#"
+            struct Point {
+                x: i32;
+                y: i32;
+            }
+
+            function getX(): i32 {
+                const point = Point { x: 3, y: 9 };
+                return point.x;
+            }
+        "#;
+        let wasm = compile_source(source);
+
+        // Act
+        let output = run_node_script(
+            &wasm,
+            "const result = instance.exports.getX(); console.log(String(result));",
+        );
+
+        // Assert
+        assert_eq!(output, "3");
+    }
+
+    #[test]
+    fn executes_array_index_and_length_access() {
+        // Assign
+        let source = r#"
+            function select(): i32 {
+                const values = [5, 7, 11];
+                return values[1] + values.length;
+            }
+        "#;
+        let wasm = compile_source(source);
+
+        // Act
+        let output = run_node_script(
+            &wasm,
+            "const result = instance.exports.select(); console.log(String(result));",
+        );
+
+        // Assert
+        assert_eq!(output, "10");
     }
 }

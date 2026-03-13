@@ -17,13 +17,14 @@ This repository contains the full compiler toolchain:
 For the locked scope in [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md), the compiler is **scope-complete**:
 - README syntax parity (including interop decorators/declarations) is implemented.
 - `argon run` executes core runtime features in the internal AST runtime.
-- WASM compilation works for a documented core subset.
+- WASM compilation works for a documented core subset, including a generated `.mjs` loader sidecar and heap-backed string/array/object access support.
 - Memory-safety baseline is enforced (moves, borrows, NLL-style loop analysis, thread/process capture checks).
+- Post-scope type-system hardening is implemented for interfaces/enums, structural object shapes, and recursive generic inference.
+- Post-scope borrow analysis now propagates helper summaries across transitive and mutually recursive borrowed returns plus thread/process captures.
 
 Known boundaries:
 - Full README parity on the WASM target is intentionally out of scope (core subset only).
 - Interprocedural lifetime solving is not yet a full global solver.
-- Some advanced type-inference/object-compatibility edge cases remain.
 
 ## Quick Start
 
@@ -44,7 +45,7 @@ argon run examples/collections.arg
 argon compile examples/control-flow.arg --target js -o out.js
 node out.js
 
-# Compile to WebAssembly (core subset)
+# Compile to WebAssembly (core subset + loader sidecar)
 argon compile examples/wasm-subset.arg --target wasm --pipeline ir -o out.wasm
 ```
 
@@ -64,13 +65,13 @@ Argon runs a fixed pipeline:
    - borrow conflict checks
    - branch-aware borrow-state merges (`if`/`switch`/`match`)
    - loop fixed-point NLL-style analysis
-   - cross-function borrowed return baseline checks
+   - cross-function borrowed return checks with helper-summary propagation
    - Send/Sync-style thread/process capture checks
 5. **Lowering to IR** (`argon-ir`)  
    Produces a control-flow-oriented IR with optional optimization passes.
 6. **Code Generation**
    - `argon-codegen-js`: ES2022 JS output (+ optional source maps and `.d.ts`)
-   - `argon-codegen-wasm`: `.wasm` for the supported core subset
+   - `argon-codegen-wasm`: `.wasm` + generated `.mjs` loader for the supported core subset
 
 For `argon run`, the checked AST is executed by `argon-runtime` directly (no Node fallback as the primary path).
 
@@ -86,8 +87,9 @@ Supported targets:
 
 WASM notes:
 - `.wasm` is the binary output format.
-- Core subset includes numeric locals/ops, calls, branching, and loops.
-- String/array subset memory support exists.
+- `argon compile --target wasm ... -o out.wasm` also writes `out.mjs` as a loader/helper sidecar.
+- Core subset includes numeric locals/ops, calls, branching, loops, array indexing, and heap-backed object/field access for local shapes.
+- Linear-memory support exists for strings, arrays, object literals, and struct-literal constructor lowering.
 - JS-only/interop-heavy constructs produce explicit unsupported diagnostics.
 
 ## CLI Commands
@@ -129,6 +131,7 @@ Argon currently enforces:
 - Borrow release based on use/liveness heuristics.
 - Loop fixed-point borrow-state convergence.
 - Borrowed return validation (including reborrow mutability constraints).
+- Helper-function borrow-summary propagation for returned borrows and thread/process captures.
 - Data-race style checks for thread/process captures.
 - Send/Sync-style typed capture constraints.
 
@@ -170,13 +173,12 @@ argon compile examples/wasm-subset.arg --target wasm --pipeline ir -o /tmp/out.w
 CI includes completion-focused coverage for:
 - README parity checks
 - Runtime execution paths
-- WASM subset compile/execute paths
+- WASM subset compile/execute paths, including loader-sidecar and heap-backed object/member cases
 
 ## Roadmap Beyond Current Scope
 
-- Full-language WASM parity (currently core subset by design).
+- Full-language WASM parity (notably interop imports, async/await lowering, and try/throw on the wasm target).
 - Deeper global/interprocedural lifetime analysis.
-- Broader type-system edge-case coverage for advanced generics/object compatibility.
 
 ## License
 
