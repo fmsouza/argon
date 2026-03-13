@@ -365,7 +365,7 @@ fn test_compile_example_control_flow_uses_cfg_in_ir() {
     let output = fs::read_to_string(temp_dir.path().join("out.js")).unwrap();
     // The IR CFG emitter uses a bb state machine.
     assert!(output.contains("switch (__bb)"));
-    assert!(output.contains("console.log(i)"));
+    assert!(output.contains("console.log(loopCount)"));
 }
 
 #[test]
@@ -388,8 +388,9 @@ fn test_compile_example_esm_import() {
         .success();
 
     let output = fs::read_to_string(temp_dir.path().join("out.js")).unwrap();
-    assert!(output.contains("import y from \"test\";"));
-    assert!(output.contains("const x = 1"));
+    assert!(output.contains("import axios from \"axios\";"));
+    assert!(output.contains("import useState from \"react\";"));
+    assert!(output.contains("const apiBase = \"/api\""));
 }
 
 #[test]

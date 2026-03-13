@@ -1440,19 +1440,174 @@ impl BorrowChecker {
         Ok(())
     }
 
-    fn check_while(&mut self, w: &WhileStmt) -> Result<(), BorrowError> {
-        self.loop_scope += 1;
-        self.check_expression(&w.condition)?;
-        self.check_statement(&w.body)?;
-        self.loop_scope -= 1;
+    fn current_remaining_uses(&self) -> HashMap<String, usize> {
+        self.remaining_identifier_uses
+            .last()
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn merge_remaining_uses_after_loop(
+        &self,
+        base_remaining_uses: &HashMap<String, usize>,
+        iter_remaining_uses: &HashMap<String, usize>,
+    ) -> HashMap<String, usize> {
+        let mut merged = HashMap::new();
+
+        let mut names: HashSet<String> = HashSet::new();
+        names.extend(base_remaining_uses.keys().cloned());
+        names.extend(iter_remaining_uses.keys().cloned());
+
+        for name in names {
+            let base = base_remaining_uses.get(&name).copied().unwrap_or(0);
+            let iter = iter_remaining_uses.get(&name).copied().unwrap_or(0);
+            let count = base.max(iter);
+            if count > 0 {
+                merged.insert(name, count);
+            }
+        }
+
+        merged
+    }
+
+    fn loop_state_fingerprint(
+        locals: &HashMap<String, VariableState>,
+        borrows: &HashMap<String, Vec<Borrow>>,
+        bindings: &HashMap<String, BorrowBinding>,
+        remaining: &HashMap<String, usize>,
+    ) -> String {
+        let mut local_parts: Vec<String> = locals
+            .iter()
+            .map(|(name, state)| format!("{}:{:?}", name, state.ownership))
+            .collect();
+        local_parts.sort();
+
+        let mut borrow_parts: Vec<String> = borrows
+            .iter()
+            .map(|(name, borrows)| {
+                let mut kinds: Vec<String> = borrows
+                    .iter()
+                    .map(|b| match b.kind {
+                        BorrowKind::Shared => "S".to_string(),
+                        BorrowKind::Mutable => "M".to_string(),
+                    })
+                    .collect();
+                kinds.sort();
+                format!("{}:{}", name, kinds.join(","))
+            })
+            .collect();
+        borrow_parts.sort();
+
+        let mut binding_parts: Vec<String> = bindings
+            .iter()
+            .map(|(name, binding)| format!("{}:{}:{:?}", name, binding.source, binding.kind))
+            .collect();
+        binding_parts.sort();
+
+        let mut remaining_parts: Vec<String> = remaining
+            .iter()
+            .map(|(name, count)| format!("{}:{}", name, count))
+            .collect();
+        remaining_parts.sort();
+
+        format!(
+            "{}|{}|{}|{}",
+            local_parts.join(";"),
+            borrow_parts.join(";"),
+            binding_parts.join(";"),
+            remaining_parts.join(";")
+        )
+    }
+
+    fn analyze_loop_fixed_point<F>(&mut self, mut run_iteration: F) -> Result<(), BorrowError>
+    where
+        F: FnMut(&mut BorrowChecker) -> Result<(), BorrowError>,
+    {
+        const MAX_LOOP_FIXPOINT_ITERS: usize = 8;
+
+        let base_locals = self.locals.clone();
+        let base_borrows = self.active_borrows.clone();
+        let base_bindings = self.borrow_bindings.clone();
+        let base_remaining_uses = self.current_remaining_uses();
+
+        let mut candidate_locals = base_locals.clone();
+        let mut candidate_borrows = base_borrows.clone();
+        let mut candidate_bindings = base_bindings.clone();
+        let mut candidate_remaining_uses = base_remaining_uses.clone();
+        let mut last_fingerprint: Option<String> = None;
+
+        for _ in 0..MAX_LOOP_FIXPOINT_ITERS {
+            self.locals = candidate_locals.clone();
+            self.active_borrows = candidate_borrows.clone();
+            self.borrow_bindings = candidate_bindings.clone();
+            if let Some(remaining) = self.remaining_identifier_uses.last_mut() {
+                *remaining = candidate_remaining_uses.clone();
+            }
+
+            run_iteration(self)?;
+
+            let iter_locals = self.locals.clone();
+            let iter_borrows = self.active_borrows.clone();
+            let iter_bindings = self.borrow_bindings.clone();
+            let iter_remaining_uses = self.current_remaining_uses();
+
+            self.locals = self.merge_branch_locals(&base_locals, &iter_locals, &base_locals);
+            let merged_remaining_uses =
+                self.merge_remaining_uses_after_loop(&base_remaining_uses, &iter_remaining_uses);
+            let expired_branch_bindings =
+                self.expired_branch_bindings(&iter_bindings, &base_bindings, &merged_remaining_uses);
+            let merged_bindings = self.merge_branch_bindings(
+                &self.locals,
+                &iter_bindings,
+                &base_bindings,
+                &merged_remaining_uses,
+            );
+            self.active_borrows = self.merge_branch_borrows(&iter_borrows, &base_borrows);
+            self.borrow_bindings = merged_bindings;
+            for binding in expired_branch_bindings {
+                self.release_source_borrow(&binding.source, binding.kind)?;
+            }
+            if let Some(remaining) = self.remaining_identifier_uses.last_mut() {
+                *remaining = merged_remaining_uses;
+            }
+
+            let fingerprint = Self::loop_state_fingerprint(
+                &self.locals,
+                &self.active_borrows,
+                &self.borrow_bindings,
+                &self.current_remaining_uses(),
+            );
+            if last_fingerprint.as_ref() == Some(&fingerprint) {
+                break;
+            }
+
+            last_fingerprint = Some(fingerprint);
+            candidate_locals = self.locals.clone();
+            candidate_borrows = self.active_borrows.clone();
+            candidate_bindings = self.borrow_bindings.clone();
+            candidate_remaining_uses = self.current_remaining_uses();
+        }
+
         Ok(())
+    }
+
+    fn check_while(&mut self, w: &WhileStmt) -> Result<(), BorrowError> {
+        self.check_expression(&w.condition)?;
+        self.loop_scope += 1;
+        let result = self.analyze_loop_fixed_point(|checker| {
+            checker.check_statement(&w.body)?;
+            checker.check_expression(&w.condition)?;
+            Ok(())
+        });
+        self.loop_scope -= 1;
+        result
     }
 
     fn check_loop(&mut self, l: &LoopStmt) -> Result<(), BorrowError> {
         self.loop_scope += 1;
-        self.check_statement(&l.body)?;
+        let result = self.analyze_loop_fixed_point(|checker| checker.check_statement(&l.body));
         self.loop_scope -= 1;
-        Ok(())
+        result
     }
 
     fn check_for(&mut self, f: &ForStmt) -> Result<(), BorrowError> {
@@ -1465,11 +1620,20 @@ impl BorrowChecker {
         if let Some(ref test) = f.test {
             self.check_expression(test)?;
         }
-        if let Some(ref update) = f.update {
-            self.check_expression(update)?;
-        }
-        self.check_statement(&f.body)?;
-        Ok(())
+
+        self.loop_scope += 1;
+        let result = self.analyze_loop_fixed_point(|checker| {
+            checker.check_statement(&f.body)?;
+            if let Some(ref update) = f.update {
+                checker.check_expression(update)?;
+            }
+            if let Some(ref test) = f.test {
+                checker.check_expression(test)?;
+            }
+            Ok(())
+        });
+        self.loop_scope -= 1;
+        result
     }
 
     fn check_for_in(&mut self, f: &ForInStmt) -> Result<(), BorrowError> {
@@ -1502,8 +1666,10 @@ impl BorrowChecker {
             }
         }
 
-        self.check_statement(&f.body)?;
-        Ok(())
+        self.loop_scope += 1;
+        let result = self.analyze_loop_fixed_point(|checker| checker.check_statement(&f.body));
+        self.loop_scope -= 1;
+        result
     }
 
     fn check_return(&mut self, r: &ReturnStmt) -> Result<(), BorrowError> {
@@ -2236,6 +2402,17 @@ impl BorrowChecker {
     }
 
     fn check_thread_safe_argument(&mut self, expr: &Expr) -> Result<(), BorrowError> {
+        if let Some((is_safe, message)) = self.thread_safety_by_type(expr) {
+            if is_safe {
+                return Ok(());
+            }
+            self.errors.push(BorrowError::ThreadSafetyViolation {
+                location: expr.span().clone(),
+                message,
+            });
+            return Ok(());
+        }
+
         if self.is_thread_safe_expression(expr) {
             return Ok(());
         }
@@ -2247,12 +2424,48 @@ impl BorrowChecker {
         Ok(())
     }
 
-    fn is_thread_safe_expression(&self, expr: &Expr) -> bool {
-        if let Some(info) = &self.type_info {
-            if let Some(ty) = info.expr_types.get(expr.span()) {
+    fn thread_safety_by_type(&self, expr: &Expr) -> Option<(bool, String)> {
+        let info = self.type_info.as_ref()?;
+        let ty = *info.expr_types.get(expr.span())?;
+        let ty_kind = info.type_table.get(ty)?;
+
+        let (is_safe, reason) = match ty_kind {
+            CheckedType::Ref(inner) => {
                 let mut visited = HashSet::new();
-                return self.is_thread_safe_type(&info.type_table, *ty, &mut visited);
+                (
+                    self.is_sync_type(&info.type_table, *inner, &mut visited),
+                    "shared reference capture requires Sync pointee".to_string(),
+                )
             }
+            CheckedType::MutRef(_) => (
+                false,
+                "mutable reference capture is not Send across thread/process boundaries"
+                    .to_string(),
+            ),
+            CheckedType::Shared(inner) => {
+                let mut send_visited = HashSet::new();
+                let mut sync_visited = HashSet::new();
+                (
+                    self.is_send_type(&info.type_table, *inner, &mut send_visited)
+                        && self.is_sync_type(&info.type_table, *inner, &mut sync_visited),
+                    "Shared<T> capture requires Send + Sync inner type".to_string(),
+                )
+            }
+            _ => {
+                let mut visited = HashSet::new();
+                (
+                    self.is_send_type(&info.type_table, ty, &mut visited),
+                    "thread/process capture requires Send type".to_string(),
+                )
+            }
+        };
+
+        Some((is_safe, reason))
+    }
+
+    fn is_thread_safe_expression(&self, expr: &Expr) -> bool {
+        if let Some((is_safe, _)) = self.thread_safety_by_type(expr) {
+            return is_safe;
         }
 
         match expr {
@@ -2295,7 +2508,69 @@ impl BorrowChecker {
         }
     }
 
-    fn is_thread_safe_type(
+    fn is_send_type(
+        &self,
+        type_table: &argon_types::TypeTable,
+        ty: CheckedTypeId,
+        visited: &mut HashSet<CheckedTypeId>,
+    ) -> bool {
+        if !visited.insert(ty) {
+            return true;
+        }
+
+        match type_table.get(ty) {
+            Some(
+                CheckedType::Never
+                | CheckedType::Boolean
+                | CheckedType::Number
+                | CheckedType::BigInt
+                | CheckedType::String
+                | CheckedType::Symbol
+                | CheckedType::Null
+                | CheckedType::Undefined
+                | CheckedType::Void
+                | CheckedType::Enum(_),
+            ) => true,
+            Some(CheckedType::Array(inner))
+            | Some(CheckedType::Option(inner))
+            | Some(CheckedType::Promise(inner)) => self.is_send_type(type_table, *inner, visited),
+            Some(CheckedType::Shared(inner)) => {
+                let mut sync_visited = HashSet::new();
+                self.is_send_type(type_table, *inner, visited)
+                    && self.is_sync_type(type_table, *inner, &mut sync_visited)
+            }
+            Some(CheckedType::Tuple(types))
+            | Some(CheckedType::Union(types))
+            | Some(CheckedType::Intersection(types)) => types
+                .iter()
+                .all(|inner| self.is_send_type(type_table, *inner, visited)),
+            Some(CheckedType::Result(ok, err)) => {
+                self.is_send_type(type_table, *ok, visited)
+                    && self.is_send_type(type_table, *err, visited)
+            }
+            Some(CheckedType::Struct(def)) => def
+                .fields
+                .iter()
+                .all(|field| self.is_send_type(type_table, field.ty, visited)),
+            Some(CheckedType::Ref(inner)) => {
+                let mut sync_visited = HashSet::new();
+                self.is_sync_type(type_table, *inner, &mut sync_visited)
+            }
+            Some(CheckedType::MutRef(_))
+            | Some(CheckedType::Class(_))
+            | Some(CheckedType::Interface(_))
+            | Some(CheckedType::Function(_))
+            | Some(CheckedType::Object)
+            | Some(CheckedType::Any)
+            | Some(CheckedType::Unknown)
+            | Some(CheckedType::Generic(_))
+            | Some(CheckedType::TypeParam(_))
+            | Some(CheckedType::Error)
+            | None => false,
+        }
+    }
+
+    fn is_sync_type(
         &self,
         type_table: &argon_types::TypeTable,
         ty: CheckedTypeId,
@@ -2321,24 +2596,22 @@ impl BorrowChecker {
             Some(CheckedType::Array(inner))
             | Some(CheckedType::Option(inner))
             | Some(CheckedType::Promise(inner))
-            | Some(CheckedType::Shared(inner)) => {
-                self.is_thread_safe_type(type_table, *inner, visited)
-            }
+            | Some(CheckedType::Shared(inner))
+            | Some(CheckedType::Ref(inner)) => self.is_sync_type(type_table, *inner, visited),
             Some(CheckedType::Tuple(types))
             | Some(CheckedType::Union(types))
             | Some(CheckedType::Intersection(types)) => types
                 .iter()
-                .all(|inner| self.is_thread_safe_type(type_table, *inner, visited)),
+                .all(|inner| self.is_sync_type(type_table, *inner, visited)),
             Some(CheckedType::Result(ok, err)) => {
-                self.is_thread_safe_type(type_table, *ok, visited)
-                    && self.is_thread_safe_type(type_table, *err, visited)
+                self.is_sync_type(type_table, *ok, visited)
+                    && self.is_sync_type(type_table, *err, visited)
             }
             Some(CheckedType::Struct(def)) => def
                 .fields
                 .iter()
-                .all(|field| self.is_thread_safe_type(type_table, field.ty, visited)),
-            Some(CheckedType::Ref(_))
-            | Some(CheckedType::MutRef(_))
+                .all(|field| self.is_sync_type(type_table, field.ty, visited)),
+            Some(CheckedType::MutRef(_))
             | Some(CheckedType::Class(_))
             | Some(CheckedType::Interface(_))
             | Some(CheckedType::Function(_))

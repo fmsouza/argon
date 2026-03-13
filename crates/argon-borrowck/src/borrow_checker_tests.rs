@@ -1036,6 +1036,36 @@ mod nll_like_regressions {
     }
 
     #[test]
+    fn rejects_mutable_borrow_after_while_when_shared_binding_only_used_in_loop() {
+        // Assign
+        let source =
+            "function f(a: i32): i32 { const r = &a; while (flag) { console.log(r); } const m = &mut a; return 0; }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn allows_mutable_borrow_after_while_when_shared_binding_consumed_before_loop() {
+        // Assign
+        let source =
+            "function f(a: i32): i32 { const r = &a; console.log(r); while (flag) { const x = 1; } const m = &mut a; return 0; }";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+
+        // Act
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
     fn rejects_mutable_borrow_after_match_without_wildcard_when_binding_may_survive() {
         // Assign
         let source = "function f(a: i32): i32 { const r = &a; match (flag) { 0 => console.log(r), } const m = &mut a; console.log(r); return 0; }";
@@ -1129,5 +1159,37 @@ mod thread_safety_regressions {
 
         // Assert
         assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn allows_thread_capture_of_shared_reference_with_sync_pointee() {
+        // Assign
+        let source = "const data = [1, 2, 3]; const view = &data; thread(view);";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+        let mut type_checker = TypeChecker::new();
+        let type_output = type_checker.check_with_output(&ast).unwrap();
+
+        // Act
+        let result = checker.check_typed(&ast, type_output);
+
+        // Assert
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn rejects_thread_capture_of_mutable_reference() {
+        // Assign
+        let source = "let data = [1, 2, 3]; const view = &mut data; thread(view);";
+        let ast = parse(source).unwrap();
+        let mut checker = BorrowChecker::new();
+        let mut type_checker = TypeChecker::new();
+        let type_output = type_checker.check_with_output(&ast).unwrap();
+
+        // Act
+        let result = checker.check_typed(&ast, type_output);
+
+        // Assert
+        assert!(result.is_err());
     }
 }
