@@ -1,0 +1,230 @@
+name: Canary Release
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: canary-release
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  gate:
+    name: Quality Gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: Run cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --all-targets
+
+      - name: Run doc tests
+        run: cargo test --workspace --doc
+
+      - name: README parity checks
+        run: |
+          cargo test -p argon-cli --test cli_tests test_check_readme_interop_annotations -- --exact
+          cargo test -p argon-cli --test cli_tests test_compile_ir_and_execute_for_of_snippet -- --exact
+          cargo test -p argon-cli --test cli_tests test_run_executes_for_of_runtime_snippet -- --exact
+
+      - name: WASM subset checks
+        run: |
+          cargo test -p argon-codegen-wasm
+          cargo test -p argon-cli --test cli_tests test_compile_wasm_subset_and_execute -- --exact
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: gate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: Linux x86_64
+            os: ubuntu-latest
+            artifact_name: argon
+            asset_name: argon-linux-x86_64
+            archive: tar.gz
+          - name: Linux aarch64
+            os: ubuntu-24.04-arm
+            artifact_name: argon
+            asset_name: argon-linux-aarch64
+            archive: tar.gz
+          - name: macOS x86_64
+            os: macos-13
+            artifact_name: argon
+            asset_name: argon-darwin-x86_64
+            archive: tar.gz
+          - name: macOS aarch64
+            os: macos-latest
+            artifact_name: argon
+            asset_name: argon-darwin-aarch64
+            archive: tar.gz
+          - name: Windows x86_64
+            os: windows-latest
+            artifact_name: argon.exe
+            asset_name: argon-windows-x86_64
+            archive: zip
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v5
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v5
+        with:
+          path: target
+          key: ${{ matrix.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary
+        run: cargo build --release -p argon-cli
+
+      - name: Package binary (unix)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          cp target/release/${{ matrix.artifact_name }} ${{ matrix.asset_name }}
+          tar czf ${{ matrix.asset_name }}.tar.gz ${{ matrix.asset_name }}
+
+      - name: Package binary (windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          Copy-Item "target\release\${{ matrix.artifact_name }}" "${{ matrix.asset_name }}.exe"
+          Compress-Archive "${{ matrix.asset_name }}.exe" "${{ matrix.asset_name }}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.asset_name }}.${{ matrix.archive }}
+          if-no-files-found: error
+
+  release:
+    name: Publish Canary Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum * > checksums-sha256.txt
+
+      - name: Determine canary version
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          LATEST=$(gh release list --json tagName --jq \
+            "[.[] | select(.tagName | startswith(\"v${VERSION}-canary.\")) | .tagName | ltrimstr(\"v${VERSION}-canary.\") | tonumber] | max // 0")
+          NEXT=$((LATEST + 1))
+          TAG="v${VERSION}-canary.${NEXT}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG"
+
+      - name: Create release notes
+        run: |
+          cat > release-notes.md <<EOF
+          Automated canary build from the latest \`main\` branch.
+
+          **Version:** ${{ steps.version.outputs.tag }}
+          **Commit:** ${{ github.sha }}
+          **Built:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+
+          > **Warning**: This is an unstable pre-release build. Use at your own risk.
+
+          ### Downloads
+
+          | Platform | Archive |
+          |----------|---------|
+          | Linux x86_64 | \`argon-linux-x86_64.tar.gz\` |
+          | Linux aarch64 | \`argon-linux-aarch64.tar.gz\` |
+          | macOS Intel | \`argon-darwin-x86_64.tar.gz\` |
+          | macOS Apple Silicon | \`argon-darwin-aarch64.tar.gz\` |
+          | Windows x86_64 | \`argon-windows-x86_64.zip\` |
+
+          ### Checksums (SHA256)
+          \`\`\`
+          $(cat artifacts/checksums-sha256.txt)
+          \`\`\`
+          EOF
+
+      - name: Create canary release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ steps.version.outputs.tag }} \
+            --title "${{ steps.version.outputs.tag }}" \
+            --notes-file release-notes.md \
+            --prerelease \
+            --target ${{ github.sha }} \
+            artifacts/*
