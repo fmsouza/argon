@@ -23,7 +23,7 @@ For the locked scope in [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md), the 
 - Post-scope borrow analysis now computes global interprocedural borrow summaries across the call graph, including alias-aware borrowed returns, multi-source returned-borrow provenance, and transitive thread/process captures.
 
 Known boundaries:
-- Raw standalone `.wasm` still does not cover JS-module resolution, promise-backed host interop, or the broader `for`/`for..of`/`switch`/`match`-style CFG shapes that still require host-side lowering inside exception regions.
+- Raw standalone `.wasm` still does not cover JS-module resolution, promise-backed host interop, or the remaining `switch`/`match`-style CFG shapes that still require host-side lowering inside exception regions.
 
 ## Quick Start
 
@@ -88,7 +88,7 @@ Supported targets:
 WASM notes:
 - `.wasm` is the binary output format.
 - `argon compile --target wasm ... -o out.wasm` also writes `out.mjs` and `out.host.mjs`.
-- Native standalone wasm now covers numeric locals/ops, calls, branching, loops, array indexing, heap-backed object/field access for local shapes, internal async/await lowered synchronously, flat and structured `try/catch/finally` with nested `if`/`return` and loop control, and direct function imports supplied by the embedder.
+- Native standalone wasm now covers numeric locals/ops, calls, branching, loops, array indexing, heap-backed object/field access for local shapes, internal async/await lowered synchronously, flat and structured `try/catch/finally` with nested `if`/`return`, loop control, and `for`/`for..of`, plus direct function imports supplied by the embedder.
 - The loader merges native wasm exports with the generated host companion so JS-heavy imports/exports, promise-backed async, and deeper JS-host interop paths continue to work on the wasm target.
 - Linear-memory helpers still exist for native wasm strings, arrays, object literals, and struct-literal constructor lowering.
 
@@ -170,11 +170,11 @@ argon compile examples/wasm-subset.arg --target wasm --pipeline ir -o /tmp/out.w
 CI includes completion-focused coverage for:
 - README parity checks
 - Runtime execution paths
-- WASM compile/execute paths, including raw standalone async/import coverage, flat and structured standalone try/catch coverage, loop-control-in-try standalone coverage, loader-sidecar host-ABI coverage, and native heap-backed object/member cases
+- WASM compile/execute paths, including raw standalone async/import coverage, flat and structured standalone try/catch coverage, loop-control-and-for-in-try standalone coverage, loader-sidecar host-ABI coverage, and native heap-backed object/member cases
 
 ## Roadmap Beyond Current Scope
 
-- Broader raw standalone `.wasm` support for JS-heavy module resolution, promise-backed interop, and the remaining `for`/`for..of`/`switch`/`match` exception-region shapes without relying on generated host sidecars.
+- Broader raw standalone `.wasm` support for JS-heavy module resolution, promise-backed interop, and the remaining `switch`/`match` exception-region shapes without relying on generated host sidecars.
 
 ## License
 

@@ -518,6 +518,32 @@ fn inst_def_uses(inst: &Instruction) -> (Option<ValueId>, Vec<ValueId>, bool) {
             }
             (None, uses, true)
         }
+        Instruction::For {
+            init,
+            cond_instructions,
+            cond,
+            update,
+            body,
+        } => {
+            let mut uses = vec![*cond];
+            for i in init {
+                let (_, u, _) = inst_def_uses(i);
+                uses.extend(u);
+            }
+            for i in cond_instructions {
+                let (_, u, _) = inst_def_uses(i);
+                uses.extend(u);
+            }
+            for i in update {
+                let (_, u, _) = inst_def_uses(i);
+                uses.extend(u);
+            }
+            for i in body {
+                let (_, u, _) = inst_def_uses(i);
+                uses.extend(u);
+            }
+            (None, uses, true)
+        }
         Instruction::DoWhile {
             body,
             cond_instructions,

@@ -373,6 +373,57 @@ impl<'a> ModuleLowerer<'a> {
                         *entry = (*entry).max(args.len() as u32);
                     }
                 }
+                IrInstruction::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    Self::collect_import_call_arities_from_instructions(then_body, arities, refs);
+                    Self::collect_import_call_arities_from_instructions(else_body, arities, refs);
+                }
+                IrInstruction::While {
+                    cond_instructions,
+                    body,
+                    ..
+                } => {
+                    Self::collect_import_call_arities_from_instructions(
+                        cond_instructions,
+                        arities,
+                        refs,
+                    );
+                    Self::collect_import_call_arities_from_instructions(body, arities, refs);
+                }
+                IrInstruction::For {
+                    init,
+                    cond_instructions,
+                    update,
+                    body,
+                    ..
+                } => {
+                    Self::collect_import_call_arities_from_instructions(init, arities, refs);
+                    Self::collect_import_call_arities_from_instructions(
+                        cond_instructions,
+                        arities,
+                        refs,
+                    );
+                    Self::collect_import_call_arities_from_instructions(update, arities, refs);
+                    Self::collect_import_call_arities_from_instructions(body, arities, refs);
+                }
+                IrInstruction::DoWhile {
+                    body,
+                    cond_instructions,
+                    ..
+                } => {
+                    Self::collect_import_call_arities_from_instructions(body, arities, refs);
+                    Self::collect_import_call_arities_from_instructions(
+                        cond_instructions,
+                        arities,
+                        refs,
+                    );
+                }
+                IrInstruction::Loop { body } => {
+                    Self::collect_import_call_arities_from_instructions(body, arities, refs);
+                }
                 IrInstruction::Try {
                     try_body,
                     catch,
@@ -1145,6 +1196,49 @@ impl<'a> ModuleLowerer<'a> {
                 wasm_fn.instruction(&Instruction::End);
                 wasm_fn.instruction(&Instruction::End);
             }
+            IrInstruction::For {
+                init,
+                cond_instructions,
+                cond,
+                update,
+                body,
+            } => {
+                self.emit_guarded_nested_instructions(wasm_fn, init, ctx)?;
+                wasm_fn.instruction(&Instruction::Block(BlockType::Empty));
+                wasm_fn.instruction(&Instruction::Loop(BlockType::Empty));
+                self.emit_guarded_nested_instructions(wasm_fn, cond_instructions, ctx)?;
+                wasm_fn.instruction(&Instruction::LocalGet(value_local(ctx.params_count, *cond)));
+                wasm_fn.instruction(&Instruction::If(BlockType::Empty));
+                self.emit_guarded_nested_instructions(wasm_fn, body, ctx)?;
+
+                wasm_fn.instruction(&Instruction::LocalGet(ctx.pending_control_kind_local));
+                wasm_fn.instruction(&Instruction::I32Const(PENDING_CONTINUE));
+                wasm_fn.instruction(&Instruction::I32Eq);
+                wasm_fn.instruction(&Instruction::If(BlockType::Empty));
+                self.clear_pending_control(wasm_fn, ctx);
+                self.emit_guarded_nested_instructions(wasm_fn, update, ctx)?;
+                wasm_fn.instruction(&Instruction::Br(2));
+                wasm_fn.instruction(&Instruction::End);
+
+                wasm_fn.instruction(&Instruction::LocalGet(ctx.pending_control_kind_local));
+                wasm_fn.instruction(&Instruction::I32Const(PENDING_BREAK));
+                wasm_fn.instruction(&Instruction::I32Eq);
+                wasm_fn.instruction(&Instruction::If(BlockType::Empty));
+                self.clear_pending_control(wasm_fn, ctx);
+                wasm_fn.instruction(&Instruction::Br(3));
+                wasm_fn.instruction(&Instruction::End);
+
+                wasm_fn.instruction(&Instruction::LocalGet(ctx.pending_control_kind_local));
+                wasm_fn.instruction(&Instruction::I32Eqz);
+                wasm_fn.instruction(&Instruction::If(BlockType::Empty));
+                self.emit_guarded_nested_instructions(wasm_fn, update, ctx)?;
+                wasm_fn.instruction(&Instruction::Br(2));
+                wasm_fn.instruction(&Instruction::End);
+
+                wasm_fn.instruction(&Instruction::End);
+                wasm_fn.instruction(&Instruction::End);
+                wasm_fn.instruction(&Instruction::End);
+            }
             IrInstruction::DoWhile {
                 body,
                 cond_instructions,
@@ -1455,6 +1549,43 @@ impl<'a> ModuleLowerer<'a> {
                             ));
                         }
                     }
+                    IrInstruction::For {
+                        init,
+                        cond_instructions,
+                        cond,
+                        update,
+                        body,
+                    } => {
+                        touch_value(&mut max_value, *cond);
+                        for inst in init {
+                            max_try_depth = max_try_depth.max(self.plan_nested_inst(
+                                inst,
+                                &mut max_value,
+                                &mut var_names,
+                            ));
+                        }
+                        for inst in cond_instructions {
+                            max_try_depth = max_try_depth.max(self.plan_nested_inst(
+                                inst,
+                                &mut max_value,
+                                &mut var_names,
+                            ));
+                        }
+                        for inst in update {
+                            max_try_depth = max_try_depth.max(self.plan_nested_inst(
+                                inst,
+                                &mut max_value,
+                                &mut var_names,
+                            ));
+                        }
+                        for inst in body {
+                            max_try_depth = max_try_depth.max(self.plan_nested_inst(
+                                inst,
+                                &mut max_value,
+                                &mut var_names,
+                            ));
+                        }
+                    }
                     IrInstruction::DoWhile {
                         body,
                         cond_instructions,
@@ -1651,6 +1782,33 @@ impl<'a> ModuleLowerer<'a> {
                 touch_value(max_value, *cond);
                 let mut nested_depth = 0;
                 for inst in cond_instructions {
+                    nested_depth =
+                        nested_depth.max(self.plan_nested_inst(inst, max_value, var_names));
+                }
+                for inst in body {
+                    nested_depth =
+                        nested_depth.max(self.plan_nested_inst(inst, max_value, var_names));
+                }
+                nested_depth
+            }
+            IrInstruction::For {
+                init,
+                cond_instructions,
+                cond,
+                update,
+                body,
+            } => {
+                touch_value(max_value, *cond);
+                let mut nested_depth = 0;
+                for inst in init {
+                    nested_depth =
+                        nested_depth.max(self.plan_nested_inst(inst, max_value, var_names));
+                }
+                for inst in cond_instructions {
+                    nested_depth =
+                        nested_depth.max(self.plan_nested_inst(inst, max_value, var_names));
+                }
+                for inst in update {
                     nested_depth =
                         nested_depth.max(self.plan_nested_inst(inst, max_value, var_names));
                 }
@@ -2256,6 +2414,36 @@ mod tests {
 
         // Assert
         assert_eq!(output, "3,4");
+    }
+
+    #[test]
+    fn executes_for_of_inside_try_standalone() {
+        // Assign
+        let source = r#"
+            function sumUntil(): i32 {
+                let sum = 0;
+                try {
+                    const items = [2, 3, 4, 5];
+                    for (const item of items) {
+                        sum = sum + item;
+                        if (sum > 6) {
+                            break;
+                        }
+                    }
+                } finally {
+                    const done = true;
+                }
+
+                return sum;
+            }
+        "#;
+        let wasm = compile_source(source);
+
+        // Act
+        let output = run_node_script(&wasm, "console.log(String(instance.exports.sumUntil()));");
+
+        // Assert
+        assert_eq!(output, "9");
     }
 
     #[test]

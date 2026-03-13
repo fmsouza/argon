@@ -488,6 +488,18 @@ mod try_catch_translation {
                     nested_contains(cond_instructions, predicate)
                         || nested_contains(body, predicate)
                 }
+                Instruction::For {
+                    init,
+                    cond_instructions,
+                    update,
+                    body,
+                    ..
+                } => {
+                    nested_contains(init, predicate)
+                        || nested_contains(cond_instructions, predicate)
+                        || nested_contains(update, predicate)
+                        || nested_contains(body, predicate)
+                }
                 Instruction::DoWhile {
                     body,
                     cond_instructions,
@@ -665,5 +677,53 @@ function countUntil(limit: i32): i32 {
         assert!(saw_nested_while);
         assert!(saw_nested_break);
         assert!(saw_nested_continue);
+    }
+
+    #[test]
+    fn translates_for_of_inside_try() {
+        let source = r#"
+function sumItems(items: i32[]): i32 {
+    let sum = 0;
+    try {
+        for (const item of items) {
+            sum = sum + item;
+            if (sum > 10) {
+                break;
+            }
+        }
+    } finally {
+        const done = true;
+    }
+
+    return sum;
+}
+"#;
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+
+        let module = builder.build(&ast).unwrap();
+        let sum_items = module
+            .functions
+            .iter()
+            .find(|f| f.id == "sumItems")
+            .unwrap();
+
+        let mut saw_nested_for = false;
+        let mut saw_nested_break = false;
+        for block in &sum_items.body {
+            for inst in &block.instructions {
+                if let Instruction::Try { try_body, .. } = inst {
+                    if nested_contains(try_body, |inst| matches!(inst, Instruction::For { .. })) {
+                        saw_nested_for = true;
+                    }
+                    if nested_contains(try_body, |inst| matches!(inst, Instruction::Break)) {
+                        saw_nested_break = true;
+                    }
+                }
+            }
+        }
+
+        assert!(saw_nested_for);
+        assert!(saw_nested_break);
     }
 }

@@ -931,6 +931,68 @@ WebAssembly.instantiate(bytes, {}).then(({ instance }) => {
 }
 
 #[test]
+fn test_compile_wasm_for_of_inside_try_executes_standalone() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("try_for_of_native.arg");
+    let output_file = temp_dir.path().join("try_for_of_native.wasm");
+    fs::write(
+        &source_file,
+        r#"
+function sumUntil(): i32 {
+    let sum = 0;
+    try {
+        const items = [2, 3, 4, 5];
+        for (const item of items) {
+            sum = sum + item;
+            if (sum > 6) {
+                break;
+            }
+        }
+    } finally {
+        const done = true;
+    }
+
+    return sum;
+}
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(&output_file)
+        .arg("--target")
+        .arg("wasm")
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
+        .success();
+
+    let script = r#"
+const fs = require('fs');
+const wasmPath = process.argv[1];
+const bytes = fs.readFileSync(wasmPath);
+WebAssembly.instantiate(bytes, {}).then(({ instance }) => {
+  console.log(String(instance.exports.sumUntil()));
+}).catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+"#;
+    let node_output = Command::new("node")
+        .arg("-e")
+        .arg(script)
+        .arg(&output_file)
+        .output()
+        .unwrap();
+    assert!(node_output.status.success(), "{:?}", node_output);
+    let stdout = String::from_utf8_lossy(&node_output.stdout);
+    assert!(stdout.contains("9"));
+}
+
+#[test]
 fn test_compile_wasm_import_executes_via_host_sidecar() {
     let temp_dir = tempfile::tempdir().unwrap();
     let dep_file = temp_dir.path().join("dep.mjs");

@@ -336,6 +336,28 @@ fn inst_values(inst: &Instruction) -> Vec<ValueId> {
             }
             out
         }
+        Instruction::For {
+            init,
+            cond_instructions,
+            cond,
+            update,
+            body,
+        } => {
+            let mut out = vec![*cond];
+            for inst in init {
+                out.extend(inst_values(inst));
+            }
+            for inst in cond_instructions {
+                out.extend(inst_values(inst));
+            }
+            for inst in update {
+                out.extend(inst_values(inst));
+            }
+            for inst in body {
+                out.extend(inst_values(inst));
+            }
+            out
+        }
         Instruction::DoWhile {
             body,
             cond_instructions,

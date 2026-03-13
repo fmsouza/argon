@@ -95,6 +95,13 @@ pub enum Instruction {
         cond: ValueId,
         body: Vec<Instruction>,
     },
+    For {
+        init: Vec<Instruction>,
+        cond_instructions: Vec<Instruction>,
+        cond: ValueId,
+        update: Vec<Instruction>,
+        body: Vec<Instruction>,
+    },
     DoWhile {
         body: Vec<Instruction>,
         cond_instructions: Vec<Instruction>,
@@ -804,6 +811,46 @@ impl IrBuilder {
                 });
                 Ok(())
             }
+            Stmt::For(f) => {
+                let mut init = Vec::new();
+                if let Some(for_init) = &f.init {
+                    match for_init {
+                        ForInit::Variable(v) => self.translate_variable_stmt(v, &mut init)?,
+                        ForInit::Expr(e) => {
+                            let value = self.translate_expression(e, &mut init)?;
+                            init.push(Instruction::ExprStmt { value });
+                        }
+                    }
+                }
+
+                let mut cond_instructions = Vec::new();
+                let cond = if let Some(test) = &f.test {
+                    self.translate_expression(test, &mut cond_instructions)?
+                } else {
+                    let dest = self.new_value();
+                    cond_instructions.push(Instruction::Const {
+                        dest,
+                        value: ConstValue::Bool(true),
+                    });
+                    dest
+                };
+
+                let mut update = Vec::new();
+                if let Some(update_expr) = &f.update {
+                    let value = self.translate_expression(update_expr, &mut update)?;
+                    update.push(Instruction::ExprStmt { value });
+                }
+
+                let body = self.translate_flat_stmt_to_vec(f.body.as_ref())?;
+                instructions.push(Instruction::For {
+                    init,
+                    cond_instructions,
+                    cond,
+                    update,
+                    body,
+                });
+                Ok(())
+            }
             Stmt::DoWhile(d) => {
                 let body = self.translate_flat_stmt_to_vec(d.body.as_ref())?;
                 let mut cond_instructions = Vec::new();
@@ -818,6 +865,118 @@ impl IrBuilder {
             Stmt::Loop(l) => {
                 let body = self.translate_flat_stmt_to_vec(l.body.as_ref())?;
                 instructions.push(Instruction::Loop { body });
+                Ok(())
+            }
+            Stmt::ForIn(f) => {
+                let bound_name = match &f.left {
+                    ForInLeft::Pattern(Pattern::Identifier(id)) => id.name.sym.clone(),
+                    ForInLeft::Variable(v) => match &v.id {
+                        Pattern::Identifier(id) => id.name.sym.clone(),
+                        _ => return Err(IrError::Unsupported("for..of left pattern".to_string())),
+                    },
+                    _ => return Err(IrError::Unsupported("for..of left pattern".to_string())),
+                };
+
+                let iter_name = format!("__argon_flat_forin_iter_{}", self.new_value());
+                let idx_name = format!("__argon_flat_forin_idx_{}", self.new_value());
+
+                let mut init = Vec::new();
+                let iter_value = self.translate_expression(&f.right, &mut init)?;
+                init.push(Instruction::VarDecl {
+                    kind: VarKind::Const,
+                    name: iter_name.clone(),
+                    init: Some(iter_value),
+                });
+                let zero = self.new_value();
+                init.push(Instruction::Const {
+                    dest: zero,
+                    value: ConstValue::Number(0.0),
+                });
+                init.push(Instruction::VarDecl {
+                    kind: VarKind::Let,
+                    name: idx_name.clone(),
+                    init: Some(zero),
+                });
+
+                let mut cond_instructions = Vec::new();
+                let idx_val = self.new_value();
+                cond_instructions.push(Instruction::VarRef {
+                    dest: idx_val,
+                    name: idx_name.clone(),
+                });
+                let iter_ref = self.new_value();
+                cond_instructions.push(Instruction::VarRef {
+                    dest: iter_ref,
+                    name: iter_name.clone(),
+                });
+                let len_val = self.new_value();
+                cond_instructions.push(Instruction::Member {
+                    object: iter_ref,
+                    property: "length".to_string(),
+                    dest: len_val,
+                });
+                let cond = self.new_value();
+                cond_instructions.push(Instruction::BinOp {
+                    op: BinOp::Lt,
+                    lhs: idx_val,
+                    rhs: len_val,
+                    dest: cond,
+                });
+
+                let mut body = Vec::new();
+                let iter_obj = self.new_value();
+                body.push(Instruction::VarRef {
+                    dest: iter_obj,
+                    name: iter_name.clone(),
+                });
+                let idx_obj = self.new_value();
+                body.push(Instruction::VarRef {
+                    dest: idx_obj,
+                    name: idx_name.clone(),
+                });
+                let element = self.new_value();
+                body.push(Instruction::MemberComputed {
+                    object: iter_obj,
+                    property: idx_obj,
+                    dest: element,
+                });
+                body.push(Instruction::VarDecl {
+                    kind: VarKind::Let,
+                    name: bound_name,
+                    init: Some(element),
+                });
+                self.translate_flat_stmt(f.body.as_ref(), &mut body)?;
+
+                let mut update = Vec::new();
+                let cur_idx = self.new_value();
+                update.push(Instruction::VarRef {
+                    dest: cur_idx,
+                    name: idx_name.clone(),
+                });
+                let one = self.new_value();
+                update.push(Instruction::Const {
+                    dest: one,
+                    value: ConstValue::Number(1.0),
+                });
+                let next_idx = self.new_value();
+                update.push(Instruction::BinOp {
+                    op: BinOp::Add,
+                    lhs: cur_idx,
+                    rhs: one,
+                    dest: next_idx,
+                });
+                update.push(Instruction::AssignVar {
+                    name: idx_name,
+                    src: next_idx,
+                });
+
+                instructions.push(Instruction::For {
+                    init,
+                    cond_instructions,
+                    cond,
+                    update,
+                    body,
+                });
                 Ok(())
             }
             Stmt::Break(_) => {
