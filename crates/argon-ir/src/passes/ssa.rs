@@ -308,7 +308,42 @@ fn inst_values(inst: &Instruction) -> Vec<ValueId> {
         Instruction::AssignVar { src, .. } => vec![*src],
         Instruction::AssignExpr { src, dest, .. } => vec![*src, *dest],
         Instruction::ThrowStmt { arg } => vec![*arg],
-        Instruction::Try { .. } => Vec::new(),
+        Instruction::If {
+            cond,
+            then_body,
+            else_body,
+        } => {
+            let mut out = vec![*cond];
+            for inst in then_body {
+                out.extend(inst_values(inst));
+            }
+            for inst in else_body {
+                out.extend(inst_values(inst));
+            }
+            out
+        }
+        Instruction::Return { value } => value.iter().copied().collect(),
+        Instruction::Try {
+            try_body,
+            catch,
+            finally_body,
+        } => {
+            let mut out = Vec::new();
+            for inst in try_body {
+                out.extend(inst_values(inst));
+            }
+            if let Some(catch) = catch {
+                for inst in &catch.body {
+                    out.extend(inst_values(inst));
+                }
+            }
+            if let Some(finally_body) = finally_body {
+                for inst in finally_body {
+                    out.extend(inst_values(inst));
+                }
+            }
+            out
+        }
         Instruction::ExprStmt { value } => vec![*value],
         Instruction::VarRef { dest, .. } => vec![*dest],
         Instruction::Member { object, dest, .. } => vec![*object, *dest],

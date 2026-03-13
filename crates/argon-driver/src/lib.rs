@@ -433,16 +433,26 @@ export async function instantiateArgon(imports = {{}}) {{
   const bytes = await fs.readFile(wasmUrl);
   const hostModule = await import(hostUrl);
   const env = createArgonEnv(imports.argon_env || imports.env || {{}});
-  const {{ instance, module }} = await WebAssembly.instantiate(bytes, {{
+  const wasmImports = {{
+    ...imports,
     argon_env: env,
     env,
-  }});
+  }};
+  const {{ instance, module }} = await WebAssembly.instantiate(bytes, wasmImports);
 
   const memory = instance.exports.memory || null;
   const wasmExports = instance.exports;
   const hostExports = hostModule;
   const mergedExports = new Proxy({{}}, {{
     get(_target, prop) {{
+      if (
+        prop in hostExports &&
+        typeof hostExports[prop] === "function" &&
+        hostExports[prop].constructor &&
+        hostExports[prop].constructor.name === "AsyncFunction"
+      ) {{
+        return hostExports[prop];
+      }}
       if (prop in wasmExports) {{
         return wasmExports[prop];
       }}

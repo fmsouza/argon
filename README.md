@@ -17,13 +17,13 @@ This repository contains the full compiler toolchain:
 For the locked scope in [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md), the compiler is **scope-complete**:
 - README syntax parity (including interop decorators/declarations) is implemented.
 - `argon run` executes core runtime features in the internal AST runtime.
-- WASM compilation now supports full README parity through a generated host-ABI companion (`.mjs` loader + `.host.mjs` host module), while still emitting native `.wasm` for the core subset.
+- WASM compilation now supports full README parity through a generated host-ABI companion (`.mjs` loader + `.host.mjs` host module), and the native standalone `.wasm` path now covers the expanded backend subset directly.
 - Memory-safety baseline is enforced (moves, borrows, NLL-style loop analysis, thread/process capture checks).
 - Post-scope type-system hardening is implemented for interfaces/enums, structural object shapes, and recursive generic inference.
 - Post-scope borrow analysis now computes global interprocedural borrow summaries across the call graph, including alias-aware borrowed returns, multi-source returned-borrow provenance, and transitive thread/process captures.
 
 Known boundaries:
-- Raw standalone `.wasm` without the generated sidecars is still only the native core subset by design.
+- Raw standalone `.wasm` still does not cover JS-module resolution, promise-backed host interop, or arbitrary non-flat control-flow nesting inside `try/catch/finally` beyond the native structured subset.
 
 ## Quick Start
 
@@ -88,8 +88,8 @@ Supported targets:
 WASM notes:
 - `.wasm` is the binary output format.
 - `argon compile --target wasm ... -o out.wasm` also writes `out.mjs` and `out.host.mjs`.
-- Native wasm covers numeric locals/ops, calls, branching, loops, array indexing, and heap-backed object/field access for local shapes.
-- The loader merges native wasm exports with the generated host companion so imports/exports, async/await, and try/throw continue to work on the wasm target.
+- Native standalone wasm now covers numeric locals/ops, calls, branching, loops, array indexing, heap-backed object/field access for local shapes, internal async/await lowered synchronously, flat and structured `try/catch/finally` with nested `if`/`return`, and direct function imports supplied by the embedder.
+- The loader merges native wasm exports with the generated host companion so JS-heavy imports/exports, promise-backed async, and deeper JS-host interop paths continue to work on the wasm target.
 - Linear-memory helpers still exist for native wasm strings, arrays, object literals, and struct-literal constructor lowering.
 
 ## CLI Commands
@@ -170,11 +170,11 @@ argon compile examples/wasm-subset.arg --target wasm --pipeline ir -o /tmp/out.w
 CI includes completion-focused coverage for:
 - README parity checks
 - Runtime execution paths
-- WASM compile/execute paths, including loader-sidecar, host-ABI async/try/import coverage, and native heap-backed object/member cases
+- WASM compile/execute paths, including raw standalone async/import coverage, flat and structured standalone try/catch coverage, loader-sidecar host-ABI coverage, and native heap-backed object/member cases
 
 ## Roadmap Beyond Current Scope
 
-- Broader native standalone `.wasm` coverage without relying on generated host sidecars.
+- Broader raw standalone `.wasm` support for JS-heavy module resolution and promise-backed interop without relying on generated host sidecars.
 
 ## License
 

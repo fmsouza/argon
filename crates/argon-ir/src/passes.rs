@@ -486,6 +486,23 @@ fn inst_def_uses(inst: &Instruction) -> (Option<ValueId>, Vec<ValueId>, bool) {
         Instruction::Store { dest, src } => (None, vec![*dest, *src], true),
         Instruction::Load { dest, src } => (Some(*dest), vec![*src], false),
         Instruction::ThrowStmt { arg } => (None, vec![*arg], true),
+        Instruction::If {
+            cond,
+            then_body,
+            else_body,
+        } => {
+            let mut uses = vec![*cond];
+            for i in then_body {
+                let (_, u, _) = inst_def_uses(i);
+                uses.extend(u);
+            }
+            for i in else_body {
+                let (_, u, _) = inst_def_uses(i);
+                uses.extend(u);
+            }
+            (None, uses, true)
+        }
+        Instruction::Return { value } => (None, value.iter().copied().collect(), true),
         Instruction::Try {
             try_body,
             catch,

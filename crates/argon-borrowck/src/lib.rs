@@ -305,7 +305,9 @@ impl BorrowChecker {
                     self.collect_called_functions_from_expr(arg, functions, called);
                 }
             }
-            Stmt::Throw(t) => self.collect_called_functions_from_expr(&t.argument, functions, called),
+            Stmt::Throw(t) => {
+                self.collect_called_functions_from_expr(&t.argument, functions, called)
+            }
             Stmt::Block(b) => {
                 for nested in &b.statements {
                     self.collect_called_functions_from_stmt(nested, functions, called);
@@ -334,9 +336,7 @@ impl BorrowChecker {
                             for decl in &v.declarations {
                                 if let Some(init) = &decl.init {
                                     self.collect_called_functions_from_expr(
-                                        init,
-                                        functions,
-                                        called,
+                                        init, functions, called,
                                     );
                                 }
                             }
@@ -430,7 +430,9 @@ impl BorrowChecker {
         called: &mut HashSet<String>,
     ) {
         match expr {
-            Expr::Assignment(a) => self.collect_called_functions_from_expr(&a.right, functions, called),
+            Expr::Assignment(a) => {
+                self.collect_called_functions_from_expr(&a.right, functions, called)
+            }
             Expr::Call(c) => {
                 if let Expr::Identifier(id) = &*c.callee {
                     if functions.contains_key(&id.sym) {
@@ -471,7 +473,9 @@ impl BorrowChecker {
                 self.collect_called_functions_from_expr(&b.left, functions, called);
                 self.collect_called_functions_from_expr(&b.right, functions, called);
             }
-            Expr::Unary(u) => self.collect_called_functions_from_expr(&u.argument, functions, called),
+            Expr::Unary(u) => {
+                self.collect_called_functions_from_expr(&u.argument, functions, called)
+            }
             Expr::Member(m) => {
                 self.collect_called_functions_from_expr(&m.object, functions, called);
                 self.collect_called_functions_from_expr(&m.property, functions, called);
@@ -480,12 +484,8 @@ impl BorrowChecker {
                 self.collect_called_functions_from_expr(&m.object, functions, called);
                 self.collect_called_functions_from_expr(&m.property, functions, called);
             }
-            Expr::Ref(r) => {
-                self.collect_called_functions_from_expr(&r.expr, functions, called)
-            }
-            Expr::MutRef(r) => {
-                self.collect_called_functions_from_expr(&r.expr, functions, called)
-            }
+            Expr::Ref(r) => self.collect_called_functions_from_expr(&r.expr, functions, called),
+            Expr::MutRef(r) => self.collect_called_functions_from_expr(&r.expr, functions, called),
             Expr::New(n) => {
                 self.collect_called_functions_from_expr(&n.callee, functions, called);
                 for arg in &n.arguments {
@@ -515,13 +515,19 @@ impl BorrowChecker {
                             ExprOrSpread::Expr(e) => {
                                 self.collect_called_functions_from_expr(e, functions, called)
                             }
-                            ExprOrSpread::Spread(s) => self
-                                .collect_called_functions_from_expr(&s.argument, functions, called),
+                            ExprOrSpread::Spread(s) => self.collect_called_functions_from_expr(
+                                &s.argument,
+                                functions,
+                                called,
+                            ),
                         },
                         ObjectProperty::Spread(s) => {
                             self.collect_called_functions_from_expr(&s.argument, functions, called)
                         }
-                        ObjectProperty::Method(_) | ObjectProperty::Getter(_) | ObjectProperty::Setter(_) | ObjectProperty::Shorthand(_) => {}
+                        ObjectProperty::Method(_)
+                        | ObjectProperty::Getter(_)
+                        | ObjectProperty::Setter(_)
+                        | ObjectProperty::Shorthand(_) => {}
                     }
                 }
             }
@@ -532,13 +538,18 @@ impl BorrowChecker {
                             ExprOrSpread::Expr(e) => {
                                 self.collect_called_functions_from_expr(e, functions, called)
                             }
-                            ExprOrSpread::Spread(s) => self
-                                .collect_called_functions_from_expr(&s.argument, functions, called),
+                            ExprOrSpread::Spread(s) => self.collect_called_functions_from_expr(
+                                &s.argument,
+                                functions,
+                                called,
+                            ),
                         }
                     }
                 }
             }
-            Expr::Spread(s) => self.collect_called_functions_from_expr(&s.argument, functions, called),
+            Expr::Spread(s) => {
+                self.collect_called_functions_from_expr(&s.argument, functions, called)
+            }
             Expr::Await(a) | Expr::AwaitPromised(a) => {
                 self.collect_called_functions_from_expr(&a.argument, functions, called)
             }
@@ -547,7 +558,9 @@ impl BorrowChecker {
                     self.collect_called_functions_from_expr(argument, functions, called);
                 }
             }
-            Expr::Update(u) => self.collect_called_functions_from_expr(&u.argument, functions, called),
+            Expr::Update(u) => {
+                self.collect_called_functions_from_expr(&u.argument, functions, called)
+            }
             Expr::Chain(c) => {
                 for elem in &c.expressions {
                     match elem {
@@ -557,17 +570,21 @@ impl BorrowChecker {
                                     called.insert(id.sym.clone());
                                 }
                             }
-                            self.collect_called_functions_from_expr(&call.callee, functions, called);
+                            self.collect_called_functions_from_expr(
+                                &call.callee,
+                                functions,
+                                called,
+                            );
                             for arg in &call.arguments {
                                 match arg {
-                                    ExprOrSpread::Expr(e) => {
-                                        self.collect_called_functions_from_expr(e, functions, called)
-                                    }
-                                    ExprOrSpread::Spread(s) => self.collect_called_functions_from_expr(
-                                        &s.argument,
-                                        functions,
-                                        called,
-                                    ),
+                                    ExprOrSpread::Expr(e) => self
+                                        .collect_called_functions_from_expr(e, functions, called),
+                                    ExprOrSpread::Spread(s) => self
+                                        .collect_called_functions_from_expr(
+                                            &s.argument,
+                                            functions,
+                                            called,
+                                        ),
                                 }
                             }
                         }
@@ -577,17 +594,21 @@ impl BorrowChecker {
                                     called.insert(id.sym.clone());
                                 }
                             }
-                            self.collect_called_functions_from_expr(&call.callee, functions, called);
+                            self.collect_called_functions_from_expr(
+                                &call.callee,
+                                functions,
+                                called,
+                            );
                             for arg in &call.arguments {
                                 match arg {
-                                    ExprOrSpread::Expr(e) => {
-                                        self.collect_called_functions_from_expr(e, functions, called)
-                                    }
-                                    ExprOrSpread::Spread(s) => self.collect_called_functions_from_expr(
-                                        &s.argument,
-                                        functions,
-                                        called,
-                                    ),
+                                    ExprOrSpread::Expr(e) => self
+                                        .collect_called_functions_from_expr(e, functions, called),
+                                    ExprOrSpread::Spread(s) => self
+                                        .collect_called_functions_from_expr(
+                                            &s.argument,
+                                            functions,
+                                            called,
+                                        ),
                                 }
                             }
                         }
@@ -619,7 +640,9 @@ impl BorrowChecker {
             Expr::Parenthesized(p) => {
                 self.collect_called_functions_from_expr(&p.expression, functions, called)
             }
-            Expr::Import(i) => self.collect_called_functions_from_expr(&i.source, functions, called),
+            Expr::Import(i) => {
+                self.collect_called_functions_from_expr(&i.source, functions, called)
+            }
             Expr::TaggedTemplate(t) => {
                 self.collect_called_functions_from_expr(&t.tag, functions, called);
                 for expr in &t.template.expressions {
@@ -730,7 +753,8 @@ impl BorrowChecker {
                         *lowlink = (*lowlink).min(neighbor_low);
                     }
                 } else if state.on_stack.contains(&neighbor) {
-                    let neighbor_index = state.indices.get(&neighbor).copied().unwrap_or(usize::MAX);
+                    let neighbor_index =
+                        state.indices.get(&neighbor).copied().unwrap_or(usize::MAX);
                     if let Some(lowlink) = state.lowlinks.get_mut(node) {
                         *lowlink = (*lowlink).min(neighbor_index);
                     }
@@ -936,7 +960,9 @@ impl BorrowChecker {
                     &mut block_state,
                 );
                 state.return_sources.extend(block_state.return_sources);
-                state.thread_captured_params.extend(block_state.thread_captured_params);
+                state
+                    .thread_captured_params
+                    .extend(block_state.thread_captured_params);
             }
             Stmt::If(i) => {
                 self.collect_thread_captures_from_expr(
@@ -1021,13 +1047,17 @@ impl BorrowChecker {
                                 }
                                 if let Pattern::Identifier(id) = &decl.id {
                                     if let Some(init) = &decl.init {
-                                        if let Some(binding) = self.summary_binding_sources_from_expr(
-                                            init,
-                                            param_indices,
-                                            known_summaries,
-                                            &loop_state.bindings,
-                                        ) {
-                                            loop_state.bindings.insert(id.name.sym.clone(), binding);
+                                        if let Some(binding) = self
+                                            .summary_binding_sources_from_expr(
+                                                init,
+                                                param_indices,
+                                                known_summaries,
+                                                &loop_state.bindings,
+                                            )
+                                        {
+                                            loop_state
+                                                .bindings
+                                                .insert(id.name.sym.clone(), binding);
                                         }
                                     }
                                 }
@@ -1201,10 +1231,15 @@ impl BorrowChecker {
         }
     }
 
-    fn merge_summary_branch_states(&self, state: &mut SummaryState, branch_states: &[SummaryState]) {
+    fn merge_summary_branch_states(
+        &self,
+        state: &mut SummaryState,
+        branch_states: &[SummaryState],
+    ) {
         for branch in branch_states {
             state.return_sources.extend(branch.return_sources.clone());
-            state.thread_captured_params
+            state
+                .thread_captured_params
                 .extend(branch.thread_captured_params.iter().copied());
         }
 
@@ -1246,9 +1281,13 @@ impl BorrowChecker {
                 param_indices,
                 bindings,
             ),
-            Expr::Call(c) => {
-                self.return_sources_from_call(c, expected_kind, param_indices, known_summaries, bindings)
-            }
+            Expr::Call(c) => self.return_sources_from_call(
+                c,
+                expected_kind,
+                param_indices,
+                known_summaries,
+                bindings,
+            ),
             Expr::Parenthesized(p) => self.return_sources_from_expr(
                 &p.expression,
                 expected_kind,
@@ -1376,8 +1415,7 @@ impl BorrowChecker {
                     if id.sym == "thread" || id.sym == "process" {
                         for arg in &c.arguments {
                             if let ExprOrSpread::Expr(e) = arg {
-                                for index in
-                                    self.param_indices_for_expr(e, param_indices, bindings)
+                                for index in self.param_indices_for_expr(e, param_indices, bindings)
                                 {
                                     thread_captured_params.insert(index);
                                 }
@@ -1386,8 +1424,7 @@ impl BorrowChecker {
                     } else if let Some(summary) = known_summaries.get(&id.sym) {
                         for param_index in &summary.thread_captured_params {
                             if let Some(ExprOrSpread::Expr(e)) = c.arguments.get(*param_index) {
-                                for index in
-                                    self.param_indices_for_expr(e, param_indices, bindings)
+                                for index in self.param_indices_for_expr(e, param_indices, bindings)
                                 {
                                     thread_captured_params.insert(index);
                                 }
@@ -1579,17 +1616,14 @@ impl BorrowChecker {
         bindings: &HashMap<String, Vec<ReturnBorrowSource>>,
     ) -> Option<Vec<ReturnBorrowSource>> {
         match expr {
-            Expr::Identifier(id) => bindings
-                .get(&id.sym)
-                .cloned()
-                .or_else(|| {
-                    param_indices.get(&id.sym).map(|param_index| {
-                        vec![ReturnBorrowSource {
-                            param_index: *param_index,
-                            kind: BorrowKind::Shared,
-                        }]
-                    })
-                }),
+            Expr::Identifier(id) => bindings.get(&id.sym).cloned().or_else(|| {
+                param_indices.get(&id.sym).map(|param_index| {
+                    vec![ReturnBorrowSource {
+                        param_index: *param_index,
+                        kind: BorrowKind::Shared,
+                    }]
+                })
+            }),
             Expr::Ref(r) => Some(self.return_sources_from_param_expr(
                 &r.expr,
                 BorrowKind::Shared,
@@ -1725,7 +1759,8 @@ impl BorrowChecker {
         };
 
         if Self::expr_activates_borrow_during_evaluation(expr) {
-            self.borrow_bindings.insert(binding_name.to_string(), binding);
+            self.borrow_bindings
+                .insert(binding_name.to_string(), binding);
             Ok(())
         } else {
             self.install_borrow_binding(binding_name, binding, expr.span().clone())
@@ -1797,7 +1832,8 @@ impl BorrowChecker {
             self.activate_binding_source_borrow(&source.source, source.kind, location.clone())?;
         }
 
-        self.borrow_bindings.insert(binding_name.to_string(), binding);
+        self.borrow_bindings
+            .insert(binding_name.to_string(), binding);
         Ok(())
     }
 
@@ -1835,8 +1871,7 @@ impl BorrowChecker {
                     self.errors.push(BorrowError::BorrowConflict {
                         variable: source.to_string(),
                         location: location.clone(),
-                        message: "Cannot immutably borrow while mutable borrow exists"
-                            .to_string(),
+                        message: "Cannot immutably borrow while mutable borrow exists".to_string(),
                     });
                 }
                 if matches!(state.ownership, Ownership::Owned | Ownership::Copied) {
@@ -4051,7 +4086,11 @@ impl BorrowChecker {
                     self.check_return_borrow_reference(&r.expr, BorrowKind::Shared, expected_kind)?;
                 }
                 Expr::MutRef(r) => {
-                    self.check_return_borrow_reference(&r.expr, BorrowKind::Mutable, expected_kind)?;
+                    self.check_return_borrow_reference(
+                        &r.expr,
+                        BorrowKind::Mutable,
+                        expected_kind,
+                    )?;
                 }
                 _ => {
                     self.errors.push(BorrowError::LifetimeError(format!(
@@ -4115,7 +4154,8 @@ impl BorrowChecker {
             let mut saw_valid_param = false;
             for source in binding.sources {
                 if let Some(ctx) = &self.current_function_context {
-                    if let Some(param_kind) = ctx.param_borrows.get(&source.source).copied().flatten()
+                    if let Some(param_kind) =
+                        ctx.param_borrows.get(&source.source).copied().flatten()
                     {
                         saw_valid_param = true;
                         if !Self::borrow_kind_satisfies(param_kind, source.kind)
@@ -4204,15 +4244,17 @@ impl BorrowChecker {
             Expr::Ref(_) => Ok(Ownership::Copied),
             Expr::Identifier(id) => {
                 if let Some(binding) = self.borrow_bindings.get(&id.sym) {
-                    return Ok(if binding
-                        .sources
-                        .iter()
-                        .all(|source| source.kind == BorrowKind::Shared)
-                    {
-                        Ownership::Copied
-                    } else {
-                        Ownership::Owned
-                    });
+                    return Ok(
+                        if binding
+                            .sources
+                            .iter()
+                            .all(|source| source.kind == BorrowKind::Shared)
+                        {
+                            Ownership::Copied
+                        } else {
+                            Ownership::Owned
+                        },
+                    );
                 }
                 if let Some(state) = self.locals.get(&id.sym) {
                     if state.is_copyable {

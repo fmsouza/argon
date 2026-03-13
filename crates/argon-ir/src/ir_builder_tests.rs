@@ -499,4 +499,62 @@ mod try_catch_translation {
         assert!(saw_try);
         assert!(saw_throw);
     }
+
+    #[test]
+    fn translates_structured_control_flow_inside_try() {
+        let source = r#"
+function recover(flag: bool): i32 {
+    try {
+        if (flag) {
+            throw 7;
+        }
+        return 1;
+    } catch (err) {
+        return err;
+    }
+
+    return 0;
+}
+"#;
+        let ast = parse(source).unwrap();
+        let mut builder = IrBuilder::new();
+
+        let module = builder.build(&ast).unwrap();
+        let recover = module.functions.iter().find(|f| f.id == "recover").unwrap();
+
+        let mut saw_nested_if = false;
+        let mut saw_nested_return = false;
+        for block in &recover.body {
+            for inst in &block.instructions {
+                if let Instruction::Try {
+                    try_body, catch, ..
+                } = inst
+                {
+                    if try_body
+                        .iter()
+                        .any(|inst| matches!(inst, Instruction::If { .. }))
+                    {
+                        saw_nested_if = true;
+                    }
+                    if try_body
+                        .iter()
+                        .any(|inst| matches!(inst, Instruction::Return { .. }))
+                    {
+                        saw_nested_return = true;
+                    }
+                    if catch.as_ref().is_some_and(|catch| {
+                        catch
+                            .body
+                            .iter()
+                            .any(|inst| matches!(inst, Instruction::Return { .. }))
+                    }) {
+                        saw_nested_return = true;
+                    }
+                }
+            }
+        }
+
+        assert!(saw_nested_if);
+        assert!(saw_nested_return);
+    }
 }

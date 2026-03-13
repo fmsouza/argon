@@ -85,6 +85,14 @@ pub enum Instruction {
     ThrowStmt {
         arg: ValueId,
     },
+    If {
+        cond: ValueId,
+        then_body: Vec<Instruction>,
+        else_body: Vec<Instruction>,
+    },
+    Return {
+        value: Option<ValueId>,
+    },
     Try {
         try_body: Vec<Instruction>,
         catch: Option<TryCatch>,
@@ -746,6 +754,30 @@ impl IrBuilder {
                 instructions.push(Instruction::ThrowStmt { arg });
                 Ok(())
             }
+            Stmt::If(i) => {
+                let cond = self.translate_expression(&i.condition, instructions)?;
+                let then_body = self.translate_flat_stmt_to_vec(i.consequent.as_ref())?;
+                let else_body = if let Some(alternate) = &i.alternate {
+                    self.translate_flat_stmt_to_vec(alternate.as_ref())?
+                } else {
+                    Vec::new()
+                };
+                instructions.push(Instruction::If {
+                    cond,
+                    then_body,
+                    else_body,
+                });
+                Ok(())
+            }
+            Stmt::Return(r) => {
+                let value = if let Some(arg) = &r.argument {
+                    Some(self.translate_expression(arg, instructions)?)
+                } else {
+                    None
+                };
+                instructions.push(Instruction::Return { value });
+                Ok(())
+            }
             Stmt::Block(b) => {
                 for s in &b.statements {
                     self.translate_flat_stmt(s, instructions)?;
@@ -758,6 +790,12 @@ impl IrBuilder {
                 stmt
             ))),
         }
+    }
+
+    fn translate_flat_stmt_to_vec(&mut self, stmt: &Stmt) -> Result<Vec<Instruction>, IrError> {
+        let mut instructions = Vec::new();
+        self.translate_flat_stmt(stmt, &mut instructions)?;
+        Ok(instructions)
     }
 
     fn translate_global_variable_stmt(&mut self, v: &VariableStmt) -> Result<Vec<String>, IrError> {

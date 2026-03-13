@@ -714,6 +714,48 @@ impl JsCodegen {
                     self.output.push_str(&expr);
                     self.output.push_str(";\n");
                 }
+                IrInst::If {
+                    cond,
+                    then_body,
+                    else_body,
+                } => {
+                    let cond_expr = values
+                        .get(cond)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    self.output.push_str(prefix);
+                    self.output.push_str(&format!("if ({}) {{\n", cond_expr));
+                    let mut nested_prefix = String::new();
+                    nested_prefix.push_str(prefix);
+                    nested_prefix.push_str("    ");
+                    self.emit_ir_instructions_cfg_with_prefix(then_body, values, &nested_prefix)?;
+                    self.output.push_str(prefix);
+                    self.output.push_str("}");
+                    if !else_body.is_empty() {
+                        self.output.push_str(" else {\n");
+                        self.emit_ir_instructions_cfg_with_prefix(
+                            else_body,
+                            values,
+                            &nested_prefix,
+                        )?;
+                        self.output.push_str(prefix);
+                        self.output.push_str("}");
+                    }
+                    self.output.push_str("\n");
+                }
+                IrInst::Return { value } => {
+                    self.output.push_str(prefix);
+                    self.output.push_str("return");
+                    if let Some(value) = value {
+                        let expr = values
+                            .get(value)
+                            .cloned()
+                            .unwrap_or_else(|| "undefined".to_string());
+                        self.output.push(' ');
+                        self.output.push_str(&expr);
+                    }
+                    self.output.push_str(";\n");
+                }
                 IrInst::Try {
                     try_body,
                     catch,
@@ -900,6 +942,50 @@ impl JsCodegen {
                     self.output.push_str(prefix);
                     self.output.push_str("throw ");
                     self.output.push_str(&expr);
+                    self.output.push_str(";\n");
+                }
+                IrInst::If {
+                    cond,
+                    then_body,
+                    else_body,
+                } => {
+                    let cond_expr = values
+                        .get(cond)
+                        .cloned()
+                        .unwrap_or_else(|| "undefined".to_string());
+                    self.output.push_str(prefix);
+                    self.output.push_str(&format!("if ({}) {{\n", cond_expr));
+
+                    let mut nested_prefix = String::new();
+                    nested_prefix.push_str(prefix);
+                    nested_prefix.push_str("    ");
+                    self.emit_ir_instructions_block_with_prefix(then_body, values, &nested_prefix)?;
+
+                    self.output.push_str(prefix);
+                    self.output.push_str("}");
+                    if !else_body.is_empty() {
+                        self.output.push_str(" else {\n");
+                        self.emit_ir_instructions_block_with_prefix(
+                            else_body,
+                            values,
+                            &nested_prefix,
+                        )?;
+                        self.output.push_str(prefix);
+                        self.output.push_str("}");
+                    }
+                    self.output.push_str("\n");
+                }
+                IrInst::Return { value } => {
+                    self.output.push_str(prefix);
+                    self.output.push_str("return");
+                    if let Some(value) = value {
+                        let expr = values
+                            .get(value)
+                            .cloned()
+                            .unwrap_or_else(|| "undefined".to_string());
+                        self.output.push(' ');
+                        self.output.push_str(&expr);
+                    }
                     self.output.push_str(";\n");
                 }
                 IrInst::Try {
