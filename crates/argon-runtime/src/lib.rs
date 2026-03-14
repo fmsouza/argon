@@ -36,6 +36,13 @@ struct RuntimeStructDef {
     fields: Vec<String>,
     methods: HashMap<String, FunctionDecl>,
     constructor: Option<Constructor>,
+    #[allow(dead_code)]
+    embodies: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeSkillDef {
+    concrete_methods: HashMap<String, FunctionDecl>,
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +87,7 @@ pub struct Runtime {
     scope: Scope,
     globals: HashMap<String, Value>,
     struct_defs: HashMap<String, RuntimeStructDef>,
+    skill_defs: HashMap<String, RuntimeSkillDef>,
 }
 
 impl Default for Runtime {
@@ -163,6 +171,7 @@ impl Runtime {
             scope: Scope::new(),
             globals,
             struct_defs: HashMap::new(),
+            skill_defs: HashMap::new(),
         }
     }
 
@@ -213,6 +222,10 @@ impl Runtime {
             }
             Stmt::Struct(s) => {
                 self.register_struct(s);
+                Ok(ExecOutcome::Normal)
+            }
+            Stmt::Skill(sk) => {
+                self.register_skill(sk);
                 Ok(ExecOutcome::Normal)
             }
             Stmt::Enum(e) => {
@@ -689,6 +702,7 @@ impl Runtime {
                     scope: call_scope,
                     globals: self.globals.clone(),
                     struct_defs: self.struct_defs.clone(),
+                    skill_defs: self.skill_defs.clone(),
                 };
                 rt.execute_function_body(&func.body)
             }
@@ -699,9 +713,27 @@ impl Runtime {
         }
     }
 
+    fn register_skill(&mut self, sk: &SkillDecl) {
+        let concrete_methods = sk
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                SkillItem::ConcreteMethod(m) => match &m.key {
+                    Expr::Identifier(id) => Some((id.sym.clone(), m.value.clone())),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        self.skill_defs.insert(
+            sk.id.sym.clone(),
+            RuntimeSkillDef { concrete_methods },
+        );
+    }
+
     fn register_struct(&mut self, s: &StructDecl) {
         let fields = s.fields.iter().map(|f| f.id.sym.clone()).collect();
-        let methods = s
+        let mut methods: HashMap<String, FunctionDecl> = s
             .methods
             .iter()
             .filter_map(|m| match &m.key {
@@ -709,6 +741,18 @@ impl Runtime {
                 _ => None,
             })
             .collect();
+
+        // Merge concrete methods from embodied skills
+        let embodies: Vec<String> = s.embodies.iter().map(|id| id.sym.clone()).collect();
+        for skill_name in &embodies {
+            if let Some(skill_def) = self.skill_defs.get(skill_name) {
+                for (name, decl) in &skill_def.concrete_methods {
+                    // Struct's own methods take priority over skill methods
+                    methods.entry(name.clone()).or_insert_with(|| decl.clone());
+                }
+            }
+        }
+
         let constructor = s.constructor.clone();
         self.struct_defs.insert(
             s.id.sym.clone(),
@@ -716,6 +760,7 @@ impl Runtime {
                 fields,
                 methods,
                 constructor,
+                embodies,
             },
         );
     }
@@ -793,6 +838,7 @@ impl Runtime {
                 scope: ctor_scope,
                 globals: self.globals.clone(),
                 struct_defs: self.struct_defs.clone(),
+                skill_defs: self.skill_defs.clone(),
             };
             for stmt in &constructor.body.statements {
                 match ctor_rt.execute_statement(stmt)? {
@@ -1231,6 +1277,15 @@ fn detect_compile_only_feature_in_stmt(stmt: &Stmt) -> Option<&'static str> {
                         .find_map(detect_compile_only_feature_in_stmt)
                 })
             }),
+        Stmt::Skill(sk) => sk.items.iter().find_map(|item| match item {
+            SkillItem::ConcreteMethod(m) => m
+                .value
+                .body
+                .statements
+                .iter()
+                .find_map(detect_compile_only_feature_in_stmt),
+            _ => None,
+        }),
         Stmt::Export(e) => e
             .declaration
             .as_deref()

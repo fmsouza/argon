@@ -413,7 +413,7 @@ impl BorrowChecker {
             Stmt::Function(_)
             | Stmt::AsyncFunction(_)
             | Stmt::Struct(_)
-            | Stmt::Trait(_)
+            | Stmt::Skill(_)
             | Stmt::Impl(_)
             | Stmt::Interface(_)
             | Stmt::TypeAlias(_)
@@ -2595,7 +2595,7 @@ impl BorrowChecker {
             Stmt::Function(_)
             | Stmt::AsyncFunction(_)
             | Stmt::Struct(_)
-            | Stmt::Trait(_)
+            | Stmt::Skill(_)
             | Stmt::Impl(_)
             | Stmt::Interface(_)
             | Stmt::TypeAlias(_)
@@ -4477,7 +4477,8 @@ impl BorrowChecker {
                 let mut sync_visited = HashSet::new();
                 self.is_sync_type(type_table, *inner, &mut sync_visited)
             }
-            Some(CheckedType::MutRef(_))
+            Some(CheckedType::Skill(_))
+            | Some(CheckedType::MutRef(_))
             | Some(CheckedType::Interface(_))
             | Some(CheckedType::Function(_))
             | Some(CheckedType::Object)
@@ -4542,7 +4543,8 @@ impl BorrowChecker {
                         .iter()
                         .all(|field| self.is_sync_type(type_table, field.ty, visited))
             }
-            Some(CheckedType::MutRef(_))
+            Some(CheckedType::Skill(_))
+            | Some(CheckedType::MutRef(_))
             | Some(CheckedType::Interface(_))
             | Some(CheckedType::Function(_))
             | Some(CheckedType::Object)

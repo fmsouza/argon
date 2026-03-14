@@ -28,6 +28,7 @@ pub trait Visitor {
                     self.visit_expr(arg);
                 }
             }
+            Stmt::Skill(_) => {}
             _ => {}
         }
     }

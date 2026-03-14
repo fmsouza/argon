@@ -172,7 +172,8 @@ pub enum TokenKind {
 
     // Argon-specific keywords
     Struct,
-    Trait,
+    Skill,
+    Embodies,
     Impl,
     Match,
     Shared, // Shared<T> type
@@ -215,7 +216,8 @@ impl TokenKind {
         match text {
             // Argon keywords
             "struct" => TokenKind::Struct,
-            "trait" => TokenKind::Trait,
+            "skill" => TokenKind::Skill,
+            "embodies" => TokenKind::Embodies,
             "impl" => TokenKind::Impl,
             "match" => TokenKind::Match,
             "with" => TokenKind::With,
@@ -320,7 +322,8 @@ impl TokenKind {
         matches!(
             self,
             TokenKind::Struct
-                | TokenKind::Trait
+                | TokenKind::Skill
+                | TokenKind::Embodies
                 | TokenKind::Impl
                 | TokenKind::Match
                 | TokenKind::With

@@ -225,6 +225,9 @@ impl Parser {
         if self.match_one(&[TokenKind::Struct]) {
             return self.parse_struct();
         }
+        if self.match_one(&[TokenKind::Skill]) {
+            return self.parse_skill();
+        }
         if self.check(&TokenKind::Class) {
             let span = self.peek().span.clone();
             return Err(ParseError::UnexpectedToken {
@@ -1205,6 +1208,20 @@ impl Parser {
         let id = self.expect_identifier()?;
         let type_params = self.parse_type_params_opt()?;
 
+        // Parse optional `embodies` clause (skills)
+        let embodies = if self.match_one(&[TokenKind::Embodies]) {
+            let mut skills = vec![self.expect_identifier()?];
+            while self.match_one(&[TokenKind::Comma]) {
+                if self.check(&TokenKind::OpenBrace) {
+                    break;
+                }
+                skills.push(self.expect_identifier()?);
+            }
+            skills
+        } else {
+            vec![]
+        };
+
         // Parse optional `implements` clause
         let implements = if self.match_one(&[TokenKind::Implements]) {
             let mut types = vec![self.parse_type()?];
@@ -1268,6 +1285,139 @@ impl Parser {
             methods,
             constructor,
             implements,
+            embodies,
+            span: start..end,
+        }))
+    }
+
+    fn parse_skill(&mut self) -> Result<argon_ast::Stmt, ParseError> {
+        use argon_ast::*;
+
+        let start = self.previous().span.start;
+        let id = self.expect_identifier()?;
+        let type_params = self.parse_type_params_opt()?;
+
+        let mut items = Vec::new();
+        self.expect(TokenKind::OpenBrace)?;
+
+        while !self.check(&TokenKind::CloseBrace) && !self.is_at_end() {
+            if self.match_one(&[TokenKind::Semi, TokenKind::Comma]) {
+                continue;
+            }
+
+            let member_id = self.expect_identifier()?;
+            let key = Expr::Identifier(member_id.clone());
+
+            if self.check(&TokenKind::OpenParen) || self.check(&TokenKind::LessThan) {
+                // Method — check if it has a body (concrete) or just a signature (abstract)
+                let type_params = self.parse_type_params_opt()?;
+
+                let mut params = Vec::new();
+                self.expect(TokenKind::OpenParen)?;
+
+                while !self.check(&TokenKind::CloseParen) && !self.is_at_end() {
+                    let name = self.expect_identifier()?;
+                    let param_start = name.span.start;
+                    let ty = if self.match_one(&[TokenKind::Colon]) {
+                        Some(Box::new(self.parse_type()?))
+                    } else {
+                        None
+                    };
+                    let param_end = self.previous().span.end;
+
+                    params.push(Param {
+                        pat: Pattern::Identifier(IdentPattern {
+                            name: name.clone(),
+                            type_annotation: ty.clone(),
+                            default: None,
+                        }),
+                        ty,
+                        default: None,
+                        is_optional: false,
+                        span: param_start..param_end,
+                    });
+
+                    if !self.check(&TokenKind::CloseParen) {
+                        self.expect_comma()?;
+                    }
+                }
+
+                self.expect(TokenKind::CloseParen)?;
+
+                let return_type = if self.match_one(&[TokenKind::Colon]) {
+                    Some(Box::new(self.parse_type()?))
+                } else {
+                    None
+                };
+
+                // Check for borrow annotation before body
+                let borrow_annotation = self.parse_borrow_annotation()?;
+
+                if self.check(&TokenKind::OpenBrace) {
+                    // Concrete method (has body)
+                    let body_stmt = match self.parse_statement()? {
+                        Stmt::Block(b) => b,
+                        _ => return Err(self.parser_error_prev("method body must be a block")),
+                    };
+
+                    let body = FunctionBody {
+                        statements: body_stmt.statements,
+                        span: body_stmt.span,
+                    };
+
+                    let end = self.previous().span.end;
+                    items.push(SkillItem::ConcreteMethod(MethodDefinition {
+                        key,
+                        value: FunctionDecl {
+                            id: None,
+                            params,
+                            body,
+                            type_params,
+                            return_type,
+                            is_async: false,
+                            borrow_annotation,
+                            span: start..end,
+                        },
+                        kind: MethodKind::Method,
+                        is_static: false,
+                        span: start..end,
+                    }));
+                } else {
+                    // Abstract method (signature only)
+                    let end = self.previous().span.end;
+                    self.match_one(&[TokenKind::Semi]);
+                    items.push(SkillItem::AbstractMethod(MethodSignature {
+                        id: member_id,
+                        params,
+                        return_type,
+                        type_params,
+                        span: start..end,
+                    }));
+                }
+            } else {
+                // Required field: `name: type;`
+                self.expect(TokenKind::Colon)?;
+                let type_annotation = Some(Box::new(self.parse_type()?));
+                let field_end = self.previous().span.end;
+                self.match_one(&[TokenKind::Semi, TokenKind::Comma]);
+
+                items.push(SkillItem::RequiredField(PropertySignature {
+                    id: member_id,
+                    type_annotation,
+                    is_optional: false,
+                    is_readonly: false,
+                    span: start..field_end,
+                }));
+            }
+        }
+
+        self.expect(TokenKind::CloseBrace)?;
+        let end = self.previous().span.end;
+
+        Ok(Stmt::Skill(SkillDecl {
+            id,
+            type_params,
+            items,
             span: start..end,
         }))
     }

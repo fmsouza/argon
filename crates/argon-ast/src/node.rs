@@ -25,7 +25,7 @@ pub enum Stmt {
     Function(FunctionDecl),
     AsyncFunction(FunctionDecl),
     Struct(StructDecl),
-    Trait(TraitDecl),
+    Skill(SkillDecl),
     Impl(ImplDecl),
     Interface(InterfaceDecl),
     TypeAlias(TypeAliasStmt),
@@ -270,6 +270,7 @@ pub struct StructDecl {
     pub methods: Vec<MethodDefinition>,
     pub constructor: Option<Constructor>,
     pub implements: Vec<Type>,
+    pub embodies: Vec<Ident>,
     pub span: Span,
 }
 #[derive(Debug, Clone)]
@@ -281,21 +282,17 @@ pub struct StructField {
 }
 
 #[derive(Debug, Clone)]
-pub struct TraitDecl {
+pub struct SkillDecl {
     pub id: Ident,
     pub type_params: Vec<TypeParam>,
-    pub body: TraitBody,
+    pub items: Vec<SkillItem>,
     pub span: Span,
 }
 #[derive(Debug, Clone)]
-pub struct TraitBody {
-    pub items: Vec<TraitItem>,
-    pub span: Span,
-}
-#[derive(Debug, Clone)]
-pub enum TraitItem {
-    Method(MethodSignature),
-    Property(PropertySignature),
+pub enum SkillItem {
+    ConcreteMethod(MethodDefinition),
+    AbstractMethod(MethodSignature),
+    RequiredField(PropertySignature),
 }
 #[derive(Debug, Clone)]
 pub struct MethodSignature {
@@ -1438,8 +1435,7 @@ impl_spanned!(
     Param,
     StructDecl,
     StructField,
-    TraitDecl,
-    TraitBody,
+    SkillDecl,
     ImplDecl,
     ImplBody,
     InterfaceDecl,

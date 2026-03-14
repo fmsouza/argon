@@ -1345,9 +1345,9 @@ mod argon_keyword_tokenization {
     }
 
     #[test]
-    fn returns_trait_keyword_token_when_trait_is_provided() {
+    fn returns_skill_keyword_token_when_skill_is_provided() {
         // Assign
-        let source = "trait";
+        let source = "skill";
 
         // Act
         let result = tokenize(source);
@@ -1355,7 +1355,21 @@ mod argon_keyword_tokenization {
         // Assert
         assert!(result.is_ok());
         let tokens = result.unwrap();
-        assert_eq!(tokens[0].kind, TokenKind::Trait);
+        assert_eq!(tokens[0].kind, TokenKind::Skill);
+    }
+
+    #[test]
+    fn returns_embodies_keyword_token_when_embodies_is_provided() {
+        // Assign
+        let source = "embodies";
+
+        // Act
+        let result = tokenize(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Embodies);
     }
 
     #[test]

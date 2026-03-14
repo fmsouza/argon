@@ -1,0 +1,33 @@
+// Skills - mixin system for structs
+
+skill Bark {
+    bark(): void {
+        print("Woof!");
+    }
+}
+
+skill Greeter {
+    name: string;
+
+    greet(): void with &this {
+        print("Hi! My name is ");
+        print(this.name);
+        println("!");
+    }
+}
+
+struct Dog embodies Bark {
+    breed: string;
+}
+
+struct Person embodies Bark, Greeter {
+    name: string;
+    age: i32;
+}
+
+const dog = Dog { breed: "Labrador" };
+dog.bark();
+
+const person = Person { name: "Alice", age: 30 };
+person.bark();
+person.greet();

@@ -2,7 +2,7 @@
 
 use crate::types::{
     EnumDef, FieldDef, FunctionSig, InterfaceDef, InterfaceMember, MethodDef, ObjectShapeDef,
-    StructDef, Type as CompType, TypeId, TypeInstantiator, TypeTable,
+    SkillTypeDef, StructDef, Type as CompType, TypeId, TypeInstantiator, TypeTable,
 };
 use argon_ast::*;
 use std::collections::HashMap;
@@ -43,6 +43,7 @@ pub struct TypeEnvironment {
     vars: HashMap<String, TypeId>,
     structs: HashMap<String, StructDef>,
     generic_structs: HashMap<String, GenericStructDef>,
+    skills: HashMap<String, SkillTypeDef>,
     interfaces: HashMap<String, InterfaceDef>,
     generic_interfaces: HashMap<String, GenericInterfaceDef>,
     enums: HashMap<String, EnumDef>,
@@ -65,6 +66,7 @@ impl TypeEnvironment {
             vars: HashMap::new(),
             structs: HashMap::new(),
             generic_structs: HashMap::new(),
+            skills: HashMap::new(),
             interfaces: HashMap::new(),
             generic_interfaces: HashMap::new(),
             enums: HashMap::new(),
@@ -90,6 +92,14 @@ impl TypeEnvironment {
 
     pub fn add_struct(&mut self, name: String, def: StructDef) {
         self.structs.insert(name, def);
+    }
+
+    pub fn get_skill(&self, name: &str) -> Option<&SkillTypeDef> {
+        self.skills.get(name)
+    }
+
+    pub fn add_skill(&mut self, name: String, def: SkillTypeDef) {
+        self.skills.insert(name, def);
     }
 
     fn get_generic_struct(&self, name: &str) -> Option<&GenericStructDef> {
@@ -187,6 +197,7 @@ impl TypeEnvironment {
             vars: self.vars.clone(),
             structs: self.structs.clone(),
             generic_structs: self.generic_structs.clone(),
+            skills: self.skills.clone(),
             interfaces: self.interfaces.clone(),
             generic_interfaces: self.generic_interfaces.clone(),
             enums: self.enums.clone(),
@@ -339,6 +350,71 @@ impl TypeChecker {
                             s.type_params.clone(),
                         );
                     }
+                }
+                Stmt::Skill(sk) => {
+                    let mut required_fields = Vec::new();
+                    let mut concrete_methods = Vec::new();
+                    let mut abstract_methods = Vec::new();
+
+                    for item in &sk.items {
+                        match item {
+                            SkillItem::RequiredField(prop) => {
+                                let ty = prop
+                                    .type_annotation
+                                    .as_ref()
+                                    .map(|t| self.resolve_type(t))
+                                    .unwrap_or_else(|| self.type_table.unknown());
+                                required_fields.push(FieldDef {
+                                    name: prop.id.sym.clone(),
+                                    ty,
+                                });
+                            }
+                            SkillItem::ConcreteMethod(m) => {
+                                let name = match &m.key {
+                                    Expr::Identifier(id) => id.sym.clone(),
+                                    _ => continue,
+                                };
+                                concrete_methods.push(MethodDef {
+                                    name,
+                                    sig: self.resolve_function_sig(&m.value),
+                                });
+                            }
+                            SkillItem::AbstractMethod(m) => {
+                                let params = m
+                                    .params
+                                    .iter()
+                                    .map(|p| {
+                                        p.ty.as_ref()
+                                            .map(|t| self.resolve_type(t))
+                                            .unwrap_or_else(|| self.type_table.unknown())
+                                    })
+                                    .collect();
+                                let return_type = m
+                                    .return_type
+                                    .as_ref()
+                                    .map(|t| self.resolve_type(t))
+                                    .unwrap_or_else(|| self.type_table.void());
+                                abstract_methods.push(MethodDef {
+                                    name: m.id.sym.clone(),
+                                    sig: FunctionSig {
+                                        params,
+                                        return_type,
+                                        is_async: false,
+                                    },
+                                });
+                            }
+                        }
+                    }
+
+                    self.env.add_skill(
+                        sk.id.sym.clone(),
+                        SkillTypeDef {
+                            name: sk.id.sym.clone(),
+                            required_fields,
+                            concrete_methods,
+                            abstract_methods,
+                        },
+                    );
                 }
                 Stmt::Interface(i) => {
                     let mut local_env = self.env.child();
@@ -556,6 +632,7 @@ impl TypeChecker {
             Stmt::Match(m) => self.check_match(m),
             Stmt::Import(_) | Stmt::Export(_) => Ok(()),
             Stmt::Interface(_) => Ok(()),
+            Stmt::Skill(_) => Ok(()),
             Stmt::Enum(_) => Ok(()),
             Stmt::TypeAlias(_) => Ok(()),
             Stmt::Labeled(l) => self.check_statement(&l.body),
@@ -895,6 +972,52 @@ impl TypeChecker {
                     message: format!(
                         "struct '{}' does not satisfy implemented interface",
                         s.id.sym
+                    ),
+                });
+            }
+        }
+
+        // Verify embodies clause (skills)
+        let struct_field_names: Vec<String> =
+            s.fields.iter().map(|f| f.id.sym.clone()).collect();
+        let struct_method_names: Vec<String> = s
+            .methods
+            .iter()
+            .filter_map(|m| match &m.key {
+                Expr::Identifier(id) => Some(id.sym.clone()),
+                _ => None,
+            })
+            .collect();
+
+        for skill_name in &s.embodies {
+            if let Some(skill_def) = self.env.get_skill(&skill_name.sym).cloned() {
+                // Check required fields
+                for req_field in &skill_def.required_fields {
+                    if !struct_field_names.contains(&req_field.name) {
+                        self.errors.push(TypeError::Invalid {
+                            message: format!(
+                                "struct '{}' embodies skill '{}' but is missing required field '{}'",
+                                s.id.sym, skill_name.sym, req_field.name
+                            ),
+                        });
+                    }
+                }
+                // Check abstract methods
+                for abs_method in &skill_def.abstract_methods {
+                    if !struct_method_names.contains(&abs_method.name) {
+                        self.errors.push(TypeError::Invalid {
+                            message: format!(
+                                "struct '{}' embodies skill '{}' but is missing required method '{}'",
+                                s.id.sym, skill_name.sym, abs_method.name
+                            ),
+                        });
+                    }
+                }
+            } else {
+                self.errors.push(TypeError::Invalid {
+                    message: format!(
+                        "skill '{}' not found",
+                        skill_name.sym
                     ),
                 });
             }

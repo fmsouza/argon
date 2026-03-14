@@ -25,6 +25,7 @@ pub enum Type {
     Union(Vec<TypeId>),
     Intersection(Vec<TypeId>),
     Struct(StructDef),
+    Skill(SkillTypeDef),
     Interface(InterfaceDef),
     ObjectShape(ObjectShapeDef),
     Enum(EnumDef),
@@ -119,6 +120,7 @@ impl fmt::Display for Type {
                 Ok(())
             }
             Type::Struct(def) => write!(f, "struct {}", def.name),
+            Type::Skill(def) => write!(f, "skill {}", def.name),
             Type::Interface(def) => write!(f, "interface {}", def.name),
             Type::ObjectShape(_) => write!(f, "object"),
             Type::Enum(def) => write!(f, "enum {}", def.name),
@@ -173,6 +175,14 @@ pub struct FieldDef {
 pub struct MethodDef {
     pub name: String,
     pub sig: FunctionSig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SkillTypeDef {
+    pub name: String,
+    pub required_fields: Vec<FieldDef>,
+    pub concrete_methods: Vec<MethodDef>,
+    pub abstract_methods: Vec<MethodDef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -357,6 +367,10 @@ impl TypeTable {
         self.get_or_add(Type::Struct(def))
     }
 
+    pub fn skill_def(&mut self, def: SkillTypeDef) -> TypeId {
+        self.get_or_add(Type::Skill(def))
+    }
+
     pub fn interface_def(&mut self, def: InterfaceDef) -> TypeId {
         self.get_or_add(Type::Interface(def))
     }
@@ -492,6 +506,56 @@ impl TypeInstantiator {
                     fields,
                     methods,
                     constructor_params,
+                })
+            }
+            Type::Skill(def) => {
+                let required_fields = def
+                    .required_fields
+                    .iter()
+                    .map(|f| FieldDef {
+                        name: f.name.clone(),
+                        ty: self.instantiate(type_table, f.ty),
+                    })
+                    .collect();
+                let concrete_methods = def
+                    .concrete_methods
+                    .iter()
+                    .map(|m| MethodDef {
+                        name: m.name.clone(),
+                        sig: FunctionSig {
+                            params: m
+                                .sig
+                                .params
+                                .iter()
+                                .map(|&p| self.instantiate(type_table, p))
+                                .collect(),
+                            return_type: self.instantiate(type_table, m.sig.return_type),
+                            is_async: m.sig.is_async,
+                        },
+                    })
+                    .collect();
+                let abstract_methods = def
+                    .abstract_methods
+                    .iter()
+                    .map(|m| MethodDef {
+                        name: m.name.clone(),
+                        sig: FunctionSig {
+                            params: m
+                                .sig
+                                .params
+                                .iter()
+                                .map(|&p| self.instantiate(type_table, p))
+                                .collect(),
+                            return_type: self.instantiate(type_table, m.sig.return_type),
+                            is_async: m.sig.is_async,
+                        },
+                    })
+                    .collect();
+                type_table.skill_def(SkillTypeDef {
+                    name: def.name,
+                    required_fields,
+                    concrete_methods,
+                    abstract_methods,
                 })
             }
             Type::Interface(def) => {
