@@ -9,9 +9,9 @@ const quotient: f64 = a / b;
 const remainder: i32 = a % b;
 const isGreater = a > b;
 
-console.log(sum);
-console.log(diff);
-console.log(product);
-console.log(quotient);
-console.log(remainder);
-console.log(isGreater);
+println(sum);
+println(diff);
+println(product);
+println(quotient);
+println(remainder);
+println(isGreater);

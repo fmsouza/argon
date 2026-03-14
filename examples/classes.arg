@@ -18,4 +18,4 @@ struct Counter {
 const counter = Counter { initial: 10 };
 counter.increment();
 counter.increment();
-console.log(counter.getValue());
+println(counter.getValue());

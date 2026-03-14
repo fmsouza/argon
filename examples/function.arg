@@ -4,4 +4,4 @@ function add(a: i32, b: i32): i32 {
 }
 
 const result = add(12, 30);
-console.log(result);
+println(result);

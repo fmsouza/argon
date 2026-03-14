@@ -4,5 +4,5 @@ const name = "Argon";
 const message = greeting + ", " + name;
 const templated = `${greeting} ${name} v${1}`;
 
-console.log(message);
-console.log(templated);
+println(message);
+println(templated);

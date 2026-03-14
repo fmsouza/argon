@@ -699,7 +699,7 @@ fn init_project(name: &str) -> Result<(), Box<dyn std::error::Error>> {
         r#"// Welcome to Argon!
 
 function main(): void {
-    console.log("Hello, Argon!");
+    println("Hello, Argon!");
 }
 
 main();

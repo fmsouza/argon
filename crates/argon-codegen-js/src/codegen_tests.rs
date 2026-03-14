@@ -181,7 +181,7 @@ mod ir_codegen {
     #[test]
     fn generates_struct_literal_via_ir() {
         let source =
-            "struct Point { x: number; y: number; }\nconst p = Point { x: 1, y: 2 };\nconsole.log(p.x);\n";
+            "struct Point { x: number; y: number; }\nconst p = Point { x: 1, y: 2 };\nprintln(p.x);\n";
         let ast = parse(source).unwrap();
         let mut builder = IrBuilder::new();
         let ir = builder.build(&ast).unwrap();

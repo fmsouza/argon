@@ -33,7 +33,7 @@ const missing = findUser(-1);
 const success = divide(10, 2);
 const failure = divide(10, 0);
 
-console.log(found);
-console.log(missing);
-console.log(success.value);
-console.log(failure);
+println(found);
+println(missing);
+println(success.value);
+println(failure);

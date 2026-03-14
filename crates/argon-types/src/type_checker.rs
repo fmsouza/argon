@@ -223,7 +223,16 @@ impl TypeChecker {
         let mut env = TypeEnvironment::new();
 
         env.add_function(
-            "console.log".to_string(),
+            "print".to_string(),
+            FunctionSig {
+                params: vec![type_table.any()],
+                return_type: type_table.void(),
+                is_async: false,
+            },
+        );
+
+        env.add_function(
+            "println".to_string(),
             FunctionSig {
                 params: vec![type_table.any()],
                 return_type: type_table.void(),
@@ -1120,10 +1129,6 @@ impl TypeChecker {
             .collect();
 
         if let Expr::Identifier(id) = &*c.callee {
-            if id.sym == "console" {
-                return self.type_table.void();
-            }
-
             if let Some(generic_func) = self.env.get_generic_function(&id.sym).cloned() {
                 let type_args: Vec<TypeId> = if !c.type_args.is_empty() {
                     c.type_args.iter().map(|t| self.resolve_type(t)).collect()

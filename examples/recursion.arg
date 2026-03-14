@@ -6,4 +6,4 @@ function factorial(n: i32): i32 {
     return n * factorial(n - 1);
 }
 
-console.log(factorial(5));
+println(factorial(5));

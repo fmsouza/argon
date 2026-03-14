@@ -7,15 +7,15 @@ function recoverOrDefault(flag: bool): i32 {
         return 1;
     } catch (err) {
         const captured = err;
-        console.log(captured);
+        println(captured);
         return 0;
     } finally {
         const cleaned = true;
-        console.log(cleaned);
+        println(cleaned);
     }
 
     return 0;
 }
 
-console.log(recoverOrDefault(false));
-console.log(recoverOrDefault(true));
+println(recoverOrDefault(false));
+println(recoverOrDefault(true));

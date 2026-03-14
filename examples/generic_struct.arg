@@ -9,4 +9,4 @@ struct Pair<T> {
 }
 
 const ints = Pair { left: 1, right: 2 };
-console.log(ints.first());
+println(ints.first());

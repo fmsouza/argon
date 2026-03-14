@@ -9,9 +9,9 @@ function consume(msg: Message): string {
 
 const m = Message { text: "owned-value" };
 const consumed = consume(m);
-console.log(consumed);
+println(consumed);
 
 const a: i32 = 10;
 const b: i32 = a;
-console.log(a);
-console.log(b);
+println(a);
+println(b);

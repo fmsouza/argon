@@ -15,6 +15,6 @@ function translatedX(p: &Point, by: f64): Point {
 const point = Point { x: 10.0, y: 20.0 };
 const sharedRef = &point;
 
-console.log(readX(sharedRef));
+println(readX(sharedRef));
 const shifted = translatedX(sharedRef, 5.0);
-console.log(shifted.x);
+println(shifted.x);

@@ -37,6 +37,23 @@ impl StdLib {
 (function(global) {
     'use strict';
 
+    // print / println - built-in output functions
+    global.print = function() {
+        var args = [];
+        for (var i = 0; i < arguments.length; i++) args.push(arguments[i]);
+        var text = args.join(' ');
+        if (typeof process !== 'undefined' && process.stdout) {
+            process.stdout.write(text);
+        } else {
+            console.log(text);
+        }
+    };
+    global.println = function() {
+        var args = [];
+        for (var i = 0; i < arguments.length; i++) args.push(arguments[i]);
+        console.log(args.join(' '));
+    };
+
     // Vec<T> - Dynamic array with ownership semantics
     function Vec(capacity) {
         this.data = new Array(capacity || 0);

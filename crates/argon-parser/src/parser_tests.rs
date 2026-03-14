@@ -1008,7 +1008,7 @@ mod completion_frontend_parsing {
     #[test]
     fn parses_for_of_statement() {
         // Assign
-        let source = "for (const item of items) { console.log(item); }";
+        let source = "for (const item of items) { println(item); }";
 
         // Act
         let result = parse(source);

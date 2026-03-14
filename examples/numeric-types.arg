@@ -10,20 +10,20 @@ const u32val: u32 = 4000000000;
 const f32val: f32 = 3.14159;
 const f64val: f64 = 3.14159265358979;
 
-console.log(i8val);
-console.log(i16val);
-console.log(i32val);
-console.log(i64val);
-console.log(u8val);
-console.log(u16val);
-console.log(u32val);
-console.log(f32val);
-console.log(f64val);
+println(i8val);
+println(i16val);
+println(i32val);
+println(i64val);
+println(u8val);
+println(u16val);
+println(u32val);
+println(f32val);
+println(f64val);
 
 const sum: i64 = i32val + u32val;
 const product: i32 = i16val * u8val;
 const quotient: f64 = f64val / 2.0;
 
-console.log(sum);
-console.log(product);
-console.log(quotient);
+println(sum);
+println(product);
+println(quotient);

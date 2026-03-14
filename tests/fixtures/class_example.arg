@@ -23,17 +23,17 @@ struct Counter {
 function main(): void {
     const counter = Counter { initial: 10 };
 
-    console.log("Initial value: " + counter.getValue());
+    println("Initial value: " + counter.getValue());
 
     counter.increment();
     counter.increment();
     counter.increment();
 
-    console.log("After 3 increments: " + counter.getValue());
+    println("After 3 increments: " + counter.getValue());
 
     counter.reset();
 
-    console.log("After reset: " + counter.getValue());
+    println("After reset: " + counter.getValue());
 }
 
 main();

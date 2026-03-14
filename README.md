@@ -16,7 +16,7 @@ function translate(p: &Point, dx: f64): Point {
 
 const origin = Point { x: 0.0, y: 0.0 };
 const moved = translate(&origin, 5.0);
-console.log(moved.x); // 5.0
+println(moved.x); // 5.0
 ```
 
 ```ts
@@ -38,7 +38,7 @@ struct Counter {
 
 const counter = Counter { initial: 0 };
 counter.increment();
-console.log(counter.getValue()); // 1
+println(counter.getValue()); // 1
 ```
 
 ## Getting Started
@@ -69,7 +69,7 @@ function greet(g: &Greeting): string {
 }
 
 const hello = Greeting { message: "Hello, Argon!" };
-console.log(greet(&hello));
+println(greet(&hello));
 ```
 
 ```bash
@@ -143,7 +143,7 @@ struct Color {
 }
 
 const red = Color { r: 255, g: 0, b: 0 };
-console.log(red.r);
+println(red.r);
 ```
 
 Structs can also have constructors, methods, and `implements`:
@@ -167,7 +167,7 @@ struct Counter {
 
 const counter = Counter { initial: 0 };
 counter.increment();
-console.log(counter.getValue()); // 1
+println(counter.getValue()); // 1
 ```
 
 The `with &this` and `with &mut this` annotations declare whether a method borrows `this` as shared or mutable — the compiler enforces these at call sites.
@@ -187,7 +187,7 @@ function consume(msg: Message): string {
 
 const m = Message { text: "hello" };
 consume(m);
-// console.log(m.text);  // ERROR: use after move
+// println(m.text);  // ERROR: use after move
 ```
 
 Primitives (`i32`, `f64`, `bool`, etc.) are copy types and can be freely reused.
@@ -203,7 +203,7 @@ function readX(p: &Point): f64 {
 
 const point = Point { x: 10.0, y: 20.0 };
 const ref = &point;
-console.log(readX(ref));
+println(readX(ref));
 ```
 
 ### Generics and type aliases
@@ -257,6 +257,17 @@ function reduceThree(a: i32, b: i32, c: i32, reducer: Reducer): i32 {
 }
 ```
 
+### Output
+
+Argon provides two built-in functions for console output:
+
+```ts
+print("hello ");   // outputs without trailing newline
+println("world");  // outputs with trailing newline
+```
+
+`print` writes text without a newline (like Rust's `print!`). `println` appends a newline (like Rust's `println!`).
+
 ### Control flow
 
 Argon supports `if`/`else`, `for`, `while`, `loop`, `switch`, `match`, `break`, `continue`:
@@ -298,10 +309,10 @@ try {
     }
     return 1;
 } catch (err) {
-    console.log(err);
+    println(err);
     return 0;
 } finally {
-    console.log("cleanup");
+    println("cleanup");
 }
 ```
 

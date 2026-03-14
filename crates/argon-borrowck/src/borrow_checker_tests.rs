@@ -789,7 +789,7 @@ mod error_messages {
     #[test]
     fn handles_use_after_move() {
         // Assign - literals are copyable so no error
-        let source = "const x = 5; const y = x; console.log(x);";
+        let source = "const x = 5; const y = x; println(x);";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
 
@@ -835,7 +835,7 @@ mod move_and_race_regressions {
     #[test]
     fn rejects_move_while_value_is_borrowed() {
         // Assign
-        let source = "const a = { x: 1 }; const r = &a; const b = a; console.log(r);";
+        let source = "const a = { x: 1 }; const r = &a; const b = a; println(r);";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
 
@@ -897,7 +897,7 @@ mod nll_like_regressions {
     fn allows_mutable_borrow_after_last_use_of_shared_borrow_binding() {
         // Assign
         let source =
-            "function f(a: i32): i32 { const r = &a; console.log(r); const m = &mut a; return 0; }";
+            "function f(a: i32): i32 { const r = &a; println(r); const m = &mut a; return 0; }";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
 
@@ -926,7 +926,7 @@ mod nll_like_regressions {
     fn rejects_mutable_borrow_when_shared_binding_is_used_later() {
         // Assign
         let source =
-            "function f(a: i32): i32 { const r = &a; const m = &mut a; console.log(r); return 0; }";
+            "function f(a: i32): i32 { const r = &a; const m = &mut a; println(r); return 0; }";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
 
@@ -954,7 +954,7 @@ mod nll_like_regressions {
     #[test]
     fn rejects_mutable_borrow_when_shared_borrow_may_live_on_else_path() {
         // Assign
-        let source = "function f(a: i32): i32 { const r = &a; if (flag) { const m = &mut a; } else { console.log(r); } return 0; }";
+        let source = "function f(a: i32): i32 { const r = &a; if (flag) { const m = &mut a; } else { println(r); } return 0; }";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
 
@@ -968,7 +968,7 @@ mod nll_like_regressions {
     #[test]
     fn allows_mutable_borrow_after_if_when_shared_binding_consumed_on_all_paths() {
         // Assign
-        let source = "function f(a: i32): i32 { const r = &a; if (flag) { console.log(r); } else { console.log(r); } const m = &mut a; return 0; }";
+        let source = "function f(a: i32): i32 { const r = &a; if (flag) { println(r); } else { println(r); } const m = &mut a; return 0; }";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
 
@@ -982,7 +982,7 @@ mod nll_like_regressions {
     #[test]
     fn allows_mutable_borrow_after_switch_when_shared_binding_consumed_on_all_paths() {
         // Assign
-        let source = "function f(a: i32): i32 { const r = &a; switch (flag) { case 0: console.log(r); break; default: console.log(r); } const m = &mut a; return 0; }";
+        let source = "function f(a: i32): i32 { const r = &a; switch (flag) { case 0: println(r); break; default: println(r); } const m = &mut a; return 0; }";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
 
@@ -996,7 +996,7 @@ mod nll_like_regressions {
     #[test]
     fn rejects_mutable_borrow_after_switch_without_default_when_binding_may_survive() {
         // Assign
-        let source = "function f(a: i32): i32 { const r = &a; switch (flag) { case 0: console.log(r); break; } const m = &mut a; console.log(r); return 0; }";
+        let source = "function f(a: i32): i32 { const r = &a; switch (flag) { case 0: println(r); break; } const m = &mut a; println(r); return 0; }";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
 
@@ -1010,7 +1010,7 @@ mod nll_like_regressions {
     #[test]
     fn allows_mutable_borrow_after_match_with_wildcard_consuming_binding_on_all_paths() {
         // Assign
-        let source = "function f(a: i32): i32 { const r = &a; match (flag) { 0 => console.log(r), _ => console.log(r), } const m = &mut a; return 0; }";
+        let source = "function f(a: i32): i32 { const r = &a; match (flag) { 0 => println(r), _ => println(r), } const m = &mut a; return 0; }";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
 
@@ -1024,7 +1024,7 @@ mod nll_like_regressions {
     #[test]
     fn allows_reusing_shared_reference_binding_without_move() {
         // Assign
-        let source = "function f(a: i32): i32 { const r = &a; console.log(r); console.log(r); const m = &mut a; return 0; }";
+        let source = "function f(a: i32): i32 { const r = &a; println(r); println(r); const m = &mut a; return 0; }";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
 
@@ -1039,7 +1039,7 @@ mod nll_like_regressions {
     fn rejects_mutable_borrow_after_while_when_shared_binding_only_used_in_loop() {
         // Assign
         let source =
-            "function f(a: i32): i32 { const r = &a; while (flag) { console.log(r); } const m = &mut a; return 0; }";
+            "function f(a: i32): i32 { const r = &a; while (flag) { println(r); } const m = &mut a; return 0; }";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
 
@@ -1054,7 +1054,7 @@ mod nll_like_regressions {
     fn allows_mutable_borrow_after_while_when_shared_binding_consumed_before_loop() {
         // Assign
         let source =
-            "function f(a: i32): i32 { const r = &a; console.log(r); while (flag) { const x = 1; } const m = &mut a; return 0; }";
+            "function f(a: i32): i32 { const r = &a; println(r); while (flag) { const x = 1; } const m = &mut a; return 0; }";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
 
@@ -1068,7 +1068,7 @@ mod nll_like_regressions {
     #[test]
     fn rejects_mutable_borrow_after_match_without_wildcard_when_binding_may_survive() {
         // Assign
-        let source = "function f(a: i32): i32 { const r = &a; match (flag) { 0 => console.log(r), } const m = &mut a; console.log(r); return 0; }";
+        let source = "function f(a: i32): i32 { const r = &a; match (flag) { 0 => println(r), } const m = &mut a; println(r); return 0; }";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
 
@@ -1171,7 +1171,7 @@ mod cross_function_borrow_regressions {
     #[test]
     fn rejects_using_helper_returned_borrow_after_mutable_reborrow() {
         // Assign
-        let source = "function passthrough(x: &i32): &i32 { return x; } function f(a: i32): i32 { const r = passthrough(&a); const m = &mut a; console.log(r); return 0; }";
+        let source = "function passthrough(x: &i32): &i32 { return x; } function f(a: i32): i32 { const r = passthrough(&a); const m = &mut a; println(r); return 0; }";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
 
@@ -1185,7 +1185,7 @@ mod cross_function_borrow_regressions {
     #[test]
     fn rejects_using_multi_source_helper_return_after_mutating_possible_source() {
         // Assign
-        let source = "function choose(a: &i32, b: &i32): &i32 { if (flag) { return a; } return b; } function f(a: i32, b: i32): i32 { const r = choose(&a, &b); const m = &mut a; console.log(r); return 0; }";
+        let source = "function choose(a: &i32, b: &i32): &i32 { if (flag) { return a; } return b; } function f(a: i32, b: i32): i32 { const r = choose(&a, &b); const m = &mut a; println(r); return 0; }";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
 

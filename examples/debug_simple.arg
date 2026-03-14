@@ -7,15 +7,15 @@ function guardedDivide(a: i32, b: i32): i32 {
         return a / b;
     } catch (err) {
         const captured = err;
-        console.log(captured);
+        println(captured);
         return 0;
     } finally {
         const cleanupDone = true;
-        console.log(cleanupDone);
+        println(cleanupDone);
     }
 
     return 0;
 }
 
-console.log(guardedDivide(10, 2));
-console.log(guardedDivide(10, 0));
+println(guardedDivide(10, 2));
+println(guardedDivide(10, 0));

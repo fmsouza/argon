@@ -2,9 +2,9 @@
 const x: i32 = 4;
 
 if (x > 3) {
-    console.log(1);
+    println(1);
 } else {
-    console.log(0);
+    println(0);
 }
 
 let whileSum: i32 = 0;
@@ -13,7 +13,7 @@ while (i < 3) {
     whileSum = whileSum + i;
     i = i + 1;
 }
-console.log(whileSum);
+println(whileSum);
 
 let forSum: i32 = 0;
 for (let j = 0; j < 4; j = j + 1) {
@@ -22,7 +22,7 @@ for (let j = 0; j < 4; j = j + 1) {
     }
     forSum = forSum + j;
 }
-console.log(forSum);
+println(forSum);
 
 let chosen: i32 = 0;
 switch (x) {
@@ -35,7 +35,7 @@ switch (x) {
     default:
         chosen = -1;
 }
-console.log(chosen);
+println(chosen);
 
 let loopCount: i32 = 0;
 loop {
@@ -44,4 +44,4 @@ loop {
         break;
     }
 }
-console.log(loopCount);
+println(loopCount);

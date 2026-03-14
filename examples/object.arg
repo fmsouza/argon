@@ -7,5 +7,5 @@ struct Config {
 const config: Config = { host: "localhost", port: 8080 };
 const payload = { value: 42, nested: { ok: true } };
 
-console.log(config.host);
-console.log(payload.value);
+println(config.host);
+println(payload.value);

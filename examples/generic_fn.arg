@@ -6,5 +6,5 @@ function identity<T>(value: T): T {
 const n = identity<i32>(42);
 const s = identity("argon");
 
-console.log(n);
-console.log(s);
+println(n);
+println(s);

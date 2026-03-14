@@ -11,5 +11,5 @@ export function readEnv(): string {
 
 const stateFactory = useState;
 const client = Axios;
-console.log(stateFactory);
-console.log(client);
+println(stateFactory);
+println(client);

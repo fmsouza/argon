@@ -127,7 +127,7 @@ mod type_checking {
     #[test]
     fn validates_function_call() {
         // Assign
-        let source = "function foo(): void { console.log('test'); }";
+        let source = "function foo(): void { println('test'); }";
         let ast = parse(source).unwrap();
         let mut checker = TypeChecker::new();
 

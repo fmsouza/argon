@@ -30,10 +30,10 @@ function main(): void {
     const p2 = createPoint(3.0, 4.0);
     const dist = distance(&p1, &p2);
     
-    console.log("Distance: " + dist);
+    println("Distance: " + dist);
     
     const circle = createCircle(0.0, 0.0, 5.0);
-    console.log("Circle radius: " + circle.radius);
+    println("Circle radius: " + circle.radius);
 }
 
 main();

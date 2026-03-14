@@ -92,16 +92,17 @@ impl Runtime {
     pub fn new() -> Self {
         let mut globals = HashMap::new();
 
-        let mut console_obj = HashMap::new();
-        console_obj.insert(
-            "log".to_string(),
+        globals.insert(
+            "print".to_string(),
             Value::NativeFunction(NativeFunction {
-                name: "console.log".to_string(),
+                name: "print".to_string(),
             }),
         );
         globals.insert(
-            "console".to_string(),
-            Value::Object(Rc::new(RefCell::new(console_obj))),
+            "println".to_string(),
+            Value::NativeFunction(NativeFunction {
+                name: "println".to_string(),
+            }),
         );
 
         let mut math_obj = HashMap::new();
@@ -907,7 +908,12 @@ impl Runtime {
 
     fn execute_native_function(&self, name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
         match name {
-            "console.log" => {
+            "print" => {
+                let output: Vec<String> = args.iter().map(|v| self.value_to_string(v)).collect();
+                print!("{}", output.join(" "));
+                Ok(Value::Undefined)
+            }
+            "println" => {
                 let output: Vec<String> = args.iter().map(|v| self.value_to_string(v)).collect();
                 println!("{}", output.join(" "));
                 Ok(Value::Undefined)

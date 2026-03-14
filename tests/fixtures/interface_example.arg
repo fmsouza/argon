@@ -100,7 +100,7 @@ function main(): void {
     shapes.push(Circle { x: 100.0, y: 100.0, radius: 50.0, color: "red" });
     shapes.push(Rectangle { x: 200.0, y: 200.0, width: 100.0, height: 50.0 });
 
-    console.log("Rendering shapes...");
+    println("Rendering shapes...");
     // renderAll(&shapes, &mut canvas);
 }
 

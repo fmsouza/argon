@@ -9,4 +9,4 @@ struct Point {
 }
 
 const p = Point { x: 3.0, y: 4.0 };
-console.log(p.lengthSquared());
+println(p.lengthSquared());

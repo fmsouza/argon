@@ -11,4 +11,4 @@ function addReducer(acc: i32, value: i32): i32 {
     return acc + value;
 }
 
-console.log(reduceThree(1, 2, 3, addReducer));
+println(reduceThree(1, 2, 3, addReducer));

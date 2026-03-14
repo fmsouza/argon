@@ -1,2 +1,2 @@
 const element = <span>Simple JSX</span>;
-console.log(element);
+println(element);

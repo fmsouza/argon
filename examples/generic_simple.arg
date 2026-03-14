@@ -5,4 +5,4 @@ struct Container<T> {
 
 type NumberContainer = Container<i32>;
 const container: NumberContainer = { value: 42 };
-console.log(container.value);
+println(container.value);

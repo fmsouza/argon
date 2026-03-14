@@ -6,4 +6,4 @@ let total = 0;
 for (const value of numbers) {
     total = total + value;
 }
-console.log(total);
+println(total);

@@ -14,4 +14,4 @@ function midpoint(a: Point, b: Point): Point {
 const p1 = Point { x: 0.0, y: 0.0 };
 const p2 = Point { x: 10.0, y: 20.0 };
 const mid = midpoint(p1, p2);
-console.log(mid.x);
+println(mid.x);

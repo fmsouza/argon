@@ -2,4 +2,4 @@
 enum Mode { Dev, Test, Prod }
 
 const mode = Mode.Dev;
-console.log(mode);
+println(mode);

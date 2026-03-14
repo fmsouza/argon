@@ -18,7 +18,7 @@ const labels: LabelList = ["alpha", "beta"];
 const mapper: Mapper = inc;
 const status = Status.Ready;
 
-console.log(id);
-console.log(labels[0]);
-console.log(mapper(4));
-console.log(status);
+println(id);
+println(labels[0]);
+println(mapper(4));
+println(status);
