@@ -1,8 +1,8 @@
 # Argon
 
-A TypeScript-like language with Rust-inspired ownership and borrowing, compiling to JavaScript and WebAssembly.
+A TypeScript-like language with Rust-inspired ownership and borrowing, compiling to JavaScript, WebAssembly, and native binaries.
 
-Argon gives you familiar syntax — structs, interfaces, generics, async/await — while the compiler enforces memory-safety rules at compile time. Write code that looks like TypeScript, get the safety guarantees of Rust, and run it anywhere JavaScript or WebAssembly runs.
+Argon gives you familiar syntax — structs, interfaces, generics, async/await — while the compiler enforces memory-safety rules at compile time. Write code that looks like TypeScript, get the safety guarantees of Rust, and compile to JavaScript, WebAssembly, or native executables.
 
 ```ts
 struct Point {
@@ -60,6 +60,8 @@ The `argon` binary will be at `target/release/argon`.
 Create a file called `hello.arg`:
 
 ```ts
+from "std:io" import { println };
+
 struct Greeting {
     message: string;
 }
@@ -80,6 +82,10 @@ argon check hello.arg
 argon compile hello.arg --target js -o hello.js
 node hello.js
 
+# Compile to a native executable
+argon compile hello.arg --target native -o hello
+./hello
+
 # Or run directly with the built-in runtime
 argon run hello.arg
 ```
@@ -90,13 +96,13 @@ argon run hello.arg
 argon repl
 ```
 
-The REPL supports multi-line input and has built-in commands: `:load <file>`, `:check`, `:compile [js|wasm]`, `:show`, `:reset`.
+The REPL supports multi-line input and has built-in commands: `:load <file>`, `:check`, `:compile [js|wasm|native]`, `:show`, `:reset`.
 
 ## CLI Reference
 
 | Command | Description |
 |---------|-------------|
-| `argon compile <file.arg>` | Compile to JS or WASM |
+| `argon compile <file.arg>` | Compile to JS, WASM, or native binary |
 | `argon check <file.arg>` | Type-check and borrow-check without emitting code |
 | `argon run <file.arg>` | Execute on the built-in AST runtime |
 | `argon test [--input file] [--directory path]` | Run test suites |
@@ -109,12 +115,15 @@ The REPL supports multi-line input and has built-in commands: `:load <file>`, `:
 
 | Flag | Description |
 |------|-------------|
-| `--target js\|wasm` | Output target (default: `js`) |
+| `--target js\|wasm\|native` | Output target (default: `js`) |
 | `--pipeline ast\|ir` | Compilation pipeline (default: `ir`, preferred) |
 | `-o <path>` | Output file path |
+| `--out-dir <path>` | Output directory (for multi-file projects) |
 | `--source-map` | Generate source maps (JS target) |
 | `--opt` | Enable optimization passes |
 | `--declarations` | Generate TypeScript `.d.ts` declarations |
+| `--triple <triple>` | Target triple for native compilation (implies `--target native`) |
+| `--emit exe\|obj\|asm` | Native emit format (default: `exe`) |
 
 ## Language Features
 
@@ -237,6 +246,44 @@ function useReader(reader: Reader): string {
 }
 ```
 
+### Skills (mixins)
+
+Skills are reusable behavior bundles that structs can embody. They can contain concrete methods (with a body), abstract methods (signature only), and required fields:
+
+```ts
+skill Bark {
+    bark(): void {
+        print("Woof!");
+    }
+}
+
+skill Greeter {
+    name: string;  // required field
+
+    greet(): void with &this {
+        print("Hi! My name is ");
+        println(this.name);
+    }
+}
+
+struct Dog embodies Bark {
+    breed: string;
+}
+
+struct Person embodies Bark, Greeter {
+    name: string;
+    age: i32;
+}
+
+const dog = Dog { breed: "Labrador" };
+dog.bark();  // "Woof!"
+
+const person = Person { name: "Alice", age: 30 };
+person.greet();  // "Hi! My name is Alice"
+```
+
+When a struct embodies a skill, concrete methods are automatically mixed in. The struct can override any skill method by providing its own implementation.
+
 ### Enums
 
 ```ts
@@ -256,17 +303,6 @@ function reduceThree(a: i32, b: i32, c: i32, reducer: Reducer): i32 {
     return reducer(acc, c);
 }
 ```
-
-### Output
-
-Argon provides two built-in functions for console output:
-
-```ts
-print("hello ");   // outputs without trailing newline
-println("world");  // outputs with trailing newline
-```
-
-`print` writes text without a newline (like Rust's `print!`). `println` appends a newline (like Rust's `println!`).
 
 ### Control flow
 
@@ -326,22 +362,77 @@ declare module "axios" {
     function get<T>(url: string): string;
 }
 
+from "axios" import Axios;
+
 @export
 function processImage(data: i32, width: i32, height: i32): i32 {
     return data + width + height;
 }
 ```
 
-### ES modules
+### Imports and modules
+
+Argon uses a `from ... import` syntax for all imports:
 
 ```ts
-import axios from "axios";
-import { useState } from "react";
+// Import from the standard library
+from "std:io" import { println };
+from "std:math" import { sqrt, PI, sin, cos };
 
-export function readEnv(): string {
-    return "/api";
-}
+// Import from other Argon files
+from "./math" import { add, multiply };
+
+// Namespace import
+from "./utils" import Utils;
+
+// Import from external packages (e.g. npm)
+from "axios" import Axios;
+
+// Side-effect import
+from "reflect-metadata" import;
+
+// Re-export
+export { add, multiply } from "./math";
 ```
+
+Multi-file projects can be compiled with `--out-dir`:
+
+```bash
+argon compile src/main.arg --target js --out-dir dist/
+```
+
+## Standard Library
+
+Argon ships with a standard library written in `.arg` files, imported via `std:` module paths:
+
+### `std:io`
+
+```ts
+from "std:io" import { print, println };
+
+print("hello ");   // outputs without trailing newline
+println("world");  // outputs with trailing newline
+```
+
+### `std:math`
+
+```ts
+from "std:math" import { sqrt, PI, abs, floor, ceil, sin, cos, pow, max, min, clamp };
+
+println(sqrt(16.0));       // 4
+println(PI);               // 3.14159...
+println(abs(-42.0));       // 42
+println(max(10.0, 20.0));  // 20
+println(clamp(15.0, 0.0, 10.0)); // 10
+```
+
+Available functions: `abs`, `floor`, `ceil`, `round`, `trunc`, `sign`, `min`, `max`, `clamp`, `sqrt`, `cbrt`, `pow`, `hypot`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `log`, `log2`, `log10`, `exp`.
+
+Constants: `PI`, `E`, `TAU`, `LN2`, `LN10`, `SQRT2`.
+
+### Prelude types
+
+These types are available without an import: `Vec<T>`, `Some<T>`, `None`, `Ok<T,E>`, `Err<T,E>`, `Shared<T>`, `Map<K,V>`, `Set<T>`.
 
 ## Compilation Targets
 
@@ -371,6 +462,32 @@ This produces three files:
 
 The WASM target supports numeric operations, control flow, function calls, branching, loops, array indexing, heap-backed object access, structured `try`/`catch`/`finally`, async/await (lowered synchronously), and direct function imports. Features outside this subset fail at compile time with a clear error.
 
+### Native
+
+Produces OS-executable binaries using Cranelift as the backend. Works like Rust's compilation model — target triples specify the OS/arch:
+
+```bash
+# Compile for the current platform
+argon compile app.arg --target native -o app
+./app
+
+# Cross-compile (generates .o, requires manual linking)
+argon compile app.arg --target native --triple x86_64-unknown-linux-gnu --emit obj
+
+# Emit assembly
+argon compile app.arg --target native --emit asm -o app.s
+```
+
+When no `--triple` is specified, the compiler targets the host OS and architecture. The native target supports:
+- Arithmetic, comparisons, and logical operators
+- Variables, constants, and global initialization
+- Functions, recursion, and return values
+- Control flow: `if`/`else`, `while`, `for`, `loop`, `break`, `continue`, `switch`
+- `print`/`println` with numbers, booleans, and strings
+- Math intrinsics via libc (`sin`, `cos`, `sqrt`, `pow`, etc.)
+
+Supported platforms: macOS (aarch64, x86_64), Linux (aarch64, x86_64), Windows (x86_64). A C compiler (`cc` or `link.exe`) is required for linking.
+
 ## How the Compiler Works
 
 Argon runs a fixed multi-stage pipeline:
@@ -395,8 +512,9 @@ Source (.arg)
     |
     v
  Code Generator
-    |── JS backend ──── ES2022 JavaScript + source maps + .d.ts
-    |── WASM backend ── Native .wasm + .mjs loader + .host.mjs companion
+    |── JS backend ────── ES2022 JavaScript + source maps + .d.ts
+    |── WASM backend ──── .wasm + .mjs loader + .host.mjs companion
+    |── Native backend ── Machine code via Cranelift + system linker
 ```
 
 The `--pipeline ir` path (default) lowers through the IR for optimization. The `--pipeline ast` path generates code directly from the AST.
@@ -405,24 +523,26 @@ For `argon run`, the type-checked and borrow-checked AST is executed directly by
 
 ### Workspace layout
 
-The compiler is organized as a Rust workspace with 14 crates:
+The compiler is organized as a Rust workspace with 16 crates:
 
 ```
 crates/
-  argon-cli            CLI entrypoint and commands
-  argon-driver         Pipeline orchestration
-  argon-lexer          Tokenization
-  argon-parser         AST parsing
-  argon-ast            AST node definitions
-  argon-types          Type checker and type model
-  argon-borrowck       Ownership and borrow checking
-  argon-ir             IR representation and optimization passes
-  argon-codegen-js     JavaScript code generation
-  argon-codegen-wasm   WebAssembly code generation
-  argon-runtime        AST interpreter for `argon run`
-  argon-interop        JS/WASM interop helpers
-  argon-stdlib         Runtime standard library
-  argon-diagnostics    Error reporting and rendering
+  argon-cli              CLI entrypoint and commands
+  argon-driver           Pipeline orchestration
+  argon-lexer            Tokenization
+  argon-parser           AST parsing
+  argon-ast              AST node definitions
+  argon-types            Type checker and type model
+  argon-borrowck         Ownership and borrow checking
+  argon-ir               IR representation and optimization passes
+  argon-codegen-js       JavaScript code generation
+  argon-codegen-wasm     WebAssembly code generation
+  argon-codegen-native   Native code generation via Cranelift
+  argon-target           Target triple abstraction and host detection
+  argon-runtime          AST interpreter for `argon run`
+  argon-interop          JS/WASM interop helpers
+  argon-stdlib           Standard library (.arg source files)
+  argon-diagnostics      Error reporting and rendering
 ```
 
 ## Contributing
@@ -448,8 +568,11 @@ for f in examples/*.arg; do argon check "$f"; done
 # Run an example
 argon run examples/collections.arg
 
-# Compile and execute
+# Compile to JS and execute
 argon compile examples/control-flow.arg --target js -o /tmp/out.js && node /tmp/out.js
+
+# Compile to native and execute
+argon compile examples/arithmetic.arg --target native -o /tmp/arithmetic && /tmp/arithmetic
 ```
 
 Key examples by topic:
@@ -458,7 +581,10 @@ Key examples by topic:
 - **Generics:** `generic_simple.arg`, `generic_fn.arg`, `generic_struct.arg`
 - **Control flow:** `control-flow.arg`, `match.arg`, `try-catch.arg`, `recursion.arg`
 - **Type system:** `interface.arg`, `enum.arg`, `type_test.arg`
-- **Interop:** `interop.arg`, `esm.arg`
+- **Skills:** `skills.arg`
+- **Standard library:** `std_math.arg`, `arithmetic.arg`
+- **Multi-file:** `modules/main.arg`
+- **Interop:** `interop.arg`
 - **WASM:** `wasm-subset.arg`
 
 ## License
