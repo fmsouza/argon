@@ -214,14 +214,18 @@ impl Runtime {
                 Ok(ExecOutcome::Normal)
             }
             Stmt::Function(f) | Stmt::AsyncFunction(f) => {
-                if let Some(id) = &f.id {
-                    let func = self.function_value(f, self.scope.clone());
-                    self.scope.define(id.sym.clone(), Value::Function(func));
+                if !f.is_intrinsic {
+                    if let Some(id) = &f.id {
+                        let func = self.function_value(f, self.scope.clone());
+                        self.scope.define(id.sym.clone(), Value::Function(func));
+                    }
                 }
                 Ok(ExecOutcome::Normal)
             }
             Stmt::Struct(s) => {
-                self.register_struct(s);
+                if !s.is_intrinsic {
+                    self.register_struct(s);
+                }
                 Ok(ExecOutcome::Normal)
             }
             Stmt::Skill(sk) => {
@@ -410,7 +414,8 @@ impl Runtime {
                 }
                 Ok(outcome)
             }
-            Stmt::Export(_)
+            Stmt::Import(_)
+            | Stmt::Export(_)
             | Stmt::Interface(_)
             | Stmt::TypeAlias(_)
             | Stmt::Empty(_)
@@ -1180,9 +1185,15 @@ fn detect_compile_only_feature_in_source(source: &SourceFile) -> Option<&'static
 
 fn detect_compile_only_feature_in_stmt(stmt: &Stmt) -> Option<&'static str> {
     match stmt {
-        Stmt::Import(_) => Some(
-            "ES module imports are not supported by `argon run`; use `argon compile --target js` instead",
-        ),
+        Stmt::Import(i) => {
+            // std:* imports are no-ops at runtime (symbols are built-in globals)
+            let source = i.source.value.trim_matches('"').trim_matches('\'');
+            if source.starts_with("std:") {
+                None
+            } else {
+                Some("ES module imports are not supported by `argon run`; use `argon compile --target js` instead")
+            }
+        }
         Stmt::Module(_) => Some(
             "interop module declarations are not supported by `argon run`; use `argon check` or `argon compile` instead",
         ),

@@ -1,4 +1,7 @@
 // Struct method with `with &this`
+
+from "std:io" import { println };
+
 struct Point {
     x: f64;
     y: f64;

@@ -1,4 +1,7 @@
 // Generic struct with method
+
+from "std:io" import { println };
+
 struct Wrapper<T> {
     value: T;
 

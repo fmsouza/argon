@@ -1,4 +1,7 @@
 // Generic struct + alias + object literal assignment
+
+from "std:io" import { println };
+
 struct Container<T> {
     value: T;
 }

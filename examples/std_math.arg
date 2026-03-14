@@ -1,0 +1,14 @@
+// Example: using the std:math and std:io modules
+from "std:io" import { println };
+from "std:math" import { sqrt, PI, abs, floor, sin, cos, max, min };
+
+const radius: f64 = 5.0;
+const area: f64 = PI * radius * radius;
+println(area);
+println(sqrt(16.0));
+println(abs(-42.0));
+println(floor(3.7));
+println(sin(PI / 2.0));
+println(cos(0.0));
+println(max(10.0, 20.0));
+println(min(10.0, 20.0));

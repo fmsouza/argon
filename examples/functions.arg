@@ -1,4 +1,7 @@
 // Function types and higher-order functions
+
+from "std:io" import { println };
+
 type Reducer = (acc: i32, value: i32) => i32;
 
 function reduceThree(a: i32, b: i32, c: i32, reducer: Reducer): i32 {

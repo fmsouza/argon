@@ -1,4 +1,6 @@
 // Multi-module example: importing from other argon files
+
+from "std:io" import { println };
 from "./math" import { add, multiply, PI };
 from "./utils" import Utils;
 

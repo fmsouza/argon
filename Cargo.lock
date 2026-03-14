@@ -156,7 +156,6 @@ dependencies = [
  "argon-interop",
  "argon-ir",
  "argon-parser",
- "argon-stdlib",
  "indexmap",
  "insta",
  "proptest",
@@ -205,6 +204,7 @@ dependencies = [
  "argon-diagnostics",
  "argon-ir",
  "argon-parser",
+ "argon-stdlib",
  "argon-types",
  "tempfile",
  "thiserror",
@@ -285,13 +285,6 @@ dependencies = [
 [[package]]
 name = "argon-stdlib"
 version = "0.1.0"
-dependencies = [
- "argon-ast",
- "argon-types",
- "indexmap",
- "proptest",
- "thiserror",
-]
 
 [[package]]
 name = "argon-types"

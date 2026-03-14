@@ -1,5 +1,7 @@
 // Arrays and indexed access
 
+from "std:io" import { println };
+
 const numbers: i32[] = [2, 4, 6, 8];
 
 let total = 0;

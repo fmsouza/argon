@@ -5,12 +5,3 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-
-[dependencies]
-argon-ast = { path = "../argon-ast" }
-argon-types = { path = "../argon-types" }
-indexmap.workspace = true
-thiserror.workspace = true
-
-[dev-dependencies]
-proptest.workspace = true

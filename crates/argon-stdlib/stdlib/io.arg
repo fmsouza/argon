@@ -1,0 +1,8 @@
+// Argon Standard Library - I/O
+// Usage: from "std:io" import { print, println };
+
+@intrinsic
+export function print(value: any): void;
+
+@intrinsic
+export function println(value: any): void;

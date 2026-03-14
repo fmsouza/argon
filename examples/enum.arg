@@ -1,4 +1,7 @@
 // Enum declaration and member access
+
+from "std:io" import { println };
+
 enum Mode { Dev, Test, Prod }
 
 const mode = Mode.Dev;

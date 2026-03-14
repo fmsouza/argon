@@ -2852,10 +2852,14 @@ impl BorrowChecker {
                 self.check_variable(v)?;
             }
             Stmt::Function(f) => {
-                self.check_function(f)?;
+                if !f.is_intrinsic {
+                    self.check_function(f)?;
+                }
             }
             Stmt::AsyncFunction(f) => {
-                self.check_function(f)?;
+                if !f.is_intrinsic {
+                    self.check_function(f)?;
+                }
             }
             Stmt::Block(b) => {
                 self.check_block(b)?;
@@ -2886,12 +2890,14 @@ impl BorrowChecker {
                 self.check_match(m)?;
             }
             Stmt::Struct(s) => {
-                for method in &s.methods {
-                    self.check_function(&method.value)?;
-                }
-                if let Some(constructor) = &s.constructor {
-                    for stmt in &constructor.body.statements {
-                        self.check_statement(stmt)?;
+                if !s.is_intrinsic {
+                    for method in &s.methods {
+                        self.check_function(&method.value)?;
+                    }
+                    if let Some(constructor) = &s.constructor {
+                        for stmt in &constructor.body.statements {
+                            self.check_statement(stmt)?;
+                        }
                     }
                 }
             }

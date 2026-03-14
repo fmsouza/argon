@@ -1,4 +1,7 @@
 // Structs with constructors, methods, and borrow annotations
+
+from "std:io" import { println };
+
 struct Counter {
     value: i32;
 

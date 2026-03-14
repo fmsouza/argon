@@ -1,4 +1,7 @@
 // Ownership and move semantics
+
+from "std:io" import { println };
+
 struct Message {
     text: string;
 }

@@ -1,4 +1,7 @@
 // Generic struct with method
+
+from "std:io" import { println };
+
 struct Pair<T> {
     left: T;
     right: T;

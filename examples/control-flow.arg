@@ -1,4 +1,7 @@
 // if/else, while, for, switch, and loop
+
+from "std:io" import { println };
+
 const x: i32 = 4;
 
 if (x > 3) {

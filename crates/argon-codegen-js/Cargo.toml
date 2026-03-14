@@ -10,7 +10,6 @@ repository.workspace = true
 argon-ir = { path = "../argon-ir" }
 argon-ast = { path = "../argon-ast" }
 argon-interop = { path = "../argon-interop" }
-argon-stdlib = { path = "../argon-stdlib" }
 argon-diagnostics = { path = "../argon-diagnostics" }
 indexmap.workspace = true
 smallvec.workspace = true

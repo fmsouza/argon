@@ -1,0 +1,93 @@
+// Argon Standard Library - Math
+// Usage: from "std:math" import { sqrt, PI, ... };
+
+// --- Rounding & Truncation ---
+
+@intrinsic
+export function abs(x: f64): f64;
+
+@intrinsic
+export function floor(x: f64): f64;
+
+@intrinsic
+export function ceil(x: f64): f64;
+
+@intrinsic
+export function round(x: f64): f64;
+
+@intrinsic
+export function trunc(x: f64): f64;
+
+@intrinsic
+export function sign(x: f64): f64;
+
+// --- Min / Max / Clamp ---
+
+@intrinsic
+export function min(a: f64, b: f64): f64;
+
+@intrinsic
+export function max(a: f64, b: f64): f64;
+
+@intrinsic
+export function clamp(x: f64, lo: f64, hi: f64): f64;
+
+// --- Powers & Roots ---
+
+@intrinsic
+export function sqrt(x: f64): f64;
+
+@intrinsic
+export function cbrt(x: f64): f64;
+
+@intrinsic
+export function pow(base: f64, exp: f64): f64;
+
+@intrinsic
+export function hypot(x: f64, y: f64): f64;
+
+// --- Trigonometry ---
+
+@intrinsic
+export function sin(x: f64): f64;
+
+@intrinsic
+export function cos(x: f64): f64;
+
+@intrinsic
+export function tan(x: f64): f64;
+
+@intrinsic
+export function asin(x: f64): f64;
+
+@intrinsic
+export function acos(x: f64): f64;
+
+@intrinsic
+export function atan(x: f64): f64;
+
+@intrinsic
+export function atan2(y: f64, x: f64): f64;
+
+// --- Logarithms & Exponentials ---
+
+@intrinsic
+export function log(x: f64): f64;
+
+@intrinsic
+export function log2(x: f64): f64;
+
+@intrinsic
+export function log10(x: f64): f64;
+
+@intrinsic
+export function exp(x: f64): f64;
+
+// --- Constants ---
+
+export const PI: f64 = 3.141592653589793;
+export const E: f64 = 2.718281828459045;
+export const TAU: f64 = 6.283185307179586;
+export const LN2: f64 = 0.6931471805599453;
+export const LN10: f64 = 2.302585092994046;
+export const SQRT2: f64 = 1.4142135623730951;

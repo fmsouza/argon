@@ -1,2 +1,4 @@
+from "std:io" import { println };
+
 const element = <span>Simple JSX</span>;
 println(element);

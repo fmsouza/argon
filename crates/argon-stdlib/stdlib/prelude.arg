@@ -1,0 +1,95 @@
+// Argon Standard Library - Prelude
+// Available in every module without importing.
+
+// --- Core Collection Types ---
+
+@intrinsic
+export struct Vec<T> {
+    push(item: T): usize with &mut this;
+    pop(): T with &mut this;
+    get(index: usize): T with &this;
+    set(index: usize, value: T): void with &mut this;
+    len(): usize with &this;
+    isEmpty(): bool with &this;
+    clear(): void with &mut this;
+    map<U>(fn: (item: T, index: usize) => U): Vec<U> with &this;
+    filter(fn: (item: T, index: usize) => bool): Vec<T> with &this;
+    reduce<U>(fn: (acc: U, item: T, index: usize) => U, initial: U): U with &this;
+}
+
+// --- Optional Value ---
+
+@intrinsic
+export struct Some<T> {
+    value: T;
+    isSome(): bool with &this;
+    isNone(): bool with &this;
+    unwrap(): T with &this;
+    unwrapOr(default: T): T with &this;
+    map<U>(fn: (value: T) => U): Some<U> with &this;
+}
+
+@intrinsic
+export struct None {
+    isSome(): bool with &this;
+    isNone(): bool with &this;
+    unwrap(): void with &this;
+    unwrapOr<T>(default: T): T with &this;
+    map<U>(fn: (value: any) => U): None with &this;
+}
+
+// --- Result Type ---
+
+@intrinsic
+export struct Ok<T, E> {
+    value: T;
+    isOk(): bool with &this;
+    isErr(): bool with &this;
+    unwrap(): T with &this;
+    unwrapErr(): void with &this;
+    map<U>(fn: (value: T) => U): Ok<U, E> with &this;
+    mapErr<F>(fn: (error: E) => F): Ok<T, F> with &this;
+}
+
+@intrinsic
+export struct Err<T, E> {
+    error: E;
+    isOk(): bool with &this;
+    isErr(): bool with &this;
+    unwrap(): void with &this;
+    unwrapErr(): E with &this;
+    map<U>(fn: (value: T) => U): Err<U, E> with &this;
+    mapErr<F>(fn: (error: E) => F): Err<T, F> with &this;
+}
+
+// --- Shared Ownership ---
+
+@intrinsic
+export struct Shared<T> {
+    clone(): Shared<T> with &this;
+    drop(): bool with &mut this;
+    get(): T with &this;
+    set(value: T): void with &mut this;
+}
+
+// --- Map and Set ---
+
+@intrinsic
+export struct Map<K, V> {
+    set(key: K, value: V): Map<K, V> with &mut this;
+    get(key: K): V with &this;
+    has(key: K): bool with &this;
+    delete(key: K): bool with &mut this;
+    len(): usize with &this;
+    keys(): Vec<K> with &this;
+    values(): Vec<V> with &this;
+}
+
+@intrinsic
+export struct Set<T> {
+    add(value: T): Set<T> with &mut this;
+    has(value: T): bool with &this;
+    delete(value: T): bool with &mut this;
+    len(): usize with &this;
+    values(): Vec<T> with &this;
+}

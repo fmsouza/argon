@@ -1,4 +1,6 @@
 // Argon module syntax
+
+from "std:io" import { println };
 from "reflect-metadata" import;
 from "axios" import Axios;
 from "react" import { useState };

@@ -1,5 +1,7 @@
 // Skills - mixin system for structs
 
+from "std:io" import { print, println };
+
 skill Bark {
     bark(): void {
         print("Woof!");

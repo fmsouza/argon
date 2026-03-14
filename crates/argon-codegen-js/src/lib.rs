@@ -2,7 +2,9 @@
 
 use argon_ast::*;
 use argon_ir::*;
-use argon_stdlib::StdLib;
+
+mod runtime;
+mod std_intrinsics;
 
 pub struct JsCodegen {
     output: String,
@@ -64,7 +66,7 @@ impl JsCodegen {
 
         if self.include_runtime {
             // Runtime is currently an IIFE; in ESM contexts this must run with `globalThis` (handled in stdlib).
-            let runtime = StdLib::get_runtime();
+            let runtime = runtime::get_runtime();
             self.output.push_str(runtime);
             self.output.push('\n');
         }
@@ -376,7 +378,7 @@ impl JsCodegen {
         }
 
         let runtime_line_count = if self.include_runtime {
-            let runtime = StdLib::get_runtime();
+            let runtime = runtime::get_runtime();
             self.output.push_str(runtime);
             self.output.push('\n');
             runtime.lines().count() + 1
@@ -1962,8 +1964,11 @@ impl JsCodegen {
     fn generate_statement(&mut self, stmt: &Stmt) -> Result<(), CodegenError> {
         match stmt {
             Stmt::Variable(v) => self.generate_variable(v),
+            Stmt::Function(f) if f.is_intrinsic => Ok(()),
             Stmt::Function(f) => self.generate_function(f),
+            Stmt::AsyncFunction(f) if f.is_intrinsic => Ok(()),
             Stmt::AsyncFunction(f) => self.generate_async_function(f),
+            Stmt::Struct(s) if s.is_intrinsic => Ok(()),
             Stmt::Struct(s) => self.generate_struct(s),
             Stmt::Enum(e) => self.generate_enum(e, false),
             Stmt::Expr(e) => {
@@ -2034,6 +2039,18 @@ impl JsCodegen {
     fn generate_import(&mut self, import: &argon_ast::ImportStmt) -> Result<(), CodegenError> {
         if import.is_type_only {
             return Ok(());
+        }
+
+        // Check for std:* imports — rewrite to JS platform equivalents
+        let raw = import.source.value.trim();
+        let spec = raw
+            .trim_start_matches('"')
+            .trim_end_matches('"')
+            .trim_start_matches('\'')
+            .trim_end_matches('\'');
+
+        if let Some(module_name) = spec.strip_prefix("std:") {
+            return self.generate_std_import(module_name, import);
         }
 
         if import.specifiers.is_empty() {
@@ -2109,6 +2126,54 @@ impl JsCodegen {
         Ok(())
     }
 
+    /// Generate JS bindings for a `std:*` import.
+    /// Maps each imported symbol to its JS platform equivalent.
+    fn generate_std_import(
+        &mut self,
+        module_name: &str,
+        import: &argon_ast::ImportStmt,
+    ) -> Result<(), CodegenError> {
+        for spec in &import.specifiers {
+            match spec {
+                argon_ast::ImportSpecifier::Named(n) => {
+                    let imported = &n.imported.sym;
+                    let local = n
+                        .local
+                        .as_ref()
+                        .map(|ident| ident.sym.as_str())
+                        .unwrap_or(imported.as_str());
+
+                    if let Some(js_expr) = std_intrinsics::js_intrinsic(module_name, imported) {
+                        // Skip binding when the JS expression is already the same global name
+                        if local != js_expr {
+                            // std:* imports are always at module scope (no indent)
+                            self.output.push_str("const ");
+                            self.output.push_str(local);
+                            self.output.push_str(" = ");
+                            self.output.push_str(js_expr);
+                            self.output.push_str(";\n");
+                            self.add_line();
+                        }
+                    } else if let Some(polyfill) =
+                        std_intrinsics::js_polyfill(module_name, imported)
+                    {
+                        // std:* imports are always at module scope (no indent)
+                        self.output.push_str("const ");
+                        self.output.push_str(local);
+                        self.output.push_str(" = ");
+                        self.output.push_str(polyfill);
+                        self.output.push_str(";\n");
+                        self.add_line();
+                    }
+                }
+                argon_ast::ImportSpecifier::Namespace(_) | argon_ast::ImportSpecifier::Default(_) => {
+                    // Namespace/default imports from std modules are not supported yet
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn generate_export(&mut self, export: &argon_ast::ExportStmt) -> Result<(), CodegenError> {
         if export.is_type_only {
             return Ok(());
@@ -2116,14 +2181,17 @@ impl JsCodegen {
 
         if let Some(ref decl) = export.declaration {
             match decl.as_ref() {
+                Stmt::Function(f) if f.is_intrinsic => {}
                 Stmt::Function(f) => {
                     self.output.push_str("export ");
                     self.generate_function(f)?;
                 }
+                Stmt::AsyncFunction(f) if f.is_intrinsic => {}
                 Stmt::AsyncFunction(f) => {
                     self.output.push_str("export ");
                     self.generate_async_function(f)?;
                 }
+                Stmt::Struct(s) if s.is_intrinsic => {}
                 Stmt::Struct(s) => {
                     self.output.push_str("export ");
                     self.generate_struct(s)?;

@@ -1,4 +1,7 @@
 // Regular struct usage
+
+from "std:io" import { println };
+
 struct Point {
     x: f64;
     y: f64;

@@ -292,6 +292,32 @@ impl Parser {
                     Err(self.parser_error_here("Expected 'declare' after '@js-interop' decorator"))
                 }
             }
+            "intrinsic" => {
+                let stmt = self.parse_statement()?;
+                match stmt {
+                    Stmt::Function(mut f) => {
+                        f.is_intrinsic = true;
+                        Ok(Stmt::Function(f))
+                    }
+                    Stmt::Struct(mut s) => {
+                        s.is_intrinsic = true;
+                        Ok(Stmt::Struct(s))
+                    }
+                    Stmt::Export(mut e) => {
+                        if let Some(ref mut decl) = e.declaration {
+                            match **decl {
+                                Stmt::Function(ref mut f) => f.is_intrinsic = true,
+                                Stmt::Struct(ref mut s) => s.is_intrinsic = true,
+                                _ => {}
+                            }
+                        }
+                        Ok(Stmt::Export(e))
+                    }
+                    _ => Err(self.parser_error_prev(
+                        "@intrinsic can only be applied to functions or structs",
+                    )),
+                }
+            }
             other => Err(self.parser_error_prev(format!("Unsupported decorator '@{}'", other))),
         }
     }
@@ -557,6 +583,26 @@ impl Parser {
 
         let borrow_annotation = self.parse_borrow_annotation()?;
 
+        // Allow bodyless functions terminated by `;` (used by @intrinsic declarations)
+        if self.match_one(&[TokenKind::Semi]) {
+            let stmt_end = self.previous().span.end;
+            let body = FunctionBody {
+                statements: vec![],
+                span: stmt_end..stmt_end,
+            };
+            return Ok(Stmt::Function(FunctionDecl {
+                id: Some(id),
+                params,
+                body,
+                type_params,
+                return_type,
+                is_async: false,
+                is_intrinsic: false,
+                borrow_annotation,
+                span: stmt_start..stmt_end,
+            }));
+        }
+
         self.expect(TokenKind::OpenBrace)?;
         let body_start = self.previous().span.start;
 
@@ -580,6 +626,7 @@ impl Parser {
             type_params,
             return_type,
             is_async: false,
+            is_intrinsic: false,
             borrow_annotation,
             span: stmt_start..stmt_end,
         }))
@@ -661,6 +708,7 @@ impl Parser {
             type_params,
             return_type,
             is_async: true,
+            is_intrinsic: false,
             borrow_annotation,
             span: stmt_start..stmt_end,
         }))
@@ -1286,6 +1334,7 @@ impl Parser {
             constructor,
             implements,
             embodies,
+            is_intrinsic: false,
             span: start..end,
         }))
     }
@@ -1375,6 +1424,7 @@ impl Parser {
                             type_params,
                             return_type,
                             is_async: false,
+                            is_intrinsic: false,
                             borrow_annotation,
                             span: start..end,
                         },
@@ -1749,17 +1799,31 @@ impl Parser {
         // Parse borrow annotation (e.g., "with &mut this")
         let borrow_annotation = self.parse_borrow_annotation()?;
 
-        let body_stmt = match self.parse_statement()? {
-            Stmt::Block(b) => b,
-            _ => return Err(self.parser_error_prev("method body must be a block")),
+        // Allow bodyless methods terminated by `;` (used by @intrinsic struct declarations)
+        let (body, end) = if self.match_one(&[TokenKind::Semi]) {
+            let end = self.previous().span.end;
+            (
+                argon_ast::FunctionBody {
+                    statements: vec![],
+                    span: end..end,
+                },
+                end,
+            )
+        } else {
+            let body_stmt = match self.parse_statement()? {
+                Stmt::Block(b) => b,
+                _ => return Err(self.parser_error_prev("method body must be a block")),
+            };
+            let end = self.previous().span.end;
+            (
+                argon_ast::FunctionBody {
+                    statements: body_stmt.statements,
+                    span: body_stmt.span,
+                },
+                end,
+            )
         };
 
-        let body = argon_ast::FunctionBody {
-            statements: body_stmt.statements,
-            span: body_stmt.span,
-        };
-
-        let end = self.previous().span.end;
         Ok(MethodDefinition {
             key,
             value: FunctionDecl {
@@ -1769,6 +1833,7 @@ impl Parser {
                 type_params,
                 return_type,
                 is_async: false,
+                is_intrinsic: false,
                 borrow_annotation,
                 span: start..end,
             },

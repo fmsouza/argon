@@ -1,4 +1,7 @@
 // Generic functions with inferred and explicit type arguments
+
+from "std:io" import { println };
+
 function identity<T>(value: T): T {
     return value;
 }

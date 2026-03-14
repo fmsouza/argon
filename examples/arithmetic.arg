@@ -1,4 +1,7 @@
 // Arithmetic and comparison basics
+
+from "std:io" import { println };
+
 const a: i32 = 21;
 const b: i32 = 6;
 

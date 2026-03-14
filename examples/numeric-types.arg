@@ -1,5 +1,7 @@
 // Numeric primitive coverage
 
+from "std:io" import { println };
+
 const i8val: i8 = 127;
 const i16val: i16 = 32767;
 const i32val: i32 = 2147483647;

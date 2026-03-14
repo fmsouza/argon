@@ -303,9 +303,16 @@ impl IrBuilder {
 
         for stmt in &source.statements {
             match stmt {
-                Stmt::Function(f) => self.translate_function(f, false)?,
-                Stmt::AsyncFunction(f) => self.translate_function(f, true)?,
-                Stmt::Struct(s) => self.translate_struct(s)?,
+                Stmt::Function(f) if !f.is_intrinsic => {
+                    self.translate_function(f, false)?
+                }
+                Stmt::AsyncFunction(f) if !f.is_intrinsic => {
+                    self.translate_function(f, true)?
+                }
+                Stmt::Struct(s) if !s.is_intrinsic => self.translate_struct(s)?,
+                Stmt::Function(_) | Stmt::AsyncFunction(_) | Stmt::Struct(_) => {
+                    // Skip intrinsic declarations - they have no body to lower
+                }
                 Stmt::Enum(e) => self.translate_enum(e)?,
                 Stmt::Variable(v) => {
                     self.translate_global_variable_stmt(v)?;
@@ -389,7 +396,9 @@ impl IrBuilder {
                         "exported function must have a name".to_string(),
                     ));
                 }
-                self.translate_function(f, false)?;
+                if !f.is_intrinsic {
+                    self.translate_function(f, false)?;
+                }
                 Ok(vec![name])
             }
             Stmt::AsyncFunction(f) => {
@@ -399,11 +408,16 @@ impl IrBuilder {
                         "exported function must have a name".to_string(),
                     ));
                 }
-                self.translate_function(f, true)?;
+                if !f.is_intrinsic {
+                    self.translate_function(f, true)?;
+                }
                 Ok(vec![name])
             }
             Stmt::Struct(s) => {
                 let name = s.id.sym.clone();
+                if s.is_intrinsic {
+                    return Ok(vec![name]);
+                }
                 self.translate_struct(s)?;
                 Ok(vec![name])
             }

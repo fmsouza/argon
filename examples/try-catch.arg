@@ -1,4 +1,7 @@
 // Structured error handling
+
+from "std:io" import { println };
+
 function recoverOrDefault(flag: bool): i32 {
     try {
         if (flag) {

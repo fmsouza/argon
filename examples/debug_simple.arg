@@ -1,4 +1,7 @@
 // try/catch/finally
+
+from "std:io" import { println };
+
 function guardedDivide(a: i32, b: i32): i32 {
     try {
         if (b == 0) {

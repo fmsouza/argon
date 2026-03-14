@@ -1,4 +1,7 @@
 // Type declarations currently supported by checker
+
+from "std:io" import { println };
+
 type UserId = i32;
 type LabelList = string[];
 type Mapper = (x: i32) => i32;

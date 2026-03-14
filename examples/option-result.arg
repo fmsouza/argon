@@ -1,4 +1,7 @@
 // Option/Result-style tagged unions
+
+from "std:io" import { println };
+
 struct Some {
     value: i32;
 }

@@ -1,4 +1,7 @@
 // String operations and template interpolation
+
+from "std:io" import { println };
+
 const greeting = "Hello";
 const name = "Argon";
 const message = greeting + ", " + name;

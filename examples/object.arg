@@ -1,4 +1,7 @@
 // Object literals in expression position
+
+from "std:io" import { println };
+
 struct Config {
     host: string;
     port: i32;

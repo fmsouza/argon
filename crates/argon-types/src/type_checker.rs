@@ -897,14 +897,17 @@ impl TypeChecker {
         let old_return = self.current_return_type;
         self.current_return_type = Some(return_ty);
 
-        for stmt in &f.body.statements {
-            self.check_statement(stmt)?;
+        // Intrinsic functions have no body to check
+        if !f.is_intrinsic {
+            for stmt in &f.body.statements {
+                self.check_statement(stmt)?;
+            }
         }
         self.env = old_env;
 
         self.current_return_type = old_return;
 
-        if return_ty != self.type_table.void() {
+        if !f.is_intrinsic && return_ty != self.type_table.void() {
             let has_return = f
                 .body
                 .statements
@@ -932,6 +935,11 @@ impl TypeChecker {
                     .map(|g| self.type_table.struct_def(g.def.clone()))
             })
             .unwrap_or_else(|| self.type_table.object());
+
+        // Intrinsic structs have no bodies to check - only register the type
+        if s.is_intrinsic {
+            return Ok(());
+        }
 
         // Type-check constructor body if present
         if let Some(constr) = &s.constructor {

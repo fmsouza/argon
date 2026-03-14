@@ -106,6 +106,7 @@ impl Compiler {
         options: &CompileOptions,
     ) -> Result<CompileArtifacts, DriverError> {
         let ast = self.parse(source, source_name)?;
+        self.validate_std_imports(&ast)?;
         let _types = self.check_semantics(source, source_name, &ast)?;
 
         match options.target {
@@ -129,6 +130,7 @@ impl Compiler {
 
         let source_name = path.display().to_string();
         let ast = self.parse(&source, &source_name)?;
+        self.validate_std_imports(&ast)?;
         let deps = self.collect_deps(&ast, path.parent().unwrap_or(Path::new(".")));
 
         let _types = self.check_semantics(&source, &source_name, &ast)?;
@@ -197,6 +199,11 @@ impl Compiler {
                     .trim_start_matches('\'')
                     .trim_end_matches('\'');
 
+                // std:* imports are resolved from the embedded stdlib, not the filesystem.
+                if spec.starts_with("std:") {
+                    continue;
+                }
+
                 if spec.starts_with("./") || spec.starts_with("../") {
                     let path = base_dir.join(spec);
                     if path.extension().is_none() {
@@ -210,6 +217,39 @@ impl Compiler {
             }
         }
         deps
+    }
+
+    /// Validate that all `std:*` imports reference known modules.
+    pub fn validate_std_imports(&self, ast: &SourceFile) -> Result<(), DriverError> {
+        use argon_ast::Stmt;
+
+        for stmt in &ast.statements {
+            if let Stmt::Import(import) = stmt {
+                let raw = import.source.value.trim();
+                let spec = raw
+                    .trim_start_matches('"')
+                    .trim_end_matches('"')
+                    .trim_start_matches('\'')
+                    .trim_end_matches('\'');
+
+                if let Some(module_name) = spec.strip_prefix("std:") {
+                    if argon_stdlib::resolve_std_module(module_name).is_none() {
+                        return Err(DriverError::WithDiagnostics {
+                            message: format!("unknown standard library module: std:{}", module_name),
+                            diagnostics: Diagnostics {
+                                bag: DiagnosticBag::new(),
+                                rendered: format!(
+                                    "error: unknown standard library module 'std:{}'\navailable modules: {:?}",
+                                    module_name,
+                                    argon_stdlib::available_modules()
+                                ),
+                            },
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn parse(&self, source: &str, source_name: &str) -> Result<SourceFile, DriverError> {

@@ -204,6 +204,7 @@ pub struct FunctionDecl {
     pub type_params: Vec<TypeParam>,
     pub return_type: Option<Box<Type>>,
     pub is_async: bool,
+    pub is_intrinsic: bool,
     pub borrow_annotation: Option<BorrowAnnotation>,
     pub span: Span,
 }
@@ -271,6 +272,7 @@ pub struct StructDecl {
     pub constructor: Option<Constructor>,
     pub implements: Vec<Type>,
     pub embodies: Vec<Ident>,
+    pub is_intrinsic: bool,
     pub span: Span,
 }
 #[derive(Debug, Clone)]
