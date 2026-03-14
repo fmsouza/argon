@@ -1062,3 +1062,178 @@ mod completion_frontend_parsing {
         }
     }
 }
+
+mod import_parsing {
+    use super::*;
+
+    #[test]
+    fn parses_from_import_named() {
+        // Assign
+        let source = r#"from "./math" import { add, multiply };"#;
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let ast = result.unwrap();
+        assert_eq!(ast.statements.len(), 1);
+
+        if let Stmt::Import(import) = &ast.statements[0] {
+            assert_eq!(import.specifiers.len(), 2);
+            assert!(matches!(&import.specifiers[0], ImportSpecifier::Named(n) if n.imported.sym == "add"));
+            assert!(matches!(&import.specifiers[1], ImportSpecifier::Named(n) if n.imported.sym == "multiply"));
+            assert!(import.source.value.contains("./math"));
+        } else {
+            panic!("Expected import statement");
+        }
+    }
+
+    #[test]
+    fn parses_from_import_namespace() {
+        // Assign
+        let source = r#"from "./math" import Math;"#;
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let ast = result.unwrap();
+        assert_eq!(ast.statements.len(), 1);
+
+        if let Stmt::Import(import) = &ast.statements[0] {
+            assert_eq!(import.specifiers.len(), 1);
+            assert!(matches!(&import.specifiers[0], ImportSpecifier::Namespace(n) if n.id.sym == "Math"));
+            assert!(import.source.value.contains("./math"));
+        } else {
+            panic!("Expected import statement");
+        }
+    }
+
+    #[test]
+    fn parses_from_import_side_effect() {
+        // Assign
+        let source = r#"from "reflect-metadata" import;"#;
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let ast = result.unwrap();
+        assert_eq!(ast.statements.len(), 1);
+
+        if let Stmt::Import(import) = &ast.statements[0] {
+            assert!(import.specifiers.is_empty());
+            assert!(import.source.value.contains("reflect-metadata"));
+        } else {
+            panic!("Expected import statement");
+        }
+    }
+
+    #[test]
+    fn parses_from_import_aliased() {
+        // Assign
+        let source = r#"from "./math" import { add as plus };"#;
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let ast = result.unwrap();
+
+        if let Stmt::Import(import) = &ast.statements[0] {
+            assert_eq!(import.specifiers.len(), 1);
+            if let ImportSpecifier::Named(n) = &import.specifiers[0] {
+                assert_eq!(n.imported.sym, "add");
+                assert_eq!(n.local.as_ref().unwrap().sym, "plus");
+            } else {
+                panic!("Expected named import specifier");
+            }
+        } else {
+            panic!("Expected import statement");
+        }
+    }
+}
+
+mod export_parsing {
+    use super::*;
+
+    #[test]
+    fn parses_export_function() {
+        // Assign
+        let source = "export function add(a: i32, b: i32): i32 { return a + b; }";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let ast = result.unwrap();
+        assert_eq!(ast.statements.len(), 1);
+
+        if let Stmt::Export(export) = &ast.statements[0] {
+            assert!(export.declaration.is_some());
+            assert!(!export.is_type_only);
+        } else {
+            panic!("Expected export statement");
+        }
+    }
+
+    #[test]
+    fn parses_export_named_specifiers() {
+        // Assign
+        let source = "export { add, multiply };";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let ast = result.unwrap();
+
+        if let Stmt::Export(export) = &ast.statements[0] {
+            assert_eq!(export.specifiers.len(), 2);
+            assert_eq!(export.specifiers[0].orig.sym, "add");
+            assert_eq!(export.specifiers[1].orig.sym, "multiply");
+            assert!(export.source.is_none());
+        } else {
+            panic!("Expected export statement");
+        }
+    }
+
+    #[test]
+    fn parses_export_reexport_from_source() {
+        // Assign
+        let source = r#"export { add, multiply } from "./math";"#;
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let ast = result.unwrap();
+
+        if let Stmt::Export(export) = &ast.statements[0] {
+            assert_eq!(export.specifiers.len(), 2);
+            assert!(export.source.is_some());
+            assert!(export.source.as_ref().unwrap().value.contains("./math"));
+        } else {
+            panic!("Expected export statement");
+        }
+    }
+
+    #[test]
+    fn rejects_export_default() {
+        // Assign
+        let source = "export default function foo() {}";
+
+        // Act
+        let result = parse(source);
+
+        // Assert — export default is not supported, should fail
+        assert!(result.is_err());
+    }
+}

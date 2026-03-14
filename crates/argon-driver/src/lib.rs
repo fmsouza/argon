@@ -64,6 +64,12 @@ pub struct CompileResult {
 }
 
 #[derive(Debug, Clone)]
+pub struct ProjectCompileResult {
+    /// Each compiled file: (source path, artifacts).
+    pub files: Vec<(PathBuf, CompileArtifacts)>,
+}
+
+#[derive(Debug, Clone)]
 pub struct Diagnostics {
     pub bag: DiagnosticBag,
     pub rendered: String,
@@ -135,6 +141,49 @@ impl Compiler {
         Ok(CompileResult { artifacts, deps })
     }
 
+    /// Compile a file and all its transitive `.arg` dependencies.
+    pub fn compile_project(
+        &self,
+        entry: &Path,
+        options: &CompileOptions,
+    ) -> Result<ProjectCompileResult, DriverError> {
+        let entry_canonical =
+            std::fs::canonicalize(entry).map_err(|e| DriverError::WithDiagnostics {
+                message: format!("io error: {}", e),
+                diagnostics: Diagnostics {
+                    bag: DiagnosticBag::new(),
+                    rendered: format!("io error: {}", e),
+                },
+            })?;
+
+        let mut compiled: HashSet<PathBuf> = HashSet::new();
+        let mut results: Vec<(PathBuf, CompileArtifacts)> = Vec::new();
+        let mut queue: Vec<PathBuf> = vec![entry_canonical];
+
+        while let Some(path) = queue.pop() {
+            if compiled.contains(&path) {
+                continue;
+            }
+            compiled.insert(path.clone());
+
+            let result = self.compile_file(&path, options)?;
+
+            for dep in &result.deps {
+                if dep.exists() {
+                    if let Ok(canonical) = std::fs::canonicalize(dep) {
+                        if !compiled.contains(&canonical) {
+                            queue.push(canonical);
+                        }
+                    }
+                }
+            }
+
+            results.push((path, result.artifacts));
+        }
+
+        Ok(ProjectCompileResult { files: results })
+    }
+
     pub fn collect_deps(&self, ast: &SourceFile, base_dir: &Path) -> Vec<PathBuf> {
         use argon_ast::Stmt;
 
@@ -149,11 +198,14 @@ impl Compiler {
                     .trim_end_matches('\'');
 
                 if spec.starts_with("./") || spec.starts_with("../") {
-                    let mut path = base_dir.join(spec);
+                    let path = base_dir.join(spec);
                     if path.extension().is_none() {
-                        path.set_extension("arg");
+                        // No extension means it's an argon module import.
+                        deps.push(path.with_extension("arg"));
+                    } else if path.extension().and_then(|e| e.to_str()) == Some("arg") {
+                        deps.push(path);
                     }
-                    deps.push(path);
+                    // Skip .js/.mjs/.cjs/.json — those are external JS deps.
                 }
             }
         }
@@ -527,10 +579,112 @@ mod tests {
     #[test]
     fn collects_relative_import_deps() {
         let compiler = Compiler::new();
-        let src = "import { x } from \"./foo\";\nconst y = 1;";
+        let src = "from \"./foo\" import { x };\nconst y = 1;";
         let ast = compiler.parse(src, "<test>").unwrap();
         let deps = compiler.collect_deps(&ast, Path::new("/tmp/proj"));
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0], PathBuf::from("/tmp/proj/foo.arg"));
+    }
+
+    #[test]
+    fn compile_project_compiles_dependencies() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let main_path = temp_dir.path().join("main.arg");
+        let utils_path = temp_dir.path().join("utils.arg");
+
+        std::fs::write(&utils_path, "export function greet(): string { return \"hi\"; }\n")
+            .unwrap();
+        std::fs::write(
+            &main_path,
+            "from \"./utils\" import { greet };\nconst msg = greet();\n",
+        )
+        .unwrap();
+
+        let compiler = Compiler::new();
+        let options = CompileOptions::default();
+        let result = compiler.compile_project(&main_path, &options).unwrap();
+
+        assert_eq!(result.files.len(), 2);
+        // Both files should have JS output.
+        for (_, artifacts) in &result.files {
+            assert!(artifacts.js.is_some());
+        }
+    }
+
+    #[test]
+    fn compile_project_deduplicates() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let shared_path = temp_dir.path().join("shared.arg");
+        let a_path = temp_dir.path().join("a.arg");
+        let main_path = temp_dir.path().join("main.arg");
+
+        std::fs::write(&shared_path, "export const X: i32 = 1;\n").unwrap();
+        std::fs::write(
+            &a_path,
+            "from \"./shared\" import { X };\nexport const Y: i32 = X;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &main_path,
+            "from \"./a\" import { Y };\nfrom \"./shared\" import { X };\nconst z = X;\n",
+        )
+        .unwrap();
+
+        let compiler = Compiler::new();
+        let options = CompileOptions::default();
+        let result = compiler.compile_project(&main_path, &options).unwrap();
+
+        // shared.arg should only appear once.
+        assert_eq!(result.files.len(), 3);
+    }
+
+    #[test]
+    fn compile_project_handles_circular() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let a_path = temp_dir.path().join("a.arg");
+        let b_path = temp_dir.path().join("b.arg");
+
+        std::fs::write(
+            &a_path,
+            "from \"./b\" import { Y };\nexport const X: i32 = 1;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &b_path,
+            "from \"./a\" import { X };\nexport const Y: i32 = 2;\n",
+        )
+        .unwrap();
+
+        let compiler = Compiler::new();
+        let options = CompileOptions::default();
+        let result = compiler.compile_project(&a_path, &options).unwrap();
+
+        assert_eq!(result.files.len(), 2);
+    }
+
+    #[test]
+    fn compile_project_transitive() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let c_path = temp_dir.path().join("c.arg");
+        let b_path = temp_dir.path().join("b.arg");
+        let a_path = temp_dir.path().join("a.arg");
+
+        std::fs::write(&c_path, "export const Z: i32 = 3;\n").unwrap();
+        std::fs::write(
+            &b_path,
+            "from \"./c\" import { Z };\nexport const Y: i32 = Z;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &a_path,
+            "from \"./b\" import { Y };\nconst x = Y;\n",
+        )
+        .unwrap();
+
+        let compiler = Compiler::new();
+        let options = CompileOptions::default();
+        let result = compiler.compile_project(&a_path, &options).unwrap();
+
+        assert_eq!(result.files.len(), 3);
     }
 }

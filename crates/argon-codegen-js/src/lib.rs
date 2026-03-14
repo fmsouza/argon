@@ -147,7 +147,8 @@ impl JsCodegen {
 
             if let Some(ref source) = export.source {
                 self.output.push_str(" from ");
-                self.output.push_str(&source.value);
+                self.output
+                    .push_str(&Self::rewrite_import_source(&source.value));
             }
 
             self.output.push_str(";\n");
@@ -1998,6 +1999,29 @@ impl JsCodegen {
         }
     }
 
+    /// Rewrite relative import paths to use .js extension for JS runtime compatibility.
+    /// Input includes surrounding quotes, e.g. `"./utils"` → `"./utils.js"`.
+    pub(crate) fn rewrite_import_source(source: &str) -> String {
+        let (open, inner, close) = if source.starts_with('"') && source.ends_with('"') {
+            ("\"", &source[1..source.len() - 1], "\"")
+        } else if source.starts_with('\'') && source.ends_with('\'') {
+            ("'", &source[1..source.len() - 1], "'")
+        } else {
+            return source.to_string();
+        };
+
+        if (inner.starts_with("./") || inner.starts_with("../"))
+            && !inner.ends_with(".js")
+            && !inner.ends_with(".mjs")
+            && !inner.ends_with(".cjs")
+            && !inner.ends_with(".json")
+        {
+            format!("{}{}.js{}", open, inner, close)
+        } else {
+            source.to_string()
+        }
+    }
+
     fn generate_import(&mut self, import: &argon_ast::ImportStmt) -> Result<(), CodegenError> {
         if import.is_type_only {
             return Ok(());
@@ -2005,7 +2029,8 @@ impl JsCodegen {
 
         if import.specifiers.is_empty() {
             self.output.push_str("import ");
-            self.output.push_str(&import.source.value);
+            self.output
+                .push_str(&Self::rewrite_import_source(&import.source.value));
             self.output.push_str(";\n");
             self.add_line();
             return Ok(());
@@ -2068,7 +2093,8 @@ impl JsCodegen {
         }
 
         self.output.push_str(" from ");
-        self.output.push_str(&import.source.value);
+        self.output
+            .push_str(&Self::rewrite_import_source(&import.source.value));
         self.output.push_str(";\n");
         self.add_line();
         Ok(())
@@ -2117,7 +2143,8 @@ impl JsCodegen {
             self.output.push_str(" }");
             if let Some(ref source) = export.source {
                 self.output.push_str(" from ");
-                self.output.push_str(&source.value);
+                self.output
+                    .push_str(&Self::rewrite_import_source(&source.value));
             }
             self.output.push_str(";\n");
             self.add_line();
@@ -3370,7 +3397,7 @@ fn append_declaration_stmt(output: &mut String, stmt: &Stmt, exported: bool) {
                 output.push_str(" }");
                 if let Some(ref source) = e.source {
                     output.push_str(" from ");
-                    output.push_str(&source.value);
+                    output.push_str(&JsCodegen::rewrite_import_source(&source.value));
                 }
                 output.push_str(";\n\n");
             }

@@ -294,7 +294,7 @@ mod interop_tests {
     #[test]
     fn processes_named_import_alias() {
         // Assign
-        let source = r#"import { useState as state } from "react";"#;
+        let source = r#"from "react" import { useState as state };"#;
         let ast = parse(source).expect("parse should succeed");
         let import = match &ast.statements[0] {
             Stmt::Import(i) => i,

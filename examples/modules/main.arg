@@ -1,0 +1,11 @@
+// Multi-module example: importing from other argon files
+from "./math" import { add, multiply, PI };
+from "./utils" import Utils;
+
+const sum = add(2, 3);
+const product = multiply(4, 5);
+console.log(Utils.greet("Argon"));
+console.log("Version: " + Utils.VERSION);
+console.log(sum);
+console.log(product);
+console.log(PI);

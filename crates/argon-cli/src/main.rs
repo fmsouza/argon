@@ -3,7 +3,7 @@
 use argon_driver::{CompileOptions, Compiler, Pipeline, Target};
 use argon_runtime::execute_ast;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(clap::Parser)]
 #[command(name = "argon")]
@@ -19,6 +19,8 @@ enum Commands {
         input: PathBuf,
         #[arg(short, long)]
         output: Option<PathBuf>,
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
         #[arg(short, long, default_value = "js")]
         target: String,
         #[arg(short, long)]
@@ -81,6 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Compile {
             input,
             output,
+            out_dir,
             target,
             source_map,
             opt,
@@ -90,6 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             compile(
                 &input,
                 output.as_ref(),
+                out_dir.as_ref(),
                 &target,
                 source_map,
                 opt,
@@ -149,14 +153,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn compile(
     input: &PathBuf,
     output: Option<&PathBuf>,
+    out_dir: Option<&PathBuf>,
     target: &str,
     source_map: bool,
     opt: bool,
     declarations: bool,
     pipeline: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let source = fs::read_to_string(input)?;
-
     println!("Parsing {}...", input.display());
     println!("Type checking...");
     println!("Borrow checking...");
@@ -186,9 +189,9 @@ fn compile(
         declarations,
     };
 
-    let source_name = input.display().to_string();
-    let artifacts = match compiler.compile(&source, &source_name, &options) {
-        Ok(a) => a,
+    // Multi-file project compilation: compile entry + all dependencies.
+    let result = match compiler.compile_file(input, &options) {
+        Ok(r) => r,
         Err(e) => {
             if let Some(diag) = e.diagnostics() {
                 eprintln!("{}", diag.rendered);
@@ -196,6 +199,64 @@ fn compile(
             return Err(e.into());
         }
     };
+
+    // If there are dependencies, compile the full project.
+    if !result.deps.is_empty() {
+        let project = match compiler.compile_project(input, &options) {
+            Ok(p) => p,
+            Err(e) => {
+                if let Some(diag) = e.diagnostics() {
+                    eprintln!("{}", diag.rendered);
+                }
+                return Err(e.into());
+            }
+        };
+
+        let entry_dir = input
+            .parent()
+            .and_then(|p| std::fs::canonicalize(p).ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        for (source_path, artifacts) in &project.files {
+            let relative = source_path
+                .strip_prefix(&entry_dir)
+                .unwrap_or(source_path);
+            let js_relative = relative.with_extension("js");
+
+            let out_path = if let Some(dir) = out_dir {
+                dir.join(&js_relative)
+            } else if let Some(single_output) = output {
+                // For single -o with deps, put deps alongside the output.
+                let out_parent = single_output.parent().unwrap_or(Path::new("."));
+                if source_path == &std::fs::canonicalize(input).unwrap_or(input.clone()) {
+                    single_output.clone()
+                } else {
+                    out_parent.join(&js_relative)
+                }
+            } else {
+                js_relative
+            };
+
+            if let Some(parent) = out_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            if let Some(ref js) = artifacts.js {
+                fs::write(&out_path, js)?;
+                println!("Wrote {}", out_path.display());
+            }
+
+            if let Some(ref dts) = artifacts.declarations {
+                let dts_path = out_path.with_extension("d.ts");
+                fs::write(&dts_path, dts)?;
+                println!("Wrote {}", dts_path.display());
+            }
+        }
+
+        return Ok(());
+    }
+
+    let artifacts = result.artifacts;
 
     match target {
         Target::Js => {
@@ -692,6 +753,7 @@ fn watch(
         let _ = compile(
             input,
             output,
+            None,
             target,
             source_map,
             opt,
@@ -714,6 +776,7 @@ fn watch(
         } else if let Err(e) = compile(
             input,
             output,
+            None,
             target,
             source_map,
             opt,

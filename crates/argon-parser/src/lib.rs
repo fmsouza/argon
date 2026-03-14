@@ -231,8 +231,8 @@ impl Parser {
         if self.match_one(&[TokenKind::Match]) {
             return self.parse_match();
         }
-        if self.match_one(&[TokenKind::Import]) {
-            return self.parse_import();
+        if self.match_one(&[TokenKind::From]) {
+            return self.parse_from_import();
         }
         if self.match_one(&[TokenKind::Export]) {
             return self.parse_export();
@@ -1757,13 +1757,16 @@ impl Parser {
         }))
     }
 
-    fn parse_import(&mut self) -> Result<argon_ast::Stmt, ParseError> {
+    /// Parse argon-style import: `from "path" import { a, b }` or `from "path" import Name`
+    fn parse_from_import(&mut self) -> Result<argon_ast::Stmt, ParseError> {
         use argon_ast::*;
 
         let start = self.previous().span.start;
-        // Side-effect import: `import "x";`
-        if self.check(&TokenKind::StringLiteral) {
-            let source = self.parse_literal_string()?;
+        let source = self.parse_literal_string()?;
+        self.expect(TokenKind::Import)?;
+
+        // Side-effect import: `from "path" import;`
+        if self.check(&TokenKind::Semi) || self.is_at_end() {
             self.match_one(&[TokenKind::Semi]);
             let end = self.previous().span.end;
             return Ok(Stmt::Import(ImportStmt {
@@ -1775,6 +1778,7 @@ impl Parser {
         }
 
         let specifiers = if self.match_one(&[TokenKind::OpenBrace]) {
+            // Named imports: `from "path" import { a, b as c }`
             let mut specs = Vec::new();
             while !self.check(&TokenKind::CloseBrace) && !self.is_at_end() {
                 let imported = self.expect_identifier()?;
@@ -1797,19 +1801,16 @@ impl Parser {
             self.expect(TokenKind::CloseBrace)?;
             specs
         } else if self.check(&TokenKind::Identifier) {
-            let local = self.expect_identifier()?;
-            vec![ImportSpecifier::Default(DefaultImportSpecifier {
-                span: local.span.clone(),
-                local,
+            // Namespace import: `from "path" import Name`
+            let id = self.expect_identifier()?;
+            vec![ImportSpecifier::Namespace(NamespaceImportSpecifier {
+                span: id.span.clone(),
+                id,
             })]
         } else {
-            return Err(self.parser_error_here("Expected import specifier"));
+            return Err(self.parser_error_here("Expected import specifier or '{'"));
         };
 
-        self.expect(TokenKind::From)?;
-        let source = self.parse_literal_string()?;
-
-        // Allow optional trailing semicolon.
         self.match_one(&[TokenKind::Semi]);
         let end = self.previous().span.end;
 
@@ -1825,17 +1826,6 @@ impl Parser {
         use argon_ast::*;
 
         let start = self.previous().span.start;
-        if self.match_one(&[TokenKind::Default]) {
-            let declaration = self.parse_statement()?;
-            let end = self.previous().span.end;
-            return Ok(Stmt::Export(ExportStmt {
-                declaration: Some(Box::new(declaration)),
-                specifiers: vec![],
-                source: None,
-                is_type_only: true,
-                span: start..end,
-            }));
-        }
 
         if self.check(&TokenKind::OpenBrace) {
             self.expect(TokenKind::OpenBrace)?;
@@ -1858,12 +1848,20 @@ impl Parser {
                 }
             }
             self.expect(TokenKind::CloseBrace)?;
+
+            // Re-export: `export { x, y } from "./module";`
+            let source = if self.match_one(&[TokenKind::From]) {
+                Some(self.parse_literal_string()?)
+            } else {
+                None
+            };
+
             self.match_one(&[TokenKind::Semi]);
             let end = self.previous().span.end;
             return Ok(Stmt::Export(ExportStmt {
                 declaration: None,
                 specifiers: specs,
-                source: None,
+                source,
                 is_type_only: false,
                 span: start..end,
             }));

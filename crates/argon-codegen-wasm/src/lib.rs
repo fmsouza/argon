@@ -2480,7 +2480,7 @@ mod tests {
     fn executes_direct_function_import_standalone() {
         // Assign
         let source = r#"
-            import inc from "./dep.mjs";
+            from "./dep.mjs" import { inc };
 
             function main(): i32 {
                 return inc(4);
@@ -2493,7 +2493,7 @@ mod tests {
             &wasm,
             r#"{
                 "./dep.mjs": {
-                    default(x) { return x + 1; }
+                    inc(x) { return x + 1; }
                 }
             }"#,
             "const result = instance.exports.main(); console.log(String(result));",

@@ -1,0 +1,7 @@
+// String utilities module
+
+export const VERSION: string = "1.0.0";
+
+export function greet(name: string): string {
+    return "Hello, " + name + "!";
+}

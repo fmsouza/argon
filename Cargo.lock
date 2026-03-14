@@ -206,6 +206,7 @@ dependencies = [
  "argon-ir",
  "argon-parser",
  "argon-types",
+ "tempfile",
  "thiserror",
  "wasmprinter",
 ]

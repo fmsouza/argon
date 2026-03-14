@@ -1,8 +1,8 @@
 // SafeScript JS Interop example
 
 // Import existing JS libraries
-import { useState, useEffect } from "react";
-import axios from "axios";
+from "react" import { useState, useEffect };
+from "axios" import Axios;
 
 // Declare JS interop module
 @js-interop
@@ -32,7 +32,7 @@ function Counter(): number {
 
 // Using callback from JS library
 function fetchUser(userId: u32): Promise<User> {
-    const result = axios.get<User>(`/api/users/${userId}`);
+    const result = Axios.get<User>(`/api/users/${userId}`);
     return result.then((res) => res.data);
 }
 

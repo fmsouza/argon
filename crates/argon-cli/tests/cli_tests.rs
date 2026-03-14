@@ -429,7 +429,7 @@ fn test_compile_example_esm_import() {
 
     let output = fs::read_to_string(temp_dir.path().join("out.js")).unwrap();
     assert!(output.contains("import \"reflect-metadata\";"));
-    assert!(output.contains("import axios from \"axios\";"));
+    assert!(output.contains("import * as Axios from \"axios\";"));
     assert!(output.contains("import { useState } from \"react\";"));
     assert!(output.contains("const apiBase = \"/api\""));
 }
@@ -1124,13 +1124,13 @@ fn test_compile_wasm_import_executes_via_host_sidecar() {
     let output_file = temp_dir.path().join("interop_loader.wasm");
     fs::write(
         &dep_file,
-        "export default function inc(x) { return x + 1; }\n",
+        "export function inc(x) { return x + 1; }\n",
     )
     .unwrap();
     fs::write(
         &source_file,
         r#"
-import inc from "./dep.mjs";
+from "./dep.mjs" import { inc };
 
 function main(): i32 {
     return inc(4);
@@ -1159,7 +1159,7 @@ import { instantiateArgon } from "./interop_loader.mjs";
 
 const runtime = await instantiateArgon({
   "./dep.mjs": {
-    default(x) {
+    inc(x) {
       return x + 1;
     }
   }
@@ -1183,7 +1183,7 @@ fn test_compile_wasm_import_executes_standalone() {
     fs::write(
         &source_file,
         r#"
-import inc from "./dep.mjs";
+from "./dep.mjs" import { inc };
 
 function main(): i32 {
     return inc(4);
@@ -1210,7 +1210,7 @@ const wasmPath = process.argv[1];
 const bytes = fs.readFileSync(wasmPath);
 WebAssembly.instantiate(bytes, {
   "./dep.mjs": {
-    default(x) {
+    inc(x) {
       return x + 1;
     }
   }
@@ -1381,4 +1381,257 @@ WebAssembly.instantiate(bytes, {}).then(({ instance }) => {
     assert!(node_output.status.success(), "{:?}", node_output);
     let stdout = String::from_utf8_lossy(&node_output.stdout);
     assert!(stdout.contains("6"));
+}
+
+// ---------------------------------------------------------------------------
+// Module system tests: from/import syntax, path rewriting, multi-file
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_from_import_named_codegen() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("test.arg");
+    fs::write(
+        &source_file,
+        r#"from "./math" import { add };
+const x = add(1, 2);
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(temp_dir.path().join("out.js"))
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
+        .success();
+
+    let output = fs::read_to_string(temp_dir.path().join("out.js")).unwrap();
+    // Path should be rewritten with .js extension.
+    assert!(
+        output.contains("from \"./math.js\""),
+        "Expected rewritten import path, got: {}",
+        output
+    );
+    assert!(output.contains("import { add }"));
+}
+
+#[test]
+fn test_from_import_namespace_codegen() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("test.arg");
+    fs::write(
+        &source_file,
+        r#"from "./math" import Math;
+const x = Math.add(1, 2);
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(temp_dir.path().join("out.js"))
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
+        .success();
+
+    let output = fs::read_to_string(temp_dir.path().join("out.js")).unwrap();
+    assert!(
+        output.contains("import * as Math from \"./math.js\""),
+        "Expected namespace import, got: {}",
+        output
+    );
+}
+
+#[test]
+fn test_from_import_side_effect_codegen() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("test.arg");
+    fs::write(
+        &source_file,
+        r#"from "reflect-metadata" import;
+const x: i32 = 1;
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(temp_dir.path().join("out.js"))
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
+        .success();
+
+    let output = fs::read_to_string(temp_dir.path().join("out.js")).unwrap();
+    // External package should NOT get .js appended.
+    assert!(
+        output.contains("import \"reflect-metadata\""),
+        "Expected side-effect import, got: {}",
+        output
+    );
+}
+
+#[test]
+fn test_compile_project_multi_file() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let src_dir = temp_dir.path();
+    let out_dir = temp_dir.path().join("dist");
+
+    fs::write(
+        src_dir.join("math.arg"),
+        r#"export function add(a: i32, b: i32): i32 { return a + b; }
+export function multiply(a: i32, b: i32): i32 { return a * b; }
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        src_dir.join("utils.arg"),
+        r#"export const VERSION: string = "1.0.0";
+export function greet(name: string): string { return "Hello, " + name + "!"; }
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        src_dir.join("main.arg"),
+        r#"from "./math" import { add, multiply };
+from "./utils" import Utils;
+
+console.log(add(2, 3));
+console.log(multiply(4, 5));
+console.log(Utils.greet("Argon"));
+console.log(Utils.VERSION);
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(src_dir.join("main.arg"))
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
+        .success();
+
+    // All three JS files should be emitted.
+    assert!(out_dir.join("main.js").exists(), "main.js should exist");
+    assert!(out_dir.join("math.js").exists(), "math.js should exist");
+    assert!(out_dir.join("utils.js").exists(), "utils.js should exist");
+
+    // Import paths should be rewritten.
+    let main_js = fs::read_to_string(out_dir.join("main.js")).unwrap();
+    assert!(main_js.contains("from \"./math.js\""));
+    assert!(main_js.contains("from \"./utils.js\""));
+
+    // Execute with Node.js and verify output.
+    let node_output = Command::new("node")
+        .arg(out_dir.join("main.js"))
+        .output()
+        .unwrap();
+    assert!(
+        node_output.status.success(),
+        "node execution failed: {}",
+        String::from_utf8_lossy(&node_output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&node_output.stdout);
+    assert!(stdout.contains("5"), "add(2,3) should be 5");
+    assert!(stdout.contains("20"), "multiply(4,5) should be 20");
+    assert!(stdout.contains("Hello, Argon!"));
+    assert!(stdout.contains("1.0.0"));
+}
+
+#[test]
+fn test_compile_project_nested_deps() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let src_dir = temp_dir.path();
+    let out_dir = temp_dir.path().join("dist");
+
+    // C has no deps.
+    fs::write(
+        src_dir.join("c.arg"),
+        "export const Z: i32 = 42;\n",
+    )
+    .unwrap();
+
+    // B imports C.
+    fs::write(
+        src_dir.join("b.arg"),
+        r#"from "./c" import { Z };
+export function getZ(): i32 { return Z; }
+"#,
+    )
+    .unwrap();
+
+    // A imports B (transitive dep on C).
+    fs::write(
+        src_dir.join("a.arg"),
+        r#"from "./b" import { getZ };
+console.log(getZ());
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(src_dir.join("a.arg"))
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
+        .success();
+
+    assert!(out_dir.join("a.js").exists());
+    assert!(out_dir.join("b.js").exists());
+    assert!(out_dir.join("c.js").exists());
+
+    let node_output = Command::new("node")
+        .arg(out_dir.join("a.js"))
+        .output()
+        .unwrap();
+    assert!(node_output.status.success());
+    let stdout = String::from_utf8_lossy(&node_output.stdout);
+    assert!(stdout.contains("42"));
+}
+
+#[test]
+fn test_compile_external_imports_unchanged() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("test.arg");
+    fs::write(
+        &source_file,
+        r#"from "axios" import Axios;
+from "./local" import { helper };
+const x = helper();
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(temp_dir.path().join("out.js"))
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
+        .success();
+
+    let output = fs::read_to_string(temp_dir.path().join("out.js")).unwrap();
+    // External should stay as-is.
+    assert!(output.contains("from \"axios\""));
+    // Relative should get .js.
+    assert!(output.contains("from \"./local.js\""));
 }

@@ -1,15 +1,15 @@
-// ES module syntax
-import "reflect-metadata";
-import axios from "axios";
-import { useState } from "react";
+// Argon module syntax
+from "reflect-metadata" import;
+from "axios" import Axios;
+from "react" import { useState };
 
-export const apiBase = "/api";
+export const apiBase: string = "/api";
 
 export function readEnv(): string {
     return apiBase;
 }
 
 const stateFactory = useState;
-const client = axios;
+const client = Axios;
 console.log(stateFactory);
 console.log(client);

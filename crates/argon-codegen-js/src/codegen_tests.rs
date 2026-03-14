@@ -340,3 +340,71 @@ mod ir_codegen {
         assert!(output.contains("export { x"));
     }
 }
+
+mod import_path_rewriting {
+    use super::*;
+
+    #[test]
+    fn rewrites_relative_import_with_dot_slash() {
+        assert_eq!(
+            JsCodegen::rewrite_import_source("\"./utils\""),
+            "\"./utils.js\""
+        );
+    }
+
+    #[test]
+    fn rewrites_relative_import_with_parent_dir() {
+        assert_eq!(
+            JsCodegen::rewrite_import_source("\"../lib/math\""),
+            "\"../lib/math.js\""
+        );
+    }
+
+    #[test]
+    fn does_not_double_rewrite_js_extension() {
+        assert_eq!(
+            JsCodegen::rewrite_import_source("\"./already.js\""),
+            "\"./already.js\""
+        );
+    }
+
+    #[test]
+    fn does_not_rewrite_json_extension() {
+        assert_eq!(
+            JsCodegen::rewrite_import_source("\"./data.json\""),
+            "\"./data.json\""
+        );
+    }
+
+    #[test]
+    fn does_not_rewrite_mjs_extension() {
+        assert_eq!(
+            JsCodegen::rewrite_import_source("\"./loader.mjs\""),
+            "\"./loader.mjs\""
+        );
+    }
+
+    #[test]
+    fn does_not_rewrite_package_import() {
+        assert_eq!(
+            JsCodegen::rewrite_import_source("\"axios\""),
+            "\"axios\""
+        );
+    }
+
+    #[test]
+    fn rewrites_single_quoted_relative_import() {
+        assert_eq!(
+            JsCodegen::rewrite_import_source("'./utils'"),
+            "'./utils.js'"
+        );
+    }
+
+    #[test]
+    fn does_not_rewrite_bare_module() {
+        assert_eq!(
+            JsCodegen::rewrite_import_source("\"react\""),
+            "\"react\""
+        );
+    }
+}
