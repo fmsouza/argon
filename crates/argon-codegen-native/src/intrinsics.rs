@@ -98,6 +98,12 @@ pub fn declare_libc_functions<M: Module>(
     let print_str_fn =
         module.declare_function("__argon_print_str", Linkage::Import, &print_str_sig)?;
 
+    // void __argon_print_bool(double value) — from C runtime
+    let mut print_bool_sig = module.make_signature();
+    print_bool_sig.params.push(AbiParam::new(types::F64)); // value
+    let print_bool_fn =
+        module.declare_function("__argon_print_bool", Linkage::Import, &print_bool_sig)?;
+
     Ok(LibcFunctions {
         write: write_fn,
         malloc: malloc_fn,
@@ -112,6 +118,7 @@ pub fn declare_libc_functions<M: Module>(
         snprintf: snprintf_fn,
         print_f64: print_f64_fn,
         print_str: print_str_fn,
+        print_bool: print_bool_fn,
     })
 }
 
@@ -131,6 +138,7 @@ pub struct LibcFunctions {
     pub snprintf: cranelift_module::FuncId,
     pub print_f64: cranelift_module::FuncId,
     pub print_str: cranelift_module::FuncId,
+    pub print_bool: cranelift_module::FuncId,
 }
 
 /// Check if a function name is a known intrinsic.

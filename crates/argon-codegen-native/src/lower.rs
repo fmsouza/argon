@@ -8,12 +8,12 @@ use crate::types::pointer_type;
 use crate::CodegenError;
 use argon_ir::{
     BasicBlock, BinOp, ConstValue, Function as IrFunction, Instruction as IrInstruction, LogicOp,
-    Module as IrModule, Terminator, UnOp, ValueId,
+    Module as IrModule, Terminator, TypeDef, UnOp, ValueId,
 };
 use argon_target::TargetTriple;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::types;
-use cranelift_codegen::ir::{AbiParam, InstBuilder, Value};
+use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, Value};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{DataDescription, FuncId, Linkage, Module};
 use cranelift_object::ObjectModule;
@@ -30,6 +30,8 @@ pub struct ModuleLowerer<'a> {
     data_ids: HashMap<String, cranelift_module::DataId>,
     /// Counter for generating unique data names.
     data_counter: u32,
+    /// Struct type definitions from the IR module, used for field layout resolution.
+    struct_layouts: Vec<Vec<String>>,
 }
 
 impl<'a> ModuleLowerer<'a> {
@@ -43,10 +45,19 @@ impl<'a> ModuleLowerer<'a> {
             func_ids: HashMap::new(),
             data_ids: HashMap::new(),
             data_counter: 0,
+            struct_layouts: Vec::new(),
         }
     }
 
     pub fn lower_module(&mut self, ir_module: &IrModule) -> Result<(), CodegenError> {
+        // Collect struct field layouts from the IR module's type definitions.
+        for ty in &ir_module.types {
+            if let TypeDef::Struct { fields, .. } = ty {
+                let layout: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
+                self.struct_layouts.push(layout);
+            }
+        }
+
         // Declare libc functions
         self.libc = Some(
             intrinsics::declare_libc_functions(self.module, self.ptr_type)
@@ -75,7 +86,7 @@ impl<'a> ModuleLowerer<'a> {
             if let Some(init_func) = patched_functions.iter_mut().find(|f| f.id == "__argon_init") {
                 if let Some(first_block) = init_func.body.first_mut() {
                     let mut combined = global_inits;
-                    combined.extend(first_block.instructions.drain(..));
+                    combined.append(&mut first_block.instructions);
                     first_block.instructions = combined;
                 }
             } else if !global_inits.is_empty() {
@@ -172,7 +183,7 @@ impl<'a> ModuleLowerer<'a> {
         {
             let builder = FunctionBuilder::new(&mut ctx.func, &mut fbc);
             let func_lowerer =
-                FunctionLowerer::new(builder, self.module, self.triple, &self.func_ids, &self.libc, &mut self.data_ids, &mut self.data_counter, self.ptr_type);
+                FunctionLowerer::new(builder, self.module, self.triple, &self.func_ids, &self.libc, &mut self.data_ids, &mut self.data_counter, self.ptr_type, &self.struct_layouts);
             func_lowerer.lower(func)?;
         }
 
@@ -212,9 +223,21 @@ struct FunctionLowerer<'a, 'b> {
     callee_names: HashMap<ValueId, String>,
     /// Maps ValueIds to string constant info (for print calls).
     string_constants: HashMap<ValueId, StringConstInfo>,
+    /// Maps ValueIds to their struct field layout (ordered field names).
+    /// Used to compute field offsets for Member access.
+    field_layouts: HashMap<ValueId, Vec<String>>,
+    /// Maps variable names to their struct field layout.
+    var_field_layouts: HashMap<String, Vec<String>>,
+    /// Tracks which ValueIds originated from boolean values.
+    bool_values: std::collections::HashSet<ValueId>,
+    /// Tracks which variable names hold boolean values.
+    bool_vars: std::collections::HashSet<String>,
+    /// Known struct field layouts from the IR module's type definitions.
+    struct_layouts: &'a [Vec<String>],
 }
 
 impl<'a, 'b> FunctionLowerer<'a, 'b> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         builder: FunctionBuilder<'b>,
         module: &'a mut ObjectModule,
@@ -224,6 +247,7 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
         data_ids: &'a mut HashMap<String, cranelift_module::DataId>,
         data_counter: &'a mut u32,
         ptr_type: cranelift_codegen::ir::Type,
+        struct_layouts: &'a [Vec<String>],
     ) -> Self {
         Self {
             builder,
@@ -240,6 +264,11 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
             loop_stack: Vec::new(),
             callee_names: HashMap::new(),
             string_constants: HashMap::new(),
+            field_layouts: HashMap::new(),
+            var_field_layouts: HashMap::new(),
+            bool_values: std::collections::HashSet::new(),
+            bool_vars: std::collections::HashSet::new(),
+            struct_layouts,
         }
     }
 
@@ -358,6 +387,7 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 let val = match value {
                     ConstValue::Number(n) => self.builder.ins().f64const(*n),
                     ConstValue::Bool(b) => {
+                        self.bool_values.insert(*dest);
                         let i = if *b { 1i64 } else { 0i64 };
                         let ival = self.builder.ins().iconst(types::I64, i);
                         self.builder.ins().fcvt_from_sint(types::F64, ival)
@@ -392,10 +422,20 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 let lhs_val = self.get_value(*lhs)?;
                 let rhs_val = self.get_value(*rhs)?;
                 let result = self.lower_binop(*op, lhs_val, rhs_val)?;
+                // Mark comparison results as booleans for proper true/false printing
+                if matches!(
+                    op,
+                    BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+                ) {
+                    self.bool_values.insert(*dest);
+                }
                 self.values.insert(*dest, result);
             }
 
             IrInstruction::UnOp { op, arg, dest } => {
+                if matches!(op, UnOp::Not) {
+                    self.bool_values.insert(*dest);
+                }
                 let arg_val = self.get_value(*arg)?;
                 let result = match op {
                     UnOp::Neg => self.builder.ins().fneg(arg_val),
@@ -418,6 +458,14 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 if let Some(init_id) = init {
                     let val = self.get_value(*init_id)?;
                     self.builder.def_var(var, val);
+                    // Propagate field layout to the variable
+                    if let Some(layout) = self.field_layouts.get(init_id).cloned() {
+                        self.var_field_layouts.insert(name.clone(), layout);
+                    }
+                    // Propagate boolean tracking
+                    if self.bool_values.contains(init_id) {
+                        self.bool_vars.insert(name.clone());
+                    }
                 } else {
                     let zero = self.builder.ins().f64const(0.0);
                     self.builder.def_var(var, zero);
@@ -431,6 +479,14 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 if let Some(&var) = self.variables.get(name) {
                     let val = self.builder.use_var(var);
                     self.values.insert(*dest, val);
+                    // Propagate field layout from variable to this value
+                    if let Some(layout) = self.var_field_layouts.get(name).cloned() {
+                        self.field_layouts.insert(*dest, layout);
+                    }
+                    // Propagate boolean tracking
+                    if self.bool_vars.contains(name) {
+                        self.bool_values.insert(*dest);
+                    }
                 } else {
                     // Could be a function reference or unknown variable
                     let zero = self.builder.ins().f64const(0.0);
@@ -446,6 +502,10 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                     let var = self.declare_variable(name, types::F64);
                     self.builder.def_var(var, val);
                 }
+                // Propagate field layout
+                if let Some(layout) = self.field_layouts.get(src).cloned() {
+                    self.var_field_layouts.insert(name.clone(), layout);
+                }
             }
 
             IrInstruction::AssignExpr { name, src, dest } => {
@@ -455,6 +515,10 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 } else {
                     let var = self.declare_variable(name, types::F64);
                     self.builder.def_var(var, val);
+                }
+                // Propagate field layout
+                if let Some(layout) = self.field_layouts.get(src).cloned() {
+                    self.var_field_layouts.insert(name.clone(), layout);
                 }
                 self.values.insert(*dest, val);
             }
@@ -543,6 +607,10 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 rhs,
                 dest,
             } => {
+                // If both operands are boolean, the result is boolean
+                if self.bool_values.contains(lhs) && self.bool_values.contains(rhs) {
+                    self.bool_values.insert(*dest);
+                }
                 let lhs_val = self.get_value(*lhs)?;
                 let rhs_val = self.get_value(*rhs)?;
                 let result = match op {
@@ -638,13 +706,40 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
 
             IrInstruction::Member {
                 object,
-                property: _,
+                property,
                 dest,
             } => {
-                // For now, member access on native is a placeholder.
-                // TODO: implement proper struct field offsets in Phase 5.
-                let obj_val = self.get_value(*object)?;
-                self.values.insert(*dest, obj_val);
+                let obj_f64 = self.get_value(*object)?;
+                // Try local layout first, then fall back to module-level struct definitions.
+                let layout = self.field_layouts.get(object).cloned().or_else(|| {
+                    self.struct_layouts
+                        .iter()
+                        .find(|sl| sl.iter().any(|f| f == property))
+                        .cloned()
+                });
+                if let Some(layout) = layout {
+                    // Bitcast F64 back to pointer for memory access
+                    let obj_ptr = self.builder.ins().bitcast(
+                        self.ptr_type,
+                        MemFlags::new(),
+                        obj_f64,
+                    );
+                    if let Some(field_idx) = layout.iter().position(|k| k == property) {
+                        let offset = (field_idx * 8) as i32;
+                        let val = self
+                            .builder
+                            .ins()
+                            .load(types::F64, MemFlags::new(), obj_ptr, offset);
+                        self.values.insert(*dest, val);
+                    } else {
+                        let zero = self.builder.ins().f64const(0.0);
+                        self.values.insert(*dest, zero);
+                    }
+                } else {
+                    // No layout info — fallback to 0
+                    let zero = self.builder.ins().f64const(0.0);
+                    self.values.insert(*dest, zero);
+                }
             }
 
             IrInstruction::MemberComputed {
@@ -656,22 +751,110 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 self.values.insert(*dest, obj_val);
             }
 
-            IrInstruction::ObjectLit { dest, .. } => {
-                // Placeholder: object literals need heap allocation (Phase 5)
-                let zero = self.builder.ins().f64const(0.0);
-                self.values.insert(*dest, zero);
+            IrInstruction::ObjectLit { dest, props } => {
+                let num_fields = props.len();
+                if num_fields == 0 {
+                    // Empty struct — return 0.0 as null
+                    let zero = self.builder.ins().f64const(0.0);
+                    self.values.insert(*dest, zero);
+                } else {
+                    // Allocate: malloc(num_fields * 8)
+                    let libc = self.libc.as_ref().unwrap();
+                    let malloc_ref = self
+                        .module
+                        .declare_func_in_func(libc.malloc, self.builder.func);
+                    let alloc_size = self
+                        .builder
+                        .ins()
+                        .iconst(self.ptr_type, (num_fields * 8) as i64);
+                    let call = self.builder.ins().call(malloc_ref, &[alloc_size]);
+                    let base_ptr = self.builder.inst_results(call)[0];
+
+                    // Store each field value at its offset
+                    let mut layout = Vec::with_capacity(num_fields);
+                    for (i, prop) in props.iter().enumerate() {
+                        let field_val = self.get_value(prop.value)?;
+                        let offset = (i * 8) as i32;
+                        self.builder
+                            .ins()
+                            .store(MemFlags::new(), field_val, base_ptr, offset);
+                        layout.push(prop.key.clone());
+                    }
+
+                    self.field_layouts.insert(*dest, layout);
+                    // Bitcast the pointer to F64 so all values have uniform type.
+                    // Member access will bitcast back to pointer for loads.
+                    let ptr_as_f64 =
+                        self.builder.ins().bitcast(types::F64, MemFlags::new(), base_ptr);
+                    self.values.insert(*dest, ptr_as_f64);
+                }
             }
 
-            IrInstruction::ArrayLit { dest, .. } => {
-                // Placeholder: array literals need heap allocation (Phase 5)
-                let zero = self.builder.ins().f64const(0.0);
-                self.values.insert(*dest, zero);
+            IrInstruction::ArrayLit { dest, elements } => {
+                // Layout: [length (f64), elem0 (f64), elem1 (f64), ...]
+                let num_elems = elements.len();
+                let total_slots = num_elems + 1; // +1 for length
+                let libc = self.libc.as_ref().unwrap();
+                let malloc_ref = self
+                    .module
+                    .declare_func_in_func(libc.malloc, self.builder.func);
+                let alloc_size = self
+                    .builder
+                    .ins()
+                    .iconst(self.ptr_type, (total_slots * 8) as i64);
+                let call = self.builder.ins().call(malloc_ref, &[alloc_size]);
+                let base_ptr = self.builder.inst_results(call)[0];
+
+                // Store length at offset 0
+                let len_val = self.builder.ins().f64const(num_elems as f64);
+                self.builder
+                    .ins()
+                    .store(MemFlags::new(), len_val, base_ptr, 0);
+
+                // Store each element at offset (i+1)*8
+                for (i, elem) in elements.iter().enumerate() {
+                    let val = if let Some(elem_id) = elem {
+                        self.get_value(*elem_id)?
+                    } else {
+                        self.builder.ins().f64const(0.0)
+                    };
+                    let offset = ((i + 1) * 8) as i32;
+                    self.builder
+                        .ins()
+                        .store(MemFlags::new(), val, base_ptr, offset);
+                }
+
+                // Bitcast pointer to F64 for uniform value representation
+                let ptr_as_f64 =
+                    self.builder.ins().bitcast(types::F64, MemFlags::new(), base_ptr);
+                self.values.insert(*dest, ptr_as_f64);
             }
 
-            IrInstruction::New { dest, .. } => {
-                // Placeholder: new expressions need heap allocation (Phase 5)
-                let zero = self.builder.ins().f64const(0.0);
-                self.values.insert(*dest, zero);
+            IrInstruction::New {
+                callee,
+                args,
+                dest,
+            } => {
+                // For struct instantiation, the pattern is:
+                //   ObjectLit { init_obj } → VarRef("StructName") → New(callee, [init_obj])
+                // The ObjectLit already has the fields allocated on the heap.
+                // We forward its pointer and layout to New's dest.
+                if let Some(&first_arg) = args.first() {
+                    if self.field_layouts.contains_key(&first_arg) {
+                        // The init object is a struct with known layout — forward it
+                        let ptr = self.get_value(first_arg)?;
+                        self.values.insert(*dest, ptr);
+                        if let Some(layout) = self.field_layouts.get(&first_arg).cloned() {
+                            self.field_layouts.insert(*dest, layout);
+                        }
+                    } else {
+                        // Try calling as a regular function
+                        self.lower_call(*callee, args, *dest)?;
+                    }
+                } else {
+                    // No args — try calling as a regular function
+                    self.lower_call(*callee, args, *dest)?;
+                }
             }
         }
         Ok(())
@@ -848,6 +1031,14 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 self.builder
                     .ins()
                     .call(print_str_ref, &[arg_val, len]);
+            } else if self.bool_values.contains(&arg_id) {
+                // Print boolean as "true"/"false"
+                let print_bool_ref = self
+                    .module
+                    .declare_func_in_func(libc.print_bool, self.builder.func);
+                self.builder
+                    .ins()
+                    .call(print_bool_ref, &[arg_val]);
             } else {
                 // Format and print the number using the C runtime helper.
                 // This avoids the variadic calling convention issue with snprintf

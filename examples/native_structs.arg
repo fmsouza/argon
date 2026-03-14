@@ -1,0 +1,52 @@
+// Test struct support for native compilation
+from "std:io" import { println };
+
+struct Point {
+    x: f64;
+    y: f64;
+}
+
+const origin = Point { x: 0.0, y: 0.0 };
+println(origin.x);
+println(origin.y);
+
+const p = Point { x: 3.0, y: 4.0 };
+println(p.x);
+println(p.y);
+
+// Struct with different values
+struct Color {
+    r: f64;
+    g: f64;
+    b: f64;
+}
+
+const red = Color { r: 255.0, g: 0.0, b: 0.0 };
+println(red.r);
+println(red.g);
+println(red.b);
+
+// Passing struct to function
+function getX(point: &Point): f64 {
+    return point.x;
+}
+
+function getY(point: &Point): f64 {
+    return point.y;
+}
+
+println(getX(p));
+println(getY(p));
+
+// Struct returned from function
+function makePoint(x: f64, y: f64): Point {
+    return Point { x: x, y: y };
+}
+
+const q = makePoint(10.0, 20.0);
+println(q.x);
+println(q.y);
+
+// Boolean printing
+println(true);
+println(false);

@@ -76,9 +76,9 @@ impl NativeCodegen {
         lowerer.lower_module(ir_module)?;
 
         let product = object_module.finish();
-        Ok(product.emit().map_err(|e| {
-            CodegenError::CraneliftError(format!("failed to emit object: {}", e))
-        })?)
+        product
+            .emit()
+            .map_err(|e| CodegenError::CraneliftError(format!("failed to emit object: {}", e)))
     }
 
     /// Get the target triple.
