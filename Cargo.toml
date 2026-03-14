@@ -4,6 +4,7 @@ members = [
     "crates/argon-driver",
     "crates/argon-codegen-js",
     "crates/argon-codegen-wasm",
+    "crates/argon-codegen-native",
     "crates/argon-interop",
     "crates/argon-stdlib",
     "crates/argon-diagnostics",
@@ -14,6 +15,7 @@ members = [
     "crates/argon-borrowck",
     "crates/argon-ir",
     "crates/argon-runtime",
+    "crates/argon-target",
 ]
 resolver = "2"
 

@@ -14,8 +14,10 @@ argon-borrowck = { path = "../argon-borrowck" }
 argon-ir = { path = "../argon-ir" }
 argon-codegen-js = { path = "../argon-codegen-js" }
 argon-codegen-wasm = { path = "../argon-codegen-wasm" }
+argon-codegen-native = { path = "../argon-codegen-native" }
 argon-diagnostics = { path = "../argon-diagnostics" }
 argon-stdlib = { path = "../argon-stdlib" }
+argon-target = { path = "../argon-target" }
 thiserror.workspace = true
 wasmprinter.workspace = true
 

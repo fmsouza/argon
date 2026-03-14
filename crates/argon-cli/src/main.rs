@@ -1,6 +1,6 @@
 //! Argon CLI
 
-use argon_driver::{CompileOptions, Compiler, Pipeline, Target};
+use argon_driver::{CompileOptions, Compiler, EmitKind, Pipeline, Target};
 use argon_runtime::execute_ast;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -31,6 +31,13 @@ enum Commands {
         declarations: bool,
         #[arg(long, default_value = "ir")]
         pipeline: String,
+        /// Target triple for native compilation (e.g., x86_64-unknown-linux-gnu).
+        /// Implies --target native.
+        #[arg(long)]
+        triple: Option<String>,
+        /// What to emit for native target: exe (default), obj, asm.
+        #[arg(long, default_value = "exe")]
+        emit: String,
     },
     Check {
         input: PathBuf,
@@ -89,6 +96,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             opt,
             declarations,
             pipeline,
+            triple,
+            emit,
         } => {
             compile(
                 &input,
@@ -99,6 +108,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 opt,
                 declarations,
                 &pipeline,
+                triple.as_deref(),
+                &emit,
             )?;
         }
         Commands::Check { input } => {
@@ -159,16 +170,24 @@ fn compile(
     opt: bool,
     declarations: bool,
     pipeline: &str,
+    triple: Option<&str>,
+    emit: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Parsing {}...", input.display());
     println!("Type checking...");
     println!("Borrow checking...");
 
-    let target = match target {
-        "js" => Target::Js,
-        "wasm" => Target::Wasm,
-        other => {
-            return Err(format!("Unknown target: {}", other).into());
+    // --triple implies --target native
+    let target = if triple.is_some() {
+        Target::Native
+    } else {
+        match target {
+            "js" => Target::Js,
+            "wasm" => Target::Wasm,
+            "native" => Target::Native,
+            other => {
+                return Err(format!("Unknown target: {}", other).into());
+            }
         }
     };
 
@@ -180,6 +199,15 @@ fn compile(
         }
     };
 
+    let emit = match emit {
+        "exe" => EmitKind::Exe,
+        "obj" => EmitKind::Obj,
+        "asm" => EmitKind::Asm,
+        other => {
+            return Err(format!("Unknown emit kind: {}. Use exe, obj, or asm.", other).into());
+        }
+    };
+
     let compiler = Compiler::new();
     let options = CompileOptions {
         target,
@@ -187,6 +215,8 @@ fn compile(
         optimize: opt,
         source_map,
         declarations,
+        target_triple: triple.map(|s| s.to_string()),
+        emit,
     };
 
     // Multi-file project compilation: compile entry + all dependencies.
@@ -332,6 +362,97 @@ fn compile(
                 fs::write(&wat_path, &wat)?;
                 println!("Wrote {}", wat_path.display());
                 println!("\nWAT output:\n{}", wat);
+            }
+        }
+        Target::Native => {
+            println!("Generating native binary...");
+
+            let triple = match &options.target_triple {
+                Some(t) => argon_target::TargetTriple::parse(t)
+                    .map_err(|e| format!("Invalid target triple: {}", e))?,
+                None => argon_target::TargetTriple::host(),
+            };
+
+            let obj_bytes = artifacts.native_obj.unwrap_or_default();
+
+            match emit {
+                EmitKind::Obj => {
+                    let output_path = output.cloned().unwrap_or_else(|| {
+                        let stem = input
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy();
+                        PathBuf::from(format!("{}{}", stem, triple.obj_suffix()))
+                    });
+                    fs::write(&output_path, &obj_bytes)?;
+                    println!("Wrote {}", output_path.display());
+                }
+                EmitKind::Asm => {
+                    let output_path = output.cloned().unwrap_or_else(|| {
+                        let stem = input
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy();
+                        PathBuf::from(format!("{}.s", stem))
+                    });
+                    if let Some(asm) = artifacts.native_asm {
+                        fs::write(&output_path, &asm)?;
+                        println!("Wrote {}", output_path.display());
+                    } else {
+                        return Err("assembly output not available".into());
+                    }
+                }
+                EmitKind::Exe => {
+                    let output_path = output.cloned().unwrap_or_else(|| {
+                        let stem = input
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy();
+                        PathBuf::from(format!("{}{}", stem, triple.exe_suffix()))
+                    });
+
+                    let tmp_dir = std::env::temp_dir();
+
+                    // Write object file to temp location
+                    let obj_path = tmp_dir.join(format!(
+                        "argon_{}{}",
+                        std::process::id(),
+                        triple.obj_suffix()
+                    ));
+                    fs::write(&obj_path, &obj_bytes)?;
+
+                    // Compile the C runtime helpers
+                    let runtime_obj_path =
+                        argon_codegen_native::compile_c_runtime(&tmp_dir)
+                            .map_err(|e| format!("{}", e))?;
+
+                    // Link both objects
+                    let linker_config = argon_codegen_native::LinkerConfig {
+                        triple: triple.clone(),
+                        output: output_path.clone(),
+                        objects: vec![obj_path.clone(), runtime_obj_path.clone()],
+                    };
+                    argon_codegen_native::link(&linker_config).map_err(|e| {
+                        let _ = fs::remove_file(&obj_path);
+                        let _ = fs::remove_file(&runtime_obj_path);
+                        format!("{}", e)
+                    })?;
+
+                    let _ = fs::remove_file(&obj_path);
+                    let _ = fs::remove_file(&runtime_obj_path);
+
+                    // Set executable permission on Unix
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        fs::set_permissions(
+                            &output_path,
+                            fs::Permissions::from_mode(0o755),
+                        )?;
+                    }
+
+                    println!("Wrote {}", output_path.display());
+                }
             }
         }
     }
@@ -542,6 +663,7 @@ fn run_test_file_with_pipeline(
         optimize: false,
         source_map: false,
         declarations: false,
+        ..Default::default()
     };
 
     let source_name = test_file.display().to_string();
@@ -759,6 +881,8 @@ fn watch(
             opt,
             declarations,
             pipeline,
+            None,
+            "exe",
         );
     }
 
@@ -782,6 +906,8 @@ fn watch(
             opt,
             declarations,
             pipeline,
+            None,
+            "exe",
         ) {
             eprintln!("{}", e);
         }
@@ -868,6 +994,7 @@ fn repl() -> Result<(), Box<dyn std::error::Error>> {
                         optimize: false,
                         source_map: false,
                         declarations: false,
+                        ..Default::default()
                     };
 
                     let source_name = "<repl>";
@@ -881,6 +1008,13 @@ fn repl() -> Result<(), Box<dyn std::error::Error>> {
                                 let wat =
                                     artifacts.wat.unwrap_or_else(|| "<wat unavailable>".into());
                                 println!("{}", wat);
+                            }
+                            Target::Native => {
+                                if let Some(obj) = &artifacts.native_obj {
+                                    println!("<native object: {} bytes>", obj.len());
+                                } else {
+                                    println!("<no native output>");
+                                }
                             }
                         },
                         Err(e) => {

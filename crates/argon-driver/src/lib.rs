@@ -5,10 +5,12 @@
 use argon_ast::SourceFile;
 use argon_borrowck::BorrowChecker;
 use argon_codegen_js::{generate_type_declarations, JsCodegen};
+use argon_codegen_native::NativeCodegen;
 use argon_codegen_wasm::WasmCodegen;
 use argon_diagnostics::{Diagnostic, DiagnosticBag, DiagnosticEngine, Severity};
 use argon_ir::IrBuilder;
 use argon_parser::{parse, ParseError};
+use argon_target::TargetTriple;
 use argon_types::{TypeCheckOutput, TypeChecker};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -17,6 +19,14 @@ use std::path::{Path, PathBuf};
 pub enum Target {
     Js,
     Wasm,
+    Native,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmitKind {
+    Exe,
+    Obj,
+    Asm,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +42,11 @@ pub struct CompileOptions {
     pub optimize: bool,
     pub source_map: bool,
     pub declarations: bool,
+    /// Target triple for native compilation (e.g., "x86_64-unknown-linux-gnu").
+    /// When None, defaults to the host triple.
+    pub target_triple: Option<String>,
+    /// What to emit for native target.
+    pub emit: EmitKind,
 }
 
 impl Default for CompileOptions {
@@ -42,6 +57,8 @@ impl Default for CompileOptions {
             optimize: false,
             source_map: false,
             declarations: false,
+            target_triple: None,
+            emit: EmitKind::Exe,
         }
     }
 }
@@ -55,6 +72,10 @@ pub struct CompileArtifacts {
     pub wasm_host_js: Option<String>,
     pub source_map: Option<String>,
     pub declarations: Option<String>,
+    /// Native object file bytes (.o / .obj).
+    pub native_obj: Option<Vec<u8>>,
+    /// Native assembly text (.s).
+    pub native_asm: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +133,7 @@ impl Compiler {
         match options.target {
             Target::Js => self.compile_js(source, source_name, &ast, options),
             Target::Wasm => self.compile_wasm(source, source_name, &ast, options),
+            Target::Native => self.compile_native(source, source_name, &ast, options),
         }
     }
 
@@ -138,6 +160,7 @@ impl Compiler {
         let artifacts = match options.target {
             Target::Js => self.compile_js(&source, &source_name, &ast, options)?,
             Target::Wasm => self.compile_wasm(&source, &source_name, &ast, options)?,
+            Target::Native => self.compile_native(&source, &source_name, &ast, options)?,
         };
 
         Ok(CompileResult { artifacts, deps })
@@ -360,6 +383,8 @@ impl Compiler {
             wasm_host_js: None,
             source_map,
             declarations,
+            native_obj: None,
+            native_asm: None,
         })
     }
 
@@ -397,6 +422,49 @@ impl Compiler {
             wasm_host_js: Some(wasm_host_js),
             source_map: None,
             declarations: None,
+            native_obj: None,
+            native_asm: None,
+        })
+    }
+
+    fn compile_native(
+        &self,
+        source: &str,
+        source_name: &str,
+        ast: &SourceFile,
+        options: &CompileOptions,
+    ) -> Result<CompileArtifacts, DriverError> {
+        let triple = match &options.target_triple {
+            Some(t) => TargetTriple::parse(t).map_err(|e| {
+                self.simple_error_to_driver(source, source_name, "target error", &e)
+            })?,
+            None => TargetTriple::host(),
+        };
+
+        let mut builder = IrBuilder::new();
+        let mut ir = builder
+            .build(ast)
+            .map_err(|e| self.simple_error_to_driver(source, source_name, "ir error", &e))?;
+
+        if options.optimize {
+            let _ = argon_ir::passes::optimize_module(&mut ir);
+        }
+
+        let codegen = NativeCodegen::new(triple);
+        let obj_bytes = codegen.generate(&ir).map_err(|e| {
+            self.simple_error_to_driver(source, source_name, "native codegen error", &e)
+        })?;
+
+        Ok(CompileArtifacts {
+            js: None,
+            wasm: None,
+            wat: None,
+            wasm_loader_js: None,
+            wasm_host_js: None,
+            source_map: None,
+            declarations: None,
+            native_obj: Some(obj_bytes),
+            native_asm: None,
         })
     }
 
