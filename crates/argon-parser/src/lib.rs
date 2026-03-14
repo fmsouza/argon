@@ -225,8 +225,12 @@ impl Parser {
         if self.match_one(&[TokenKind::Struct]) {
             return self.parse_struct();
         }
-        if self.match_one(&[TokenKind::Class]) {
-            return self.parse_class();
+        if self.check(&TokenKind::Class) {
+            let span = self.peek().span.clone();
+            return Err(ParseError::UnexpectedToken {
+                msg: "the `class` keyword is not supported; use `struct` instead".to_string(),
+                span,
+            });
         }
         if self.match_one(&[TokenKind::Match]) {
             return self.parse_match();
@@ -1201,12 +1205,31 @@ impl Parser {
         let id = self.expect_identifier()?;
         let type_params = self.parse_type_params_opt()?;
 
+        // Parse optional `implements` clause
+        let implements = if self.match_one(&[TokenKind::Implements]) {
+            let mut types = vec![self.parse_type()?];
+            while self.match_one(&[TokenKind::Comma]) {
+                types.push(self.parse_type()?);
+            }
+            types
+        } else {
+            vec![]
+        };
+
         let mut fields = Vec::new();
         let mut methods = Vec::new();
+        let mut constructor = None;
         self.expect(TokenKind::OpenBrace)?;
 
         while !self.check(&TokenKind::CloseBrace) && !self.is_at_end() {
             if self.match_one(&[TokenKind::Semi, TokenKind::Comma]) {
+                continue;
+            }
+
+            // Check for constructor
+            if self.match_one(&[TokenKind::Constructor]) {
+                constructor = Some(self.parse_constructor()?);
+                self.match_one(&[TokenKind::Semi]);
                 continue;
             }
 
@@ -1243,124 +1266,9 @@ impl Parser {
             type_params,
             fields,
             methods,
+            constructor,
+            implements,
             span: start..end,
-        }))
-    }
-
-    fn parse_class(&mut self) -> Result<argon_ast::Stmt, ParseError> {
-        use argon_ast::*;
-
-        let start = self.previous().span.start;
-        let id = self.expect_identifier()?;
-        let type_params = self.parse_type_params_opt()?;
-
-        let super_class = if self.match_one(&[TokenKind::Extends]) {
-            Some(Box::new(self.parse_type()?))
-        } else {
-            None
-        };
-
-        let mut body_items = Vec::new();
-        self.expect(TokenKind::OpenBrace)?;
-        let body_start = self.previous().span.start;
-
-        while !self.check(&TokenKind::CloseBrace) && !self.is_at_end() {
-            if self.match_one(&[TokenKind::Constructor]) {
-                body_items.push(ClassMember::Constructor(self.parse_constructor()?));
-            } else if self.check(&TokenKind::Identifier) {
-                // Check if this is a method (identifier followed by parenthesis)
-                let saved_pos = self.current;
-                let _ = self.expect_identifier()?;
-                let is_method_call =
-                    self.check(&TokenKind::OpenParen) || self.check(&TokenKind::LessThan);
-                self.current = saved_pos;
-
-                if is_method_call {
-                    // It's a method - parse identifier then call parse_method
-                    let key_ident = self.expect_identifier()?;
-                    let key = argon_ast::Expr::Identifier(key_ident);
-                    let method = self.parse_method(key)?;
-                    body_items.push(ClassMember::Method(method));
-                } else {
-                    // It's a field - parse the full expression
-                    let key = self.parse_expression()?;
-                    let field_start = key.span().start;
-                    if self.match_one(&[TokenKind::OpenParen]) {
-                        // Actually it's a method after all
-                        self.current -= 1;
-                        let method = self.parse_method(key)?;
-                        body_items.push(ClassMember::Method(method));
-                    } else if self.match_one(&[TokenKind::Colon]) {
-                        // It's a typed field
-                        let type_annotation = Some(Box::new(self.parse_type()?));
-                        let value = if self.match_one(&[TokenKind::Equal]) {
-                            Some(self.parse_expression()?)
-                        } else {
-                            None
-                        };
-                        let field_end = self.previous().span.end;
-                        body_items.push(ClassMember::Field(ClassField {
-                            key,
-                            value,
-                            type_annotation,
-                            is_optional: false,
-                            is_readonly: false,
-                            span: field_start..field_end,
-                        }));
-                    } else {
-                        // Just an expression statement
-                        let field_end = self.previous().span.end;
-                        body_items.push(ClassMember::Field(ClassField {
-                            key,
-                            value: None,
-                            type_annotation: None,
-                            is_optional: false,
-                            is_readonly: false,
-                            span: field_start..field_end,
-                        }));
-                    }
-                }
-                self.match_one(&[TokenKind::Semi]);
-            } else if self.check(&TokenKind::StringLiteral) {
-                // String key for computed property - treat as field
-                let key = self.parse_expression()?;
-                let field_start = key.span().start;
-                self.expect(TokenKind::Colon)?;
-                let type_annotation = Some(Box::new(self.parse_type()?));
-                let value = if self.match_one(&[TokenKind::Equal]) {
-                    Some(self.parse_expression()?)
-                } else {
-                    None
-                };
-                let field_end = self.previous().span.end;
-                body_items.push(ClassMember::Field(ClassField {
-                    key,
-                    value,
-                    type_annotation,
-                    is_optional: false,
-                    is_readonly: false,
-                    span: field_start..field_end,
-                }));
-                self.match_one(&[TokenKind::Semi]);
-            } else {
-                self.advance();
-            }
-        }
-
-        self.expect(TokenKind::CloseBrace)?;
-        let body_end = self.previous().span.end;
-
-        Ok(Stmt::Class(ClassDecl {
-            id,
-            type_params,
-            super_class,
-            super_type_args: vec![],
-            implements: vec![],
-            body: ClassBody {
-                body: body_items,
-                span: body_start..body_end,
-            },
-            span: start..body_end,
         }))
     }
 

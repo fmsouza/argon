@@ -273,13 +273,34 @@ mod struct_parsing {
     }
 }
 
-mod class_parsing {
+mod struct_constructor_parsing {
     use super::*;
 
     #[test]
-    fn parses_class_declaration() {
+    fn parses_struct_with_fields() {
         // Assign
-        let source = "class Point { x: i32; y: i32; }";
+        let source = "struct Point { x: i32; y: i32; }";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let ast = result.unwrap();
+        assert_eq!(ast.statements.len(), 1);
+
+        if let Stmt::Struct(s) = &ast.statements[0] {
+            assert_eq!(s.id.sym, "Point");
+            assert_eq!(s.fields.len(), 2);
+        } else {
+            panic!("Expected struct statement");
+        }
+    }
+
+    #[test]
+    fn parses_struct_with_constructor() {
+        // Assign
+        let source = "struct Point { constructor(x: i32, y: i32) { this.x = x; this.y = y; } }";
 
         // Act
         let result = parse(source);
@@ -288,59 +309,82 @@ mod class_parsing {
         assert!(result.is_ok());
         let ast = result.unwrap();
 
-        if let Stmt::Class(c) = &ast.statements[0] {
-            assert_eq!(c.id.sym, "Point");
+        if let Stmt::Struct(s) = &ast.statements[0] {
+            assert!(s.constructor.is_some());
         } else {
-            panic!("Expected class statement");
+            panic!("Expected struct statement");
         }
     }
 
     #[test]
-    fn parses_class_with_constructor() {
+    fn parses_struct_with_method_and_constructor() {
         // Assign
-        let source = "class Point { constructor(x: i32, y: i32) { this.x = x; this.y = y; } }";
+        let source = "struct Calculator { add(a: i32, b: i32): i32 { return a + b; } }";
 
         // Act
         let result = parse(source);
 
         // Assert
         assert!(result.is_ok());
+        let ast = result.unwrap();
+
+        if let Stmt::Struct(s) = &ast.statements[0] {
+            assert_eq!(s.id.sym, "Calculator");
+        } else {
+            panic!("Expected struct statement");
+        }
     }
 
     #[test]
-    fn parses_class_with_method() {
+    fn parses_generic_struct_with_constructor_and_method() {
         // Assign
-        let source = "class Calculator { add(a: i32, b: i32): i32 { return a + b; } }";
-
-        // Act
-        let result = parse(source);
-
-        // Assert
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn parses_class_with_extends() {
-        // Assign
-        let source = "class Dog extends Animal { }";
-
-        // Act
-        let result = parse(source);
-
-        // Assert
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn parses_generic_class_with_method_returning_type_param() {
-        // Assign
-        let source = "class Container<T> { value: T; constructor(v: T) { this.value = v; } get(): T { return this.value; } }";
+        let source = "struct Container<T> { value: T; constructor(v: T) { this.value = v; } get(): T { return this.value; } }";
 
         // Act
         let result = parse(source);
 
         // Assert
         assert!(result.is_ok(), "parse error: {:?}", result.err());
+        let ast = result.unwrap();
+
+        if let Stmt::Struct(s) = &ast.statements[0] {
+            assert!(!s.type_params.is_empty());
+            assert!(s.constructor.is_some());
+            assert!(!s.methods.is_empty());
+        } else {
+            panic!("Expected struct statement");
+        }
+    }
+
+    #[test]
+    fn parses_struct_with_implements() {
+        // Assign
+        let source = "struct Foo implements Bar { x: i32; }";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok(), "parse error: {:?}", result.err());
+        let ast = result.unwrap();
+
+        if let Stmt::Struct(s) = &ast.statements[0] {
+            assert!(!s.implements.is_empty());
+        } else {
+            panic!("Expected struct statement");
+        }
+    }
+
+    #[test]
+    fn class_keyword_is_rejected() {
+        // Assign
+        let source = "class Foo { }";
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_err());
     }
 }
 
@@ -774,7 +818,7 @@ mod borrow_annotation_parsing {
     #[test]
     fn parses_method_with_this_borrow() {
         // Assign
-        let source = "class Foo { bar(): i32 with &this { return 1; } }";
+        let source = "struct Foo { bar(): i32 with &this { return 1; } }";
 
         // Act
         let result = parse(source);

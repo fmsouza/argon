@@ -159,8 +159,8 @@ mod class_codegen {
     use super::*;
 
     #[test]
-    fn generates_class_declaration() {
-        let source = "class Point { constructor(x: i32, y: i32) { this.x = x; } }";
+    fn generates_struct_with_constructor() {
+        let source = "struct Point { constructor(x: i32, y: i32) { this.x = x; } }";
         let ast = parse(source).unwrap();
         let mut codegen = JsCodegen::new();
 
@@ -168,7 +168,10 @@ mod class_codegen {
 
         assert!(result.is_ok());
         let output = result.unwrap();
-        assert!(output.contains("function Point"));
+        assert!(output.contains("function Point(init)"));
+        assert!(output.contains("var x = init.x"));
+        assert!(output.contains("var y = init.y"));
+        assert!(output.contains("this.x = x"));
     }
 }
 

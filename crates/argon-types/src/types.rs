@@ -25,7 +25,6 @@ pub enum Type {
     Union(Vec<TypeId>),
     Intersection(Vec<TypeId>),
     Struct(StructDef),
-    Class(ClassDef),
     Interface(InterfaceDef),
     ObjectShape(ObjectShapeDef),
     Enum(EnumDef),
@@ -120,7 +119,6 @@ impl fmt::Display for Type {
                 Ok(())
             }
             Type::Struct(def) => write!(f, "struct {}", def.name),
-            Type::Class(def) => write!(f, "class {}", def.name),
             Type::Interface(def) => write!(f, "interface {}", def.name),
             Type::ObjectShape(_) => write!(f, "object"),
             Type::Enum(def) => write!(f, "enum {}", def.name),
@@ -162,19 +160,13 @@ pub struct StructDef {
     pub name: String,
     pub fields: Vec<FieldDef>,
     pub methods: Vec<MethodDef>,
+    pub constructor_params: Option<Vec<(String, TypeId)>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FieldDef {
     pub name: String,
     pub ty: TypeId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ClassDef {
-    pub name: String,
-    pub fields: Vec<FieldDef>,
-    pub methods: Vec<MethodDef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -365,10 +357,6 @@ impl TypeTable {
         self.get_or_add(Type::Struct(def))
     }
 
-    pub fn class_def(&mut self, def: ClassDef) -> TypeId {
-        self.get_or_add(Type::Class(def))
-    }
-
     pub fn interface_def(&mut self, def: InterfaceDef) -> TypeId {
         self.get_or_add(Type::Interface(def))
     }
@@ -493,42 +481,17 @@ impl TypeInstantiator {
                         },
                     })
                     .collect();
+                let constructor_params = def.constructor_params.as_ref().map(|params| {
+                    params
+                        .iter()
+                        .map(|(name, ty)| (name.clone(), self.instantiate(type_table, *ty)))
+                        .collect()
+                });
                 type_table.struct_def(StructDef {
                     name: def.name,
                     fields,
                     methods,
-                })
-            }
-            Type::Class(def) => {
-                let fields = def
-                    .fields
-                    .iter()
-                    .map(|f| FieldDef {
-                        name: f.name.clone(),
-                        ty: self.instantiate(type_table, f.ty),
-                    })
-                    .collect();
-                let methods = def
-                    .methods
-                    .iter()
-                    .map(|m| MethodDef {
-                        name: m.name.clone(),
-                        sig: FunctionSig {
-                            params: m
-                                .sig
-                                .params
-                                .iter()
-                                .map(|&p| self.instantiate(type_table, p))
-                                .collect(),
-                            return_type: self.instantiate(type_table, m.sig.return_type),
-                            is_async: m.sig.is_async,
-                        },
-                    })
-                    .collect();
-                type_table.class_def(ClassDef {
-                    name: def.name,
-                    fields,
-                    methods,
+                    constructor_params,
                 })
             }
             Type::Interface(def) => {

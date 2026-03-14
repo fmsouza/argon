@@ -306,7 +306,6 @@ impl IrBuilder {
                 Stmt::Function(f) => self.translate_function(f, false)?,
                 Stmt::AsyncFunction(f) => self.translate_function(f, true)?,
                 Stmt::Struct(s) => self.translate_struct(s)?,
-                Stmt::Class(c) => self.translate_class(c)?,
                 Stmt::Enum(e) => self.translate_enum(e)?,
                 Stmt::Variable(v) => {
                     self.translate_global_variable_stmt(v)?;
@@ -406,11 +405,6 @@ impl IrBuilder {
             Stmt::Struct(s) => {
                 let name = s.id.sym.clone();
                 self.translate_struct(s)?;
-                Ok(vec![name])
-            }
-            Stmt::Class(c) => {
-                let name = c.id.sym.clone();
-                self.translate_class(c)?;
                 Ok(vec![name])
             }
             Stmt::Variable(v) => {
@@ -1520,30 +1514,6 @@ impl IrBuilder {
 
         self.types.push(TypeDef::Struct {
             name: s.id.sym.clone(),
-            fields,
-        });
-
-        Ok(())
-    }
-
-    fn translate_class(&mut self, c: &ClassDecl) -> Result<(), IrError> {
-        // For now, classes lower to the same runtime representation as structs: a constructor
-        // that copies fields from an initializer object. This matches the current parser
-        // lowering of `Foo { x: 1 }` into `new Foo({ x: 1 })`.
-        let mut fields = Vec::new();
-        for member in &c.body.body {
-            if let ClassMember::Field(f) = member {
-                if let Expr::Identifier(id) = &f.key {
-                    fields.push(Field {
-                        name: id.sym.clone(),
-                        ty: 0,
-                    });
-                }
-            }
-        }
-
-        self.types.push(TypeDef::Struct {
-            name: c.id.sym.clone(),
             fields,
         });
 

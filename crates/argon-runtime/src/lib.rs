@@ -35,12 +35,6 @@ pub struct NativeFunction {
 struct RuntimeStructDef {
     fields: Vec<String>,
     methods: HashMap<String, FunctionDecl>,
-}
-
-#[derive(Debug, Clone)]
-struct RuntimeClassDef {
-    fields: Vec<String>,
-    methods: HashMap<String, FunctionDecl>,
     constructor: Option<Constructor>,
 }
 
@@ -86,7 +80,6 @@ pub struct Runtime {
     scope: Scope,
     globals: HashMap<String, Value>,
     struct_defs: HashMap<String, RuntimeStructDef>,
-    class_defs: HashMap<String, RuntimeClassDef>,
 }
 
 impl Default for Runtime {
@@ -169,7 +162,6 @@ impl Runtime {
             scope: Scope::new(),
             globals,
             struct_defs: HashMap::new(),
-            class_defs: HashMap::new(),
         }
     }
 
@@ -220,10 +212,6 @@ impl Runtime {
             }
             Stmt::Struct(s) => {
                 self.register_struct(s);
-                Ok(ExecOutcome::Normal)
-            }
-            Stmt::Class(c) => {
-                self.register_class(c);
                 Ok(ExecOutcome::Normal)
             }
             Stmt::Enum(e) => {
@@ -608,9 +596,6 @@ impl Runtime {
                     if self.struct_defs.contains_key(&id.sym) {
                         return self.instantiate_struct(&id.sym, &n.arguments);
                     }
-                    if self.class_defs.contains_key(&id.sym) {
-                        return self.instantiate_class(&id.sym, &n.arguments);
-                    }
                 }
 
                 Err(RuntimeError::Unsupported(
@@ -703,7 +688,6 @@ impl Runtime {
                     scope: call_scope,
                     globals: self.globals.clone(),
                     struct_defs: self.struct_defs.clone(),
-                    class_defs: self.class_defs.clone(),
                 };
                 rt.execute_function_body(&func.body)
             }
@@ -724,37 +708,10 @@ impl Runtime {
                 _ => None,
             })
             .collect();
-        self.struct_defs
-            .insert(s.id.sym.clone(), RuntimeStructDef { fields, methods });
-    }
-
-    fn register_class(&mut self, c: &ClassDecl) {
-        let mut fields = Vec::new();
-        let mut methods = HashMap::new();
-        let mut constructor = None;
-
-        for member in &c.body.body {
-            match member {
-                ClassMember::Field(f) => {
-                    if let Expr::Identifier(id) = &f.key {
-                        fields.push(id.sym.clone());
-                    }
-                }
-                ClassMember::Method(m) => {
-                    if let Expr::Identifier(id) = &m.key {
-                        methods.insert(id.sym.clone(), m.value.clone());
-                    }
-                }
-                ClassMember::Constructor(cons) => {
-                    constructor = Some(cons.clone());
-                }
-                _ => {}
-            }
-        }
-
-        self.class_defs.insert(
-            c.id.sym.clone(),
-            RuntimeClassDef {
+        let constructor = s.constructor.clone();
+        self.struct_defs.insert(
+            s.id.sym.clone(),
+            RuntimeStructDef {
                 fields,
                 methods,
                 constructor,
@@ -806,56 +763,28 @@ impl Runtime {
             .ok_or_else(|| RuntimeError::UndefinedVariable(name.to_string()))?;
         let obj = Rc::new(RefCell::new(HashMap::new()));
 
-        if let Some(ExprOrSpread::Expr(init_expr)) = args.first() {
-            let init = self.evaluate_expression(init_expr)?;
-            if let Value::Object(init_map) = init {
-                for (k, v) in init_map.borrow().iter() {
-                    obj.borrow_mut().insert(k.clone(), v.clone());
-                }
-            }
-        }
+        if let Some(constructor) = &def.constructor {
+            // Get the init object from args
+            let init_value = if let Some(ExprOrSpread::Expr(arg)) = args.first() {
+                self.evaluate_expression(arg)?
+            } else {
+                Value::Undefined
+            };
 
-        for field in def.fields {
-            obj.borrow_mut().entry(field).or_insert(Value::Undefined);
-        }
-        for (method_name, method_decl) in def.methods {
-            let method_fn = self.bound_method_function(&method_decl, obj.clone());
-            obj.borrow_mut().insert(method_name, method_fn);
-        }
-
-        Ok(Value::Object(obj))
-    }
-
-    fn instantiate_class(
-        &mut self,
-        name: &str,
-        args: &[ExprOrSpread],
-    ) -> Result<Value, RuntimeError> {
-        let def = self
-            .class_defs
-            .get(name)
-            .cloned()
-            .ok_or_else(|| RuntimeError::UndefinedVariable(name.to_string()))?;
-        let obj = Rc::new(RefCell::new(HashMap::new()));
-
-        for field in def.fields {
-            obj.borrow_mut().entry(field).or_insert(Value::Undefined);
-        }
-        for (method_name, method_decl) in def.methods {
-            let method_fn = self.bound_method_function(&method_decl, obj.clone());
-            obj.borrow_mut().insert(method_name, method_fn);
-        }
-
-        if let Some(constructor) = def.constructor {
+            // Set up constructor scope with params extracted from init object
             let mut ctor_scope = Scope::new();
             ctor_scope.define("this".to_string(), Value::Object(obj.clone()));
-            for (idx, param) in constructor.params.iter().enumerate() {
-                if let Pattern::Identifier(id) = &param.pat {
-                    let value = match args.get(idx) {
-                        Some(ExprOrSpread::Expr(e)) => self.evaluate_expression(e)?,
-                        _ => Value::Undefined,
-                    };
-                    ctor_scope.define(id.name.sym.clone(), value);
+
+            if let Value::Object(init_obj) = &init_value {
+                for param in &constructor.params {
+                    if let Pattern::Identifier(id) = &param.pat {
+                        let val = init_obj
+                            .borrow()
+                            .get(&id.name.sym)
+                            .cloned()
+                            .unwrap_or(Value::Undefined);
+                        ctor_scope.define(id.name.sym.clone(), val);
+                    }
                 }
             }
 
@@ -863,7 +792,6 @@ impl Runtime {
                 scope: ctor_scope,
                 globals: self.globals.clone(),
                 struct_defs: self.struct_defs.clone(),
-                class_defs: self.class_defs.clone(),
             };
             for stmt in &constructor.body.statements {
                 match ctor_rt.execute_statement(stmt)? {
@@ -876,6 +804,28 @@ impl Runtime {
                     }
                 }
             }
+        } else {
+            // No constructor - unpack init object fields (original struct behavior)
+            if let Some(ExprOrSpread::Expr(init_expr)) = args.first() {
+                let init = self.evaluate_expression(init_expr)?;
+                if let Value::Object(init_map) = init {
+                    for (k, v) in init_map.borrow().iter() {
+                        obj.borrow_mut().insert(k.clone(), v.clone());
+                    }
+                }
+            }
+
+            for field in &def.fields {
+                obj.borrow_mut()
+                    .entry(field.clone())
+                    .or_insert(Value::Undefined);
+            }
+        }
+
+        // Attach methods
+        for (method_name, method_decl) in &def.methods {
+            let method_fn = self.bound_method_function(method_decl, obj.clone());
+            obj.borrow_mut().insert(method_name.clone(), method_fn);
         }
 
         Ok(Value::Object(obj))
@@ -1256,32 +1206,25 @@ fn detect_compile_only_feature_in_stmt(stmt: &Stmt) -> Option<&'static str> {
             .statements
             .iter()
             .find_map(detect_compile_only_feature_in_stmt),
-        Stmt::Class(c) => c.body.body.iter().find_map(|member| match member {
-            ClassMember::Field(field) => field
-                .value
-                .as_ref()
-                .and_then(detect_compile_only_feature_in_expr),
-            ClassMember::Method(method) => method
-                .value
-                .body
-                .statements
-                .iter()
-                .find_map(detect_compile_only_feature_in_stmt),
-            ClassMember::Constructor(cons) => cons
-                .body
-                .statements
-                .iter()
-                .find_map(detect_compile_only_feature_in_stmt),
-            ClassMember::IndexSignature(_) => None,
-        }),
-        Stmt::Struct(s) => s.methods.iter().find_map(|method| {
-            method
-                .value
-                .body
-                .statements
-                .iter()
-                .find_map(detect_compile_only_feature_in_stmt)
-        }),
+        Stmt::Struct(s) => s
+            .methods
+            .iter()
+            .find_map(|method| {
+                method
+                    .value
+                    .body
+                    .statements
+                    .iter()
+                    .find_map(detect_compile_only_feature_in_stmt)
+            })
+            .or_else(|| {
+                s.constructor.as_ref().and_then(|cons| {
+                    cons.body
+                        .statements
+                        .iter()
+                        .find_map(detect_compile_only_feature_in_stmt)
+                })
+            }),
         Stmt::Export(e) => e
             .declaration
             .as_deref()

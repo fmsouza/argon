@@ -1,5 +1,5 @@
-// Classes, constructors, methods, and `new`
-class Counter {
+// Structs with constructors, methods, and borrow annotations
+struct Counter {
     value: i32;
 
     constructor(initial: i32) {
@@ -15,7 +15,7 @@ class Counter {
     }
 }
 
-const counter = new Counter(10);
+const counter = Counter { initial: 10 };
 counter.increment();
 counter.increment();
 console.log(counter.getValue());

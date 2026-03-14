@@ -1955,7 +1955,6 @@ impl JsCodegen {
             Stmt::Function(f) => self.generate_function(f),
             Stmt::AsyncFunction(f) => self.generate_async_function(f),
             Stmt::Struct(s) => self.generate_struct(s),
-            Stmt::Class(c) => self.generate_class(c),
             Stmt::Enum(e) => self.generate_enum(e, false),
             Stmt::Expr(e) => {
                 self.generate_expression(&e.expr)?;
@@ -2115,9 +2114,9 @@ impl JsCodegen {
                     self.output.push_str("export ");
                     self.generate_async_function(f)?;
                 }
-                Stmt::Class(c) => {
+                Stmt::Struct(s) => {
                     self.output.push_str("export ");
-                    self.generate_class(c)?;
+                    self.generate_struct(s)?;
                 }
                 Stmt::Variable(v) => {
                     self.output.push_str("export ");
@@ -2225,103 +2224,55 @@ impl JsCodegen {
         self.output.push_str(&s.id.sym);
         self.output.push_str("(init) {\n");
 
-        // Assign fields to this
-        for field in &s.fields {
-            self.output.push_str("    this.");
-            self.output.push_str(&field.id.sym);
-            self.output.push_str(" = ");
-            self.output.push_str("init.");
-            self.output.push_str(&field.id.sym);
-            self.output.push_str(";\n");
-        }
-
-        self.output.push_str("}\n\n");
-        Ok(())
-    }
-
-    fn generate_class(&mut self, c: &ClassDecl) -> Result<(), CodegenError> {
-        // Generate a constructor function for the class
-        self.output.push_str("function ");
-        self.output.push_str(&c.id.sym);
-        self.output.push('(');
-
-        // Find constructor and get its params
-        let mut has_constructor = false;
-        for member in &c.body.body {
-            if let ClassMember::Constructor(constr) = member {
-                has_constructor = true;
-                let params: Vec<_> = constr
-                    .params
-                    .iter()
-                    .map(|p| {
-                        if let Pattern::Identifier(id) = &p.pat {
-                            id.name.sym.as_str()
-                        } else {
-                            ""
-                        }
-                    })
-                    .collect();
-                self.output.push_str(&params.join(", "));
+        if let Some(constructor) = &s.constructor {
+            // Extract constructor params from init object
+            for param in &constructor.params {
+                if let Pattern::Identifier(id) = &param.pat {
+                    self.output.push_str("    var ");
+                    self.output.push_str(&id.name.sym);
+                    self.output.push_str(" = init.");
+                    self.output.push_str(&id.name.sym);
+                    self.output.push_str(";\n");
+                }
+            }
+            // Generate constructor body
+            for stmt in &constructor.body.statements {
+                self.generate_statement(stmt)?;
+            }
+        } else {
+            // No constructor - assign fields from init
+            for field in &s.fields {
+                self.output.push_str("    this.");
+                self.output.push_str(&field.id.sym);
+                self.output.push_str(" = init.");
+                self.output.push_str(&field.id.sym);
+                self.output.push_str(";\n");
             }
         }
 
-        if !has_constructor {
-            self.output.push(')');
-        }
-
-        self.output.push_str(") {\n");
-
-        // Generate constructor body
-        for member in &c.body.body {
-            match member {
-                ClassMember::Constructor(constr) => {
-                    for stmt in &constr.body.statements {
-                        self.generate_statement(stmt)?;
+        // Generate methods
+        for method in &s.methods {
+            self.output.push_str("this.");
+            self.generate_expression(&method.key)?;
+            self.output.push_str(" = function(");
+            let params: Vec<_> = method
+                .value
+                .params
+                .iter()
+                .map(|p| {
+                    if let Pattern::Identifier(id) = &p.pat {
+                        id.name.sym.as_str()
+                    } else {
+                        ""
                     }
-                }
-                ClassMember::Field(field) => {
-                    // Generate field initialization if there's a value
-                    if let Some(value) = &field.value {
-                        self.output.push_str("this.");
-                        self.generate_expression(&field.key)?;
-                        self.output.push_str(" = ");
-                        self.generate_expression(value)?;
-                        self.output.push_str(";\n");
-                    }
-                }
-                ClassMember::Method(method) => {
-                    // Generate method
-                    self.output.push_str("this.");
-                    self.generate_expression(&method.key)?;
-                    self.output.push_str(" = function(");
-
-                    // Method params
-                    let params: Vec<_> = method
-                        .value
-                        .params
-                        .iter()
-                        .map(|p| {
-                            if let Pattern::Identifier(id) = &p.pat {
-                                id.name.sym.as_str()
-                            } else {
-                                ""
-                            }
-                        })
-                        .collect();
-                    self.output.push_str(&params.join(", "));
-                    self.output.push_str(") {\n");
-
-                    // Method body
-                    for stmt in &method.value.body.statements {
-                        self.generate_statement(stmt)?;
-                    }
-
-                    self.output.push_str("};\n");
-                }
-                _ => {
-                    // Other class members not supported yet
-                }
+                })
+                .collect();
+            self.output.push_str(&params.join(", "));
+            self.output.push_str(") {\n");
+            for stmt in &method.value.body.statements {
+                self.generate_statement(stmt)?;
             }
+            self.output.push_str("};\n");
         }
 
         self.output.push_str("}\n\n");
@@ -3248,57 +3199,23 @@ fn append_declaration_stmt(output: &mut String, stmt: &Stmt, exported: bool) {
                 output.push_str(&type_to_ts_string(&field.type_annotation));
                 output.push_str(";\n");
             }
-            output.push_str("}\n\n");
-        }
-        Stmt::Class(c) => {
-            if exported {
-                output.push_str("export ");
-            }
-            output.push_str("declare class ");
-            output.push_str(&c.id.sym);
-            append_type_params(output, &c.type_params);
-            output.push_str(" {\n");
-            for member in &c.body.body {
-                match member {
-                    ClassMember::Field(f) => {
-                        output.push_str("    ");
-                        if let Expr::Identifier(id) = &f.key {
-                            output.push_str(&id.sym);
-                        }
-                        if f.is_optional {
-                            output.push('?');
-                        }
-                        if let Some(ref ty) = f.type_annotation {
-                            output.push_str(": ");
-                            output.push_str(&type_to_ts_string(ty));
-                        }
-                        output.push_str(";\n");
-                    }
-                    ClassMember::Method(m) => {
-                        output.push_str("    ");
-                        if m.is_static {
-                            output.push_str("static ");
-                        }
-                        if let Expr::Identifier(id) = &m.key {
-                            output.push_str(&id.sym);
-                        }
-                        append_type_params(output, &m.value.type_params);
-                        output.push('(');
-                        append_params(output, &m.value.params);
-                        output.push(')');
-                        if let Some(ref ret_ty) = m.value.return_type {
-                            output.push_str(": ");
-                            output.push_str(&type_to_ts_string(ret_ty));
-                        }
-                        output.push_str(";\n");
-                    }
-                    ClassMember::Constructor(cons) => {
-                        output.push_str("    constructor(");
-                        append_params(output, &cons.params);
-                        output.push_str(");\n");
-                    }
-                    ClassMember::IndexSignature(_) => {}
+            for method in &s.methods {
+                output.push_str("    ");
+                if method.is_static {
+                    output.push_str("static ");
                 }
+                if let Expr::Identifier(id) = &method.key {
+                    output.push_str(&id.sym);
+                }
+                append_type_params(output, &method.value.type_params);
+                output.push('(');
+                append_params(output, &method.value.params);
+                output.push(')');
+                if let Some(ref ret_ty) = method.value.return_type {
+                    output.push_str(": ");
+                    output.push_str(&type_to_ts_string(ret_ty));
+                }
+                output.push_str(";\n");
             }
             output.push_str("}\n\n");
         }

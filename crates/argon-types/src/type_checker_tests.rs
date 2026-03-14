@@ -293,13 +293,13 @@ mod statement_type_checking {
     }
 }
 
-mod class_type_checking {
+mod struct_constructor_type_checking {
     use super::*;
 
     #[test]
-    fn checks_class_with_constructor() {
+    fn checks_struct_with_constructor() {
         // Assign
-        let source = "class Point { constructor(x: i32, y: i32) { this.x = x; this.y = y; } }";
+        let source = "struct Point { constructor(x: i32, y: i32) { this.x = x; this.y = y; } }";
         let ast = parse(source).unwrap();
         let mut checker = TypeChecker::new();
 
@@ -311,9 +311,9 @@ mod class_type_checking {
     }
 
     #[test]
-    fn checks_class_with_methods() {
+    fn checks_struct_with_methods() {
         // Assign
-        let source = "class Calculator { add(a: i32, b: i32): i32 { return a + b; } }";
+        let source = "struct Calculator { add(a: i32, b: i32): i32 { return a + b; } }";
         let ast = parse(source).unwrap();
         let mut checker = TypeChecker::new();
 
@@ -379,15 +379,16 @@ mod generics_and_members {
     use super::*;
 
     #[test]
-    fn type_checks_generic_class_instantiation_and_member_access() {
+    fn type_checks_generic_struct_instantiation_and_member_access() {
         // Assign
         let source = r#"
-class Container<T> {
+struct Container<T> {
     value: T;
     constructor(v: T) { this.value = v; }
     get(): T { return this.value; }
 }
-const container = new Container<number>(42);
+type NumberContainer = Container<number>;
+const container: NumberContainer = Container { v: 42 };
 const v: number = container.value;
 const g: number = container.get();
 "#;
@@ -409,9 +410,9 @@ const g: number = container.get();
     fn resolves_type_alias_to_instantiated_generic_type() {
         // Assign
         let source = r#"
-class Box<T> { value: T; constructor(v: T) { this.value = v; } }
+struct Box<T> { value: T; constructor(v: T) { this.value = v; } }
 type NumBox = Box<number>;
-const b: NumBox = new Box<number>(1);
+const b: NumBox = Box { v: 1 };
 "#;
         let ast = parse(source).unwrap();
         let mut checker = TypeChecker::new();

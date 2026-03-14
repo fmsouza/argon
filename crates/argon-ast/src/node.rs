@@ -24,7 +24,6 @@ pub enum Stmt {
     Variable(VariableStmt),
     Function(FunctionDecl),
     AsyncFunction(FunctionDecl),
-    Class(ClassDecl),
     Struct(StructDecl),
     Trait(TraitDecl),
     Impl(ImplDecl),
@@ -236,28 +235,6 @@ pub struct Param {
 }
 
 #[derive(Debug, Clone)]
-pub struct ClassDecl {
-    pub id: Ident,
-    pub type_params: Vec<TypeParam>,
-    pub super_class: Option<Box<Type>>,
-    pub super_type_args: Vec<Type>,
-    pub implements: Vec<Type>,
-    pub body: ClassBody,
-    pub span: Span,
-}
-#[derive(Debug, Clone)]
-pub struct ClassBody {
-    pub body: Vec<ClassMember>,
-    pub span: Span,
-}
-#[derive(Debug, Clone)]
-pub enum ClassMember {
-    Method(MethodDefinition),
-    Field(ClassField),
-    Constructor(Constructor),
-    IndexSignature(IndexSignature),
-}
-#[derive(Debug, Clone)]
 pub struct MethodDefinition {
     pub key: Expr,
     pub value: FunctionDecl,
@@ -271,15 +248,6 @@ pub enum MethodKind {
     Method,
     Get,
     Set,
-}
-#[derive(Debug, Clone)]
-pub struct ClassField {
-    pub key: Expr,
-    pub value: Option<Expr>,
-    pub type_annotation: Option<Box<Type>>,
-    pub is_optional: bool,
-    pub is_readonly: bool,
-    pub span: Span,
 }
 #[derive(Debug, Clone)]
 pub struct Constructor {
@@ -300,6 +268,8 @@ pub struct StructDecl {
     pub type_params: Vec<TypeParam>,
     pub fields: Vec<StructField>,
     pub methods: Vec<MethodDefinition>,
+    pub constructor: Option<Constructor>,
+    pub implements: Vec<Type>,
     pub span: Span,
 }
 #[derive(Debug, Clone)]
@@ -360,7 +330,7 @@ pub struct ImplBody {
 #[derive(Debug, Clone)]
 pub enum ImplItem {
     Method(MethodDefinition),
-    Field(ClassField),
+    Field(StructField),
 }
 
 #[derive(Debug, Clone)]
@@ -482,7 +452,6 @@ pub enum Expr {
     Array(ArrayExpression),
     Object(ObjectExpression),
     Function(FunctionExpr),
-    Class(ClassExpression),
     JsxElement(JsxElement),
     JsxFragment(JsxFragment),
     TypeAssertion(TypeAssertionExpr),
@@ -791,15 +760,6 @@ pub struct FunctionExpr {
     pub is_async: bool,
     pub span: Span,
 }
-#[derive(Debug, Clone)]
-pub struct ClassExpression {
-    pub id: Option<Ident>,
-    pub super_class: Option<Box<Type>>,
-    pub body: ClassBody,
-    pub type_params: Vec<TypeParam>,
-    pub span: Span,
-}
-
 // JSX
 #[derive(Debug, Clone)]
 pub struct JsxElement {
@@ -1411,7 +1371,6 @@ impl Spanned for Expr {
             Expr::Array(a) => &a.span,
             Expr::Object(o) => &o.span,
             Expr::Function(f) => &f.span,
-            Expr::Class(c) => &c.span,
             Expr::JsxElement(e) => &e.span,
             Expr::JsxFragment(f) => &f.span,
             Expr::TypeAssertion(t) => &t.span,
@@ -1477,8 +1436,6 @@ impl_spanned!(
     FunctionDecl,
     FunctionBody,
     Param,
-    ClassDecl,
-    ClassBody,
     StructDecl,
     StructField,
     TraitDecl,
@@ -1518,7 +1475,6 @@ impl_spanned!(
     ArrayExpression,
     ObjectExpression,
     FunctionExpr,
-    ClassExpression,
     JsxElement,
     JsxFragment,
     JsxOpeningElement,

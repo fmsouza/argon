@@ -412,7 +412,6 @@ impl BorrowChecker {
             Stmt::Labeled(l) => self.collect_called_functions_from_stmt(&l.body, functions, called),
             Stmt::Function(_)
             | Stmt::AsyncFunction(_)
-            | Stmt::Class(_)
             | Stmt::Struct(_)
             | Stmt::Trait(_)
             | Stmt::Impl(_)
@@ -659,7 +658,6 @@ impl BorrowChecker {
             | Expr::Super(_)
             | Expr::JsxElement(_)
             | Expr::JsxFragment(_)
-            | Expr::Class(_)
             | Expr::MetaProperty(_)
             | Expr::Regex(_)
             | Expr::AssignmentTargetPattern(_) => {}
@@ -2596,7 +2594,6 @@ impl BorrowChecker {
             Stmt::Labeled(l) => self.count_identifier_uses_in_statement(&l.body, uses),
             Stmt::Function(_)
             | Stmt::AsyncFunction(_)
-            | Stmt::Class(_)
             | Stmt::Struct(_)
             | Stmt::Trait(_)
             | Stmt::Impl(_)
@@ -2804,7 +2801,6 @@ impl BorrowChecker {
             }
             Expr::JsxElement(_)
             | Expr::JsxFragment(_)
-            | Expr::Class(_)
             | Expr::MetaProperty(_)
             | Expr::Regex(_)
             | Expr::AssignmentTargetPattern(_) => {}
@@ -2889,10 +2885,16 @@ impl BorrowChecker {
             Stmt::Match(m) => {
                 self.check_match(m)?;
             }
-            Stmt::Class(c) => {
-                self.check_class(c)?;
+            Stmt::Struct(s) => {
+                for method in &s.methods {
+                    self.check_function(&method.value)?;
+                }
+                if let Some(constructor) = &s.constructor {
+                    for stmt in &constructor.body.statements {
+                        self.check_statement(stmt)?;
+                    }
+                }
             }
-            Stmt::Struct(s) => for _field in &s.fields {},
             Stmt::Try(t) => {
                 self.check_try(t)?;
             }
@@ -3094,21 +3096,6 @@ impl BorrowChecker {
         self.scope_stack = old_scopes;
         self.remaining_identifier_uses = old_remaining_uses;
         self.borrow_bindings = old_borrow_bindings;
-        Ok(())
-    }
-
-    fn check_class(&mut self, c: &ClassDecl) -> Result<(), BorrowError> {
-        for member in &c.body.body {
-            match member {
-                ClassMember::Method(m) => self.check_function(&m.value)?,
-                ClassMember::Constructor(c) => {
-                    for stmt in &c.body.statements {
-                        self.check_statement(stmt)?;
-                    }
-                }
-                _ => {}
-            }
-        }
         Ok(())
     }
 
@@ -4471,10 +4458,14 @@ impl BorrowChecker {
                 self.is_send_type(type_table, *ok, visited)
                     && self.is_send_type(type_table, *err, visited)
             }
-            Some(CheckedType::Struct(def)) => def
-                .fields
-                .iter()
-                .all(|field| self.is_send_type(type_table, field.ty, visited)),
+            Some(CheckedType::Struct(def)) => {
+                def.methods.is_empty()
+                    && def.constructor_params.is_none()
+                    && def
+                        .fields
+                        .iter()
+                        .all(|field| self.is_send_type(type_table, field.ty, visited))
+            }
             Some(CheckedType::ObjectShape(def)) => {
                 def.methods.is_empty()
                     && def
@@ -4487,7 +4478,6 @@ impl BorrowChecker {
                 self.is_sync_type(type_table, *inner, &mut sync_visited)
             }
             Some(CheckedType::MutRef(_))
-            | Some(CheckedType::Class(_))
             | Some(CheckedType::Interface(_))
             | Some(CheckedType::Function(_))
             | Some(CheckedType::Object)
@@ -4537,10 +4527,14 @@ impl BorrowChecker {
                 self.is_sync_type(type_table, *ok, visited)
                     && self.is_sync_type(type_table, *err, visited)
             }
-            Some(CheckedType::Struct(def)) => def
-                .fields
-                .iter()
-                .all(|field| self.is_sync_type(type_table, field.ty, visited)),
+            Some(CheckedType::Struct(def)) => {
+                def.methods.is_empty()
+                    && def.constructor_params.is_none()
+                    && def
+                        .fields
+                        .iter()
+                        .all(|field| self.is_sync_type(type_table, field.ty, visited))
+            }
             Some(CheckedType::ObjectShape(def)) => {
                 def.methods.is_empty()
                     && def
@@ -4549,7 +4543,6 @@ impl BorrowChecker {
                         .all(|field| self.is_sync_type(type_table, field.ty, visited))
             }
             Some(CheckedType::MutRef(_))
-            | Some(CheckedType::Class(_))
             | Some(CheckedType::Interface(_))
             | Some(CheckedType::Function(_))
             | Some(CheckedType::Object)

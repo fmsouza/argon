@@ -2,7 +2,7 @@
 
 A TypeScript-like language with Rust-inspired ownership and borrowing, compiling to JavaScript and WebAssembly.
 
-Argon gives you familiar syntax — classes, interfaces, generics, async/await — while the compiler enforces memory-safety rules at compile time. Write code that looks like TypeScript, get the safety guarantees of Rust, and run it anywhere JavaScript or WebAssembly runs.
+Argon gives you familiar syntax — structs, interfaces, generics, async/await — while the compiler enforces memory-safety rules at compile time. Write code that looks like TypeScript, get the safety guarantees of Rust, and run it anywhere JavaScript or WebAssembly runs.
 
 ```ts
 struct Point {
@@ -20,7 +20,7 @@ console.log(moved.x); // 5.0
 ```
 
 ```ts
-class Counter {
+struct Counter {
     value: i32;
 
     constructor(initial: i32) {
@@ -36,7 +36,7 @@ class Counter {
     }
 }
 
-const counter = new Counter(0);
+const counter = Counter { initial: 0 };
 counter.increment();
 console.log(counter.getValue()); // 1
 ```
@@ -133,6 +133,8 @@ Available numeric types: `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `
 
 ### Structs
 
+Plain structs hold data with named fields:
+
 ```ts
 struct Color {
     r: u8;
@@ -144,12 +146,10 @@ const red = Color { r: 255, g: 0, b: 0 };
 console.log(red.r);
 ```
 
-### Classes
-
-Classes support constructors, methods, getters/setters, static members, and inheritance:
+Structs can also have constructors, methods, and `implements`:
 
 ```ts
-class Counter {
+struct Counter {
     value: i32;
 
     constructor(initial: i32) {
@@ -164,6 +164,10 @@ class Counter {
         return this.value;
     }
 }
+
+const counter = Counter { initial: 0 };
+counter.increment();
+console.log(counter.getValue()); // 1
 ```
 
 The `with &this` and `with &mut this` annotations declare whether a method borrows `this` as shared or mutable — the compiler enforces these at call sites.
@@ -439,7 +443,7 @@ argon compile examples/control-flow.arg --target js -o /tmp/out.js && node /tmp/
 
 Key examples by topic:
 - **Ownership/borrowing:** `ownership.arg`, `borrowing.arg`
-- **Structs/classes:** `structs.arg`, `classes.arg`, `simple_method.arg`
+- **Structs:** `structs.arg`, `simple_method.arg`
 - **Generics:** `generic_simple.arg`, `generic_fn.arg`, `generic_struct.arg`
 - **Control flow:** `control-flow.arg`, `match.arg`, `try-catch.arg`, `recursion.arg`
 - **Type system:** `interface.arg`, `enum.arg`, `type_test.arg`

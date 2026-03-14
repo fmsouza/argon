@@ -254,9 +254,9 @@ mod function_checking {
         use super::*;
 
         #[test]
-        fn checks_class_with_methods() {
+        fn checks_struct_with_methods() {
             // Assign
-            let source = "class Calculator { add(a: i32, b: i32): i32 { return a + b; } }";
+            let source = "struct Calculator { add(a: i32, b: i32): i32 { return a + b; } }";
             let ast = parse(source).unwrap();
             let mut checker = BorrowChecker::new();
 
@@ -268,9 +268,9 @@ mod function_checking {
         }
 
         #[test]
-        fn checks_class_with_constructor() {
+        fn checks_struct_with_constructor() {
             // Assign
-            let source = "class Point { constructor(x: i32, y: i32) { this.x = x; } }";
+            let source = "struct Point { constructor(x: i32, y: i32) { this.x = x; } }";
             let ast = parse(source).unwrap();
             let mut checker = BorrowChecker::new();
 
@@ -282,9 +282,9 @@ mod function_checking {
         }
 
         #[test]
-        fn checks_class_with_static_method() {
+        fn checks_struct_with_static_method() {
             // Assign
-            let source = "class Math { static abs(n: i32): i32 { return n; } }";
+            let source = "struct Math { abs(n: i32): i32 { return n; } }";
             let ast = parse(source).unwrap();
             let mut checker = BorrowChecker::new();
 
@@ -1215,9 +1215,9 @@ mod thread_safety_regressions {
     use super::*;
 
     #[test]
-    fn rejects_thread_capture_of_non_thread_safe_class_value() {
+    fn rejects_thread_capture_of_non_thread_safe_struct_value() {
         // Assign
-        let source = "class Box { value: i32; } const b = new Box(); thread(b);";
+        let source = "struct Box { value: i32; get(): i32 with &this { return this.value; } } const b = Box { value: 0 }; thread(b);";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
         let mut type_checker = TypeChecker::new();
@@ -1279,10 +1279,10 @@ mod thread_safety_regressions {
     }
 
     #[test]
-    fn rejects_transitive_thread_capture_of_non_thread_safe_class_value() {
+    fn rejects_transitive_thread_capture_of_non_thread_safe_struct_value() {
         // Assign
         let source =
-            "class Box { value: i32; } function spawn(x: Box): void { thread(x); } const b = new Box(); spawn(b);";
+            "struct Box { value: i32; get(): i32 with &this { return this.value; } } function spawn(x: Box): void { thread(x); } const b = Box { value: 0 }; spawn(b);";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
         let mut type_checker = TypeChecker::new();
@@ -1296,10 +1296,10 @@ mod thread_safety_regressions {
     }
 
     #[test]
-    fn rejects_transitive_process_capture_of_non_thread_safe_class_value() {
+    fn rejects_transitive_process_capture_of_non_thread_safe_struct_value() {
         // Assign
         let source =
-            "class Box { value: i32; } function queue(x: Box): void { process(x); } const b = new Box(); queue(b);";
+            "struct Box { value: i32; get(): i32 with &this { return this.value; } } function queue(x: Box): void { process(x); } const b = Box { value: 0 }; queue(b);";
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
         let mut type_checker = TypeChecker::new();
