@@ -322,11 +322,10 @@ impl TypeChecker {
                                 } else {
                                     String::new()
                                 };
-                                let ty = p
-                                    .ty
-                                    .as_ref()
-                                    .map(|t| self.resolve_type(t))
-                                    .unwrap_or_else(|| self.type_table.unknown());
+                                let ty =
+                                    p.ty.as_ref()
+                                        .map(|t| self.resolve_type(t))
+                                        .unwrap_or_else(|| self.type_table.unknown());
                                 (name, ty)
                             })
                             .collect()
@@ -986,8 +985,7 @@ impl TypeChecker {
         }
 
         // Verify embodies clause (skills)
-        let struct_field_names: Vec<String> =
-            s.fields.iter().map(|f| f.id.sym.clone()).collect();
+        let struct_field_names: Vec<String> = s.fields.iter().map(|f| f.id.sym.clone()).collect();
         let struct_method_names: Vec<String> = s
             .methods
             .iter()
@@ -1023,10 +1021,7 @@ impl TypeChecker {
                 }
             } else {
                 self.errors.push(TypeError::Invalid {
-                    message: format!(
-                        "skill '{}' not found",
-                        skill_name.sym
-                    ),
+                    message: format!("skill '{}' not found", skill_name.sym),
                 });
             }
         }
@@ -1669,10 +1664,8 @@ impl TypeChecker {
                                             if let Some((_, param_ty)) =
                                                 ctor_params.iter().find(|(n, _)| n == &name)
                                             {
-                                                for (i, tp) in generic_struct
-                                                    .type_params
-                                                    .iter()
-                                                    .enumerate()
+                                                for (i, tp) in
+                                                    generic_struct.type_params.iter().enumerate()
                                                 {
                                                     if let Some(CompType::TypeParam(ref tp_def)) =
                                                         self.type_table.get(*param_ty).cloned()
@@ -1745,8 +1738,11 @@ impl TypeChecker {
                     })
                     .collect();
 
-                let instantiated_constructor_params =
-                    generic_struct.def.constructor_params.as_ref().map(|params| {
+                let instantiated_constructor_params = generic_struct
+                    .def
+                    .constructor_params
+                    .as_ref()
+                    .map(|params| {
                         params
                             .iter()
                             .map(|(name, ty)| {
@@ -1781,7 +1777,6 @@ impl TypeChecker {
 
                 return self.type_table.add(CompType::Struct(struct_def));
             }
-
         }
 
         for arg in &n.arguments {
@@ -2218,15 +2213,17 @@ impl TypeChecker {
                                 })
                                 .collect();
 
-                            let constructor_params =
-                                generic_struct.def.constructor_params.as_ref().map(|params| {
+                            let constructor_params = generic_struct
+                                .def
+                                .constructor_params
+                                .as_ref()
+                                .map(|params| {
                                     params
                                         .iter()
                                         .map(|(name, ty)| {
                                             (
                                                 name.clone(),
-                                                instantiator
-                                                    .instantiate(&mut self.type_table, *ty),
+                                                instantiator.instantiate(&mut self.type_table, *ty),
                                             )
                                         })
                                         .collect()

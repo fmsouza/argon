@@ -2166,7 +2166,8 @@ impl JsCodegen {
                         self.add_line();
                     }
                 }
-                argon_ast::ImportSpecifier::Namespace(_) | argon_ast::ImportSpecifier::Default(_) => {
+                argon_ast::ImportSpecifier::Namespace(_)
+                | argon_ast::ImportSpecifier::Default(_) => {
                     // Namespace/default imports from std modules are not supported yet
                 }
             }

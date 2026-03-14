@@ -1125,8 +1125,12 @@ mod import_parsing {
 
         if let Stmt::Import(import) = &ast.statements[0] {
             assert_eq!(import.specifiers.len(), 2);
-            assert!(matches!(&import.specifiers[0], ImportSpecifier::Named(n) if n.imported.sym == "add"));
-            assert!(matches!(&import.specifiers[1], ImportSpecifier::Named(n) if n.imported.sym == "multiply"));
+            assert!(
+                matches!(&import.specifiers[0], ImportSpecifier::Named(n) if n.imported.sym == "add")
+            );
+            assert!(
+                matches!(&import.specifiers[1], ImportSpecifier::Named(n) if n.imported.sym == "multiply")
+            );
             assert!(import.source.value.contains("./math"));
         } else {
             panic!("Expected import statement");
@@ -1148,7 +1152,9 @@ mod import_parsing {
 
         if let Stmt::Import(import) = &ast.statements[0] {
             assert_eq!(import.specifiers.len(), 1);
-            assert!(matches!(&import.specifiers[0], ImportSpecifier::Namespace(n) if n.id.sym == "Math"));
+            assert!(
+                matches!(&import.specifiers[0], ImportSpecifier::Namespace(n) if n.id.sym == "Math")
+            );
             assert!(import.source.value.contains("./math"));
         } else {
             panic!("Expected import statement");

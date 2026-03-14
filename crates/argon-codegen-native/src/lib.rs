@@ -66,9 +66,12 @@ impl NativeCodegen {
             .finish(flags)
             .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
 
-        let obj_builder =
-            ObjectBuilder::new(isa, "argon_module", cranelift_module::default_libcall_names())
-                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+        let obj_builder = ObjectBuilder::new(
+            isa,
+            "argon_module",
+            cranelift_module::default_libcall_names(),
+        )
+        .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
 
         let mut object_module = ObjectModule::new(obj_builder);
 

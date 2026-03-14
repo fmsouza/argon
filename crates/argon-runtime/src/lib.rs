@@ -730,10 +730,8 @@ impl Runtime {
                 _ => None,
             })
             .collect();
-        self.skill_defs.insert(
-            sk.id.sym.clone(),
-            RuntimeSkillDef { concrete_methods },
-        );
+        self.skill_defs
+            .insert(sk.id.sym.clone(), RuntimeSkillDef { concrete_methods });
     }
 
     fn register_struct(&mut self, s: &StructDecl) {

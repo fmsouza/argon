@@ -700,8 +700,11 @@ mod tests {
         let main_path = temp_dir.path().join("main.arg");
         let utils_path = temp_dir.path().join("utils.arg");
 
-        std::fs::write(&utils_path, "export function greet(): string { return \"hi\"; }\n")
-            .unwrap();
+        std::fs::write(
+            &utils_path,
+            "export function greet(): string { return \"hi\"; }\n",
+        )
+        .unwrap();
         std::fs::write(
             &main_path,
             "from \"./utils\" import { greet };\nconst msg = greet();\n",
@@ -783,11 +786,7 @@ mod tests {
             "from \"./c\" import { Z };\nexport const Y: i32 = Z;\n",
         )
         .unwrap();
-        std::fs::write(
-            &a_path,
-            "from \"./b\" import { Y };\nconst x = Y;\n",
-        )
-        .unwrap();
+        std::fs::write(&a_path, "from \"./b\" import { Y };\nconst x = Y;\n").unwrap();
 
         let compiler = Compiler::new();
         let options = CompileOptions::default();

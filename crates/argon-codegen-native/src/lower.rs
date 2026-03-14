@@ -83,7 +83,10 @@ impl<'a> ModuleLowerer<'a> {
             }
 
             // Find __argon_init and prepend global inits
-            if let Some(init_func) = patched_functions.iter_mut().find(|f| f.id == "__argon_init") {
+            if let Some(init_func) = patched_functions
+                .iter_mut()
+                .find(|f| f.id == "__argon_init")
+            {
                 if let Some(first_block) = init_func.body.first_mut() {
                     let mut combined = global_inits;
                     combined.append(&mut first_block.instructions);
@@ -128,7 +131,9 @@ impl<'a> ModuleLowerer<'a> {
             return true;
         }
         // Scan terminators for Return(Some(...))
-        func.body.iter().any(|block| matches!(&block.terminator, Terminator::Return(Some(_))))
+        func.body
+            .iter()
+            .any(|block| matches!(&block.terminator, Terminator::Return(Some(_))))
     }
 
     fn declare_function(&mut self, func: &IrFunction) -> Result<(), CodegenError> {
@@ -182,8 +187,17 @@ impl<'a> ModuleLowerer<'a> {
         let mut fbc = FunctionBuilderContext::new();
         {
             let builder = FunctionBuilder::new(&mut ctx.func, &mut fbc);
-            let func_lowerer =
-                FunctionLowerer::new(builder, self.module, self.triple, &self.func_ids, &self.libc, &mut self.data_ids, &mut self.data_counter, self.ptr_type, &self.struct_layouts);
+            let func_lowerer = FunctionLowerer::new(
+                builder,
+                self.module,
+                self.triple,
+                &self.func_ids,
+                &self.libc,
+                &mut self.data_ids,
+                &mut self.data_counter,
+                self.ptr_type,
+                &self.struct_layouts,
+            );
             func_lowerer.lower(func)?;
         }
 
@@ -337,13 +351,9 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                     else_: else_id,
                 } => {
                     let cond_val = self.get_value(*cond)?;
-                    let cond_int =
-                        self.builder.ins().fcvt_to_sint(types::I64, cond_val);
+                    let cond_int = self.builder.ins().fcvt_to_sint(types::I64, cond_val);
                     let zero = self.builder.ins().iconst(types::I64, 0);
-                    let is_true =
-                        self.builder
-                            .ins()
-                            .icmp(IntCC::NotEqual, cond_int, zero);
+                    let is_true = self.builder.ins().icmp(IntCC::NotEqual, cond_int, zero);
                     self.builder.ins().brif(
                         is_true,
                         block_map[then_id],
@@ -353,9 +363,7 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                     );
                 }
                 Terminator::Jump(target_id) => {
-                    self.builder
-                        .ins()
-                        .jump(block_map[target_id], &[]);
+                    self.builder.ins().jump(block_map[target_id], &[]);
                 }
                 Terminator::Unreachable => {
                     self.builder
@@ -398,14 +406,11 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                         let stripped = s
                             .strip_prefix('"')
                             .and_then(|s| s.strip_suffix('"'))
-                            .or_else(|| {
-                                s.strip_prefix('\'').and_then(|s| s.strip_suffix('\''))
-                            })
+                            .or_else(|| s.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
                             .unwrap_or(s);
                         let len = stripped.len();
                         let ptr = self.create_data_string(&format!("{}\0", stripped))?;
-                        self.string_constants
-                            .insert(*dest, StringConstInfo { len });
+                        self.string_constants.insert(*dest, StringConstInfo { len });
                         ptr
                     }
                     ConstValue::Null => self.builder.ins().f64const(0.0),
@@ -413,12 +418,7 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 self.values.insert(*dest, val);
             }
 
-            IrInstruction::BinOp {
-                op,
-                lhs,
-                rhs,
-                dest,
-            } => {
+            IrInstruction::BinOp { op, lhs, rhs, dest } => {
                 let lhs_val = self.get_value(*lhs)?;
                 let rhs_val = self.get_value(*rhs)?;
                 let result = self.lower_binop(*op, lhs_val, rhs_val)?;
@@ -441,10 +441,7 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                     UnOp::Neg => self.builder.ins().fneg(arg_val),
                     UnOp::Not => {
                         // Convert to int, xor with 1, convert back
-                        let ival =
-                            self.builder
-                                .ins()
-                                .fcvt_to_sint(types::I64, arg_val);
+                        let ival = self.builder.ins().fcvt_to_sint(types::I64, arg_val);
                         let one = self.builder.ins().iconst(types::I64, 1);
                         let result = self.builder.ins().bxor(ival, one);
                         self.builder.ins().fcvt_from_sint(types::F64, result)
@@ -523,11 +520,7 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 self.values.insert(*dest, val);
             }
 
-            IrInstruction::Call {
-                callee,
-                args,
-                dest,
-            } => {
+            IrInstruction::Call { callee, args, dest } => {
                 self.lower_call(*callee, args, *dest)?;
             }
 
@@ -601,12 +594,7 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 self.builder.seal_block(dead);
             }
 
-            IrInstruction::LogicalOp {
-                op,
-                lhs,
-                rhs,
-                dest,
-            } => {
+            IrInstruction::LogicalOp { op, lhs, rhs, dest } => {
                 // If both operands are boolean, the result is boolean
                 if self.bool_values.contains(lhs) && self.bool_values.contains(rhs) {
                     self.bool_values.insert(*dest);
@@ -616,34 +604,22 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 let result = match op {
                     LogicOp::And => {
                         // Short-circuit: if lhs is falsy, return lhs, else return rhs
-                        let lhs_int =
-                            self.builder.ins().fcvt_to_sint(types::I64, lhs_val);
+                        let lhs_int = self.builder.ins().fcvt_to_sint(types::I64, lhs_val);
                         let zero_i = self.builder.ins().iconst(types::I64, 0);
-                        let is_zero = self
-                            .builder
-                            .ins()
-                            .icmp(IntCC::Equal, lhs_int, zero_i);
+                        let is_zero = self.builder.ins().icmp(IntCC::Equal, lhs_int, zero_i);
                         self.builder.ins().select(is_zero, lhs_val, rhs_val)
                     }
                     LogicOp::Or => {
-                        let lhs_int =
-                            self.builder.ins().fcvt_to_sint(types::I64, lhs_val);
+                        let lhs_int = self.builder.ins().fcvt_to_sint(types::I64, lhs_val);
                         let zero_i = self.builder.ins().iconst(types::I64, 0);
-                        let is_nonzero = self
-                            .builder
-                            .ins()
-                            .icmp(IntCC::NotEqual, lhs_int, zero_i);
+                        let is_nonzero = self.builder.ins().icmp(IntCC::NotEqual, lhs_int, zero_i);
                         self.builder.ins().select(is_nonzero, lhs_val, rhs_val)
                     }
                     LogicOp::Nullish => {
                         // For native, null is represented as 0.0, so same as Or
-                        let lhs_int =
-                            self.builder.ins().fcvt_to_sint(types::I64, lhs_val);
+                        let lhs_int = self.builder.ins().fcvt_to_sint(types::I64, lhs_val);
                         let zero_i = self.builder.ins().iconst(types::I64, 0);
-                        let is_nonzero = self
-                            .builder
-                            .ins()
-                            .icmp(IntCC::NotEqual, lhs_int, zero_i);
+                        let is_nonzero = self.builder.ins().icmp(IntCC::NotEqual, lhs_int, zero_i);
                         self.builder.ins().select(is_nonzero, lhs_val, rhs_val)
                     }
                 };
@@ -659,13 +635,9 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 let cond_val = self.get_value(*cond)?;
                 let then_val = self.get_value(*then_value)?;
                 let else_val = self.get_value(*else_value)?;
-                let cond_int =
-                    self.builder.ins().fcvt_to_sint(types::I64, cond_val);
+                let cond_int = self.builder.ins().fcvt_to_sint(types::I64, cond_val);
                 let zero = self.builder.ins().iconst(types::I64, 0);
-                let is_true = self
-                    .builder
-                    .ins()
-                    .icmp(IntCC::NotEqual, cond_int, zero);
+                let is_true = self.builder.ins().icmp(IntCC::NotEqual, cond_int, zero);
                 let result = self.builder.ins().select(is_true, then_val, else_val);
                 self.values.insert(*dest, result);
             }
@@ -719,17 +691,16 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 });
                 if let Some(layout) = layout {
                     // Bitcast F64 back to pointer for memory access
-                    let obj_ptr = self.builder.ins().bitcast(
-                        self.ptr_type,
-                        MemFlags::new(),
-                        obj_f64,
-                    );
+                    let obj_ptr =
+                        self.builder
+                            .ins()
+                            .bitcast(self.ptr_type, MemFlags::new(), obj_f64);
                     if let Some(field_idx) = layout.iter().position(|k| k == property) {
                         let offset = (field_idx * 8) as i32;
-                        let val = self
-                            .builder
-                            .ins()
-                            .load(types::F64, MemFlags::new(), obj_ptr, offset);
+                        let val =
+                            self.builder
+                                .ins()
+                                .load(types::F64, MemFlags::new(), obj_ptr, offset);
                         self.values.insert(*dest, val);
                     } else {
                         let zero = self.builder.ins().f64const(0.0);
@@ -785,7 +756,9 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                     // Bitcast the pointer to F64 so all values have uniform type.
                     // Member access will bitcast back to pointer for loads.
                     let ptr_as_f64 =
-                        self.builder.ins().bitcast(types::F64, MemFlags::new(), base_ptr);
+                        self.builder
+                            .ins()
+                            .bitcast(types::F64, MemFlags::new(), base_ptr);
                     self.values.insert(*dest, ptr_as_f64);
                 }
             }
@@ -825,16 +798,14 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 }
 
                 // Bitcast pointer to F64 for uniform value representation
-                let ptr_as_f64 =
-                    self.builder.ins().bitcast(types::F64, MemFlags::new(), base_ptr);
+                let ptr_as_f64 = self
+                    .builder
+                    .ins()
+                    .bitcast(types::F64, MemFlags::new(), base_ptr);
                 self.values.insert(*dest, ptr_as_f64);
             }
 
-            IrInstruction::New {
-                callee,
-                args,
-                dest,
-            } => {
+            IrInstruction::New { callee, args, dest } => {
                 // For struct instantiation, the pattern is:
                 //   ObjectLit { init_obj } → VarRef("StructName") → New(callee, [init_obj])
                 // The ObjectLit already has the fields allocated on the heap.
@@ -860,12 +831,7 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
         Ok(())
     }
 
-    fn lower_binop(
-        &mut self,
-        op: BinOp,
-        lhs: Value,
-        rhs: Value,
-    ) -> Result<Value, CodegenError> {
+    fn lower_binop(&mut self, op: BinOp, lhs: Value, rhs: Value) -> Result<Value, CodegenError> {
         let result = match op {
             BinOp::Add => self.builder.ins().fadd(lhs, rhs),
             BinOp::Sub => self.builder.ins().fsub(lhs, rhs),
@@ -895,10 +861,7 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 self.builder.ins().fcvt_from_sint(types::F64, ext)
             }
             BinOp::Le => {
-                let cmp = self
-                    .builder
-                    .ins()
-                    .fcmp(FloatCC::LessThanOrEqual, lhs, rhs);
+                let cmp = self.builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs, rhs);
                 let ext = self.builder.ins().uextend(types::I64, cmp);
                 self.builder.ins().fcvt_from_sint(types::F64, ext)
             }
@@ -1027,18 +990,17 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 let print_str_ref = self
                     .module
                     .declare_func_in_func(libc.print_str, self.builder.func);
-                let len = self.builder.ins().iconst(self.ptr_type, str_data.len as i64);
-                self.builder
+                let len = self
+                    .builder
                     .ins()
-                    .call(print_str_ref, &[arg_val, len]);
+                    .iconst(self.ptr_type, str_data.len as i64);
+                self.builder.ins().call(print_str_ref, &[arg_val, len]);
             } else if self.bool_values.contains(&arg_id) {
                 // Print boolean as "true"/"false"
                 let print_bool_ref = self
                     .module
                     .declare_func_in_func(libc.print_bool, self.builder.func);
-                self.builder
-                    .ins()
-                    .call(print_bool_ref, &[arg_val]);
+                self.builder.ins().call(print_bool_ref, &[arg_val]);
             } else {
                 // Format and print the number using the C runtime helper.
                 // This avoids the variadic calling convention issue with snprintf
@@ -1046,9 +1008,7 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 let print_f64_ref = self
                     .module
                     .declare_func_in_func(libc.print_f64, self.builder.func);
-                self.builder
-                    .ins()
-                    .call(print_f64_ref, &[arg_val]);
+                self.builder.ins().call(print_f64_ref, &[arg_val]);
             }
         }
 
@@ -1060,9 +1020,7 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 .module
                 .declare_func_in_func(libc.print_str, self.builder.func);
             let one = self.builder.ins().iconst(self.ptr_type, 1);
-            self.builder
-                .ins()
-                .call(print_str_ref, &[nl_ptr, one]);
+            self.builder.ins().call(print_str_ref, &[nl_ptr, one]);
         }
 
         let zero = self.builder.ins().f64const(0.0);
@@ -1121,9 +1079,7 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                     "exp" => libc.exp,
                     _ => unreachable!(),
                 };
-                let func_ref = self
-                    .module
-                    .declare_func_in_func(func_id, self.builder.func);
+                let func_ref = self.module.declare_func_in_func(func_id, self.builder.func);
                 let arg = self.get_value(args[0])?;
                 let call = self.builder.ins().call(func_ref, &[arg]);
                 Ok(Some(self.builder.inst_results(call)[0]))
@@ -1349,11 +1305,7 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
             .ok_or_else(|| CodegenError::IrError(format!("undefined value: v{}", id)))
     }
 
-    fn declare_variable(
-        &mut self,
-        name: &str,
-        ty: cranelift_codegen::ir::Type,
-    ) -> Variable {
+    fn declare_variable(&mut self, name: &str, ty: cranelift_codegen::ir::Type) -> Variable {
         if let Some(&var) = self.variables.get(name) {
             return var;
         }
@@ -1366,9 +1318,7 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
 
     fn create_data_string(&mut self, s: &str) -> Result<Value, CodegenError> {
         let name = if let Some(id) = self.data_ids.get(s) {
-            let gv = self
-                .module
-                .declare_data_in_func(*id, self.builder.func);
+            let gv = self.module.declare_data_in_func(*id, self.builder.func);
             return Ok(self.builder.ins().global_value(self.ptr_type, gv));
         } else {
             let name = format!("__str_{}", self.data_counter);
@@ -1390,9 +1340,7 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
 
         self.data_ids.insert(s.to_string(), data_id);
 
-        let gv = self
-            .module
-            .declare_data_in_func(data_id, self.builder.func);
+        let gv = self.module.declare_data_in_func(data_id, self.builder.func);
         Ok(self.builder.ins().global_value(self.ptr_type, gv))
     }
 }

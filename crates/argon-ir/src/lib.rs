@@ -303,12 +303,8 @@ impl IrBuilder {
 
         for stmt in &source.statements {
             match stmt {
-                Stmt::Function(f) if !f.is_intrinsic => {
-                    self.translate_function(f, false)?
-                }
-                Stmt::AsyncFunction(f) if !f.is_intrinsic => {
-                    self.translate_function(f, true)?
-                }
+                Stmt::Function(f) if !f.is_intrinsic => self.translate_function(f, false)?,
+                Stmt::AsyncFunction(f) if !f.is_intrinsic => self.translate_function(f, true)?,
                 Stmt::Struct(s) if !s.is_intrinsic => self.translate_struct(s)?,
                 Stmt::Function(_) | Stmt::AsyncFunction(_) | Stmt::Struct(_) => {
                     // Skip intrinsic declarations - they have no body to lower

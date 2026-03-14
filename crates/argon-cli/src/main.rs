@@ -248,9 +248,7 @@ fn compile(
             .unwrap_or_else(|| PathBuf::from("."));
 
         for (source_path, artifacts) in &project.files {
-            let relative = source_path
-                .strip_prefix(&entry_dir)
-                .unwrap_or(source_path);
+            let relative = source_path.strip_prefix(&entry_dir).unwrap_or(source_path);
             let js_relative = relative.with_extension("js");
 
             let out_path = if let Some(dir) = out_dir {
@@ -378,10 +376,7 @@ fn compile(
             match emit {
                 EmitKind::Obj => {
                     let output_path = output.cloned().unwrap_or_else(|| {
-                        let stem = input
-                            .file_stem()
-                            .unwrap_or_default()
-                            .to_string_lossy();
+                        let stem = input.file_stem().unwrap_or_default().to_string_lossy();
                         PathBuf::from(format!("{}{}", stem, triple.obj_suffix()))
                     });
                     fs::write(&output_path, &obj_bytes)?;
@@ -389,10 +384,7 @@ fn compile(
                 }
                 EmitKind::Asm => {
                     let output_path = output.cloned().unwrap_or_else(|| {
-                        let stem = input
-                            .file_stem()
-                            .unwrap_or_default()
-                            .to_string_lossy();
+                        let stem = input.file_stem().unwrap_or_default().to_string_lossy();
                         PathBuf::from(format!("{}.s", stem))
                     });
                     if let Some(asm) = artifacts.native_asm {
@@ -404,10 +396,7 @@ fn compile(
                 }
                 EmitKind::Exe => {
                     let output_path = output.cloned().unwrap_or_else(|| {
-                        let stem = input
-                            .file_stem()
-                            .unwrap_or_default()
-                            .to_string_lossy();
+                        let stem = input.file_stem().unwrap_or_default().to_string_lossy();
                         PathBuf::from(format!("{}{}", stem, triple.exe_suffix()))
                     });
 
@@ -422,9 +411,8 @@ fn compile(
                     fs::write(&obj_path, &obj_bytes)?;
 
                     // Compile the C runtime helpers
-                    let runtime_obj_path =
-                        argon_codegen_native::compile_c_runtime(&tmp_dir)
-                            .map_err(|e| format!("{}", e))?;
+                    let runtime_obj_path = argon_codegen_native::compile_c_runtime(&tmp_dir)
+                        .map_err(|e| format!("{}", e))?;
 
                     // Link both objects
                     let linker_config = argon_codegen_native::LinkerConfig {
@@ -445,10 +433,7 @@ fn compile(
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
-                        fs::set_permissions(
-                            &output_path,
-                            fs::Permissions::from_mode(0o755),
-                        )?;
+                        fs::set_permissions(&output_path, fs::Permissions::from_mode(0o755))?;
                     }
 
                     println!("Wrote {}", output_path.display());

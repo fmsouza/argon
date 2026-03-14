@@ -155,11 +155,7 @@ fn test_compile_opt_folds_exported_const() {
 fn test_argon_test_runs_esm_output() {
     let temp_dir = tempfile::tempdir().unwrap();
     let source_file = temp_dir.path().join("esm_test.arg");
-    fs::write(
-        &source_file,
-        "export const x: number = 1;\nprintln(x);\n",
-    )
-    .unwrap();
+    fs::write(&source_file, "export const x: number = 1;\nprintln(x);\n").unwrap();
 
     let mut cmd = cargo_bin_cmd!("argon");
     cmd.arg("test")
@@ -1122,11 +1118,7 @@ fn test_compile_wasm_import_executes_via_host_sidecar() {
     let dep_file = temp_dir.path().join("dep.mjs");
     let source_file = temp_dir.path().join("interop_loader.arg");
     let output_file = temp_dir.path().join("interop_loader.wasm");
-    fs::write(
-        &dep_file,
-        "export function inc(x) { return x + 1; }\n",
-    )
-    .unwrap();
+    fs::write(&dep_file, "export function inc(x) { return x + 1; }\n").unwrap();
     fs::write(
         &source_file,
         r#"
@@ -1559,11 +1551,7 @@ fn test_compile_project_nested_deps() {
     let out_dir = temp_dir.path().join("dist");
 
     // C has no deps.
-    fs::write(
-        src_dir.join("c.arg"),
-        "export const Z: i32 = 42;\n",
-    )
-    .unwrap();
+    fs::write(src_dir.join("c.arg"), "export const Z: i32 = 42;\n").unwrap();
 
     // B imports C.
     fs::write(

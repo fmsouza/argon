@@ -389,10 +389,7 @@ mod import_path_rewriting {
 
     #[test]
     fn does_not_rewrite_package_import() {
-        assert_eq!(
-            JsCodegen::rewrite_import_source("\"axios\""),
-            "\"axios\""
-        );
+        assert_eq!(JsCodegen::rewrite_import_source("\"axios\""), "\"axios\"");
     }
 
     #[test]
@@ -405,9 +402,6 @@ mod import_path_rewriting {
 
     #[test]
     fn does_not_rewrite_bare_module() {
-        assert_eq!(
-            JsCodegen::rewrite_import_source("\"react\""),
-            "\"react\""
-        );
+        assert_eq!(JsCodegen::rewrite_import_source("\"react\""), "\"react\"");
     }
 }
