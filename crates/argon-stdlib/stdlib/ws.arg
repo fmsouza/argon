@@ -1,0 +1,41 @@
+// Argon Standard Library - WebSocket
+// Usage: from "std:ws" import { wsConnect, wsListen, WsConnection, WsServer };
+
+// --- Message type ---
+
+export struct WsMessage {
+    data: string;
+    bytes: Vec<u8>;
+    isText: bool;
+    isBinary: bool;
+}
+
+// --- Client ---
+
+@intrinsic
+export struct WsConnection {
+    send(data: string): Result<void, IoError> with &mut this;
+    sendBytes(data: Vec<u8>): Result<void, IoError> with &mut this;
+    recv(): Result<WsMessage, IoError> with &mut this;
+    ping(): Result<void, IoError> with &mut this;
+    close(code: u16, reason: string): Result<void, IoError> with &mut this;
+    isOpen(): bool with &this;
+}
+
+@intrinsic
+export function wsConnect(url: string): Result<WsConnection, IoError>;
+
+@intrinsic
+export async function wsConnectAsync(url: string): Result<WsConnection, IoError>;
+
+// --- Server ---
+
+@intrinsic
+export struct WsServer {
+    accept(): Result<WsConnection, IoError> with &mut this;
+    close(): Result<void, IoError> with &mut this;
+    addr(): string with &this;
+}
+
+@intrinsic
+export function wsListen(addr: string, port: u16): Result<WsServer, IoError>;

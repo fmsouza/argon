@@ -1,0 +1,104 @@
+// Argon Standard Library - HTTP Client & Server
+// Usage: from "std:http" import { get, post, request, serve, Response, Headers };
+
+// --- Headers ---
+
+export struct HeaderEntry {
+    name: string;
+    value: string;
+}
+
+@intrinsic
+export struct Headers {
+    get(name: string): Result<string, IoError> with &this;
+    set(name: string, value: string): void with &mut this;
+    has(name: string): bool with &this;
+    delete(name: string): void with &mut this;
+    entries(): Vec<HeaderEntry> with &this;
+}
+
+@intrinsic
+export function createHeaders(): Headers;
+
+// --- Client: Request/Response ---
+
+export struct RequestOptions {
+    method: string;
+    url: string;
+    headers: Headers;
+    body: string;
+    timeoutMs: u32;
+    followRedirects: bool;
+}
+
+export struct Response {
+    status: u16;
+    headers: Headers;
+    body: string;
+}
+
+// Convenience methods
+@intrinsic
+export function get(url: string): Result<Response, IoError>;
+
+@intrinsic
+export async function getAsync(url: string): Result<Response, IoError>;
+
+@intrinsic
+export function post(url: string, body: string, headers: Headers): Result<Response, IoError>;
+
+@intrinsic
+export async function postAsync(url: string, body: string, headers: Headers): Result<Response, IoError>;
+
+@intrinsic
+export function put(url: string, body: string, headers: Headers): Result<Response, IoError>;
+
+@intrinsic
+export async function putAsync(url: string, body: string, headers: Headers): Result<Response, IoError>;
+
+@intrinsic
+export function del(url: string): Result<Response, IoError>;
+
+@intrinsic
+export async function delAsync(url: string): Result<Response, IoError>;
+
+// Full control
+@intrinsic
+export function request(options: RequestOptions): Result<Response, IoError>;
+
+@intrinsic
+export async function requestAsync(options: RequestOptions): Result<Response, IoError>;
+
+// --- Server ---
+
+export struct HttpRequest {
+    method: string;
+    url: string;
+    headers: Headers;
+    body: string;
+}
+
+@intrinsic
+export struct HttpResponse {
+    setStatus(code: u16): void with &mut this;
+    setHeader(name: string, value: string): void with &mut this;
+    send(body: string): Result<void, IoError> with &mut this;
+}
+
+@intrinsic
+export struct HttpServer {
+    close(): Result<void, IoError> with &mut this;
+    addr(): string with &this;
+}
+
+@intrinsic
+export function serve(
+    port: u16,
+    handler: (req: HttpRequest, res: HttpResponse) => void
+): Result<HttpServer, IoError>;
+
+@intrinsic
+export async function serveAsync(
+    port: u16,
+    handler: (req: HttpRequest, res: HttpResponse) => void
+): Result<HttpServer, IoError>;

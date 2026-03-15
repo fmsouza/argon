@@ -106,6 +106,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "argon-backend-traits"
+version = "0.1.0"
+
+[[package]]
 name = "argon-borrowck"
 version = "0.1.0"
 dependencies = [

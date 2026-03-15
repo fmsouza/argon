@@ -1,0 +1,57 @@
+// Argon Standard Library - Networking (TCP, UDP, DNS)
+// Usage: from "std:net" import { bind, connect, TcpListener, TcpStream };
+
+// --- TCP Server ---
+
+@intrinsic
+export struct TcpListener {
+    accept(): Result<TcpStream, IoError> with &mut this;
+    acceptAsync(): Result<TcpStream, IoError> with &mut this;
+    close(): Result<void, IoError> with &mut this;
+    localAddr(): string with &this;
+}
+
+@intrinsic
+export function bind(addr: string, port: u16): Result<TcpListener, IoError>;
+
+// --- TCP Client ---
+
+@intrinsic
+export struct TcpStream {
+    read(maxBytes: usize): Result<string, IoError> with &mut this;
+    readAsync(maxBytes: usize): Result<string, IoError> with &mut this;
+    write(data: string): Result<usize, IoError> with &mut this;
+    writeAsync(data: string): Result<usize, IoError> with &mut this;
+    shutdown(): Result<void, IoError> with &mut this;
+    close(): Result<void, IoError> with &mut this;
+    peerAddr(): string with &this;
+}
+
+@intrinsic
+export function connect(addr: string, port: u16): Result<TcpStream, IoError>;
+
+@intrinsic
+export async function connectAsync(addr: string, port: u16): Result<TcpStream, IoError>;
+
+// --- UDP ---
+
+export struct UdpMessage {
+    data: string;
+    addr: string;
+    port: u16;
+}
+
+@intrinsic
+export struct UdpSocket {
+    sendTo(data: string, addr: string, port: u16): Result<usize, IoError> with &mut this;
+    recvFrom(maxBytes: usize): Result<UdpMessage, IoError> with &mut this;
+    close(): Result<void, IoError> with &mut this;
+}
+
+@intrinsic
+export function bindUdp(addr: string, port: u16): Result<UdpSocket, IoError>;
+
+// --- DNS ---
+
+@intrinsic
+export function resolve(hostname: string): Result<Vec<string>, IoError>;

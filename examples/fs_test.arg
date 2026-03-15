@@ -1,0 +1,50 @@
+// File system operations with std:fs
+from "std:io" import { println };
+from "std:fs" import { readFile, writeFile, appendFile, exists, stat, mkdir, readDir, remove, tempDir, open };
+
+// Write a file
+const wr = writeFile("/tmp/argon_fs_demo.txt", "Hello from Argon!");
+println(wr.isOk);  // true
+
+// Read the file back
+const rd = readFile("/tmp/argon_fs_demo.txt");
+println(rd.value);  // Hello from Argon!
+
+// Check existence
+const ex = exists("/tmp/argon_fs_demo.txt");
+println(ex.value);  // true
+
+// Get file stats
+const st = stat("/tmp/argon_fs_demo.txt");
+println(st.value.isFile);  // true
+println(st.value.size);    // 17
+
+// Append to file
+appendFile("/tmp/argon_fs_demo.txt", " More text.");
+const rd2 = readFile("/tmp/argon_fs_demo.txt");
+println(rd2.value);  // Hello from Argon! More text.
+
+// File handle: open, write, read, close
+const f = open("/tmp/argon_handle_demo.txt", "Write");
+const fh = f.value;
+fh.write("streaming I/O");
+fh.close();
+
+const f2 = open("/tmp/argon_handle_demo.txt", "Read");
+const fh2 = f2.value;
+const content = fh2.read(100);
+println(content.value);  // streaming I/O
+fh2.close();
+
+// Error handling
+const err = readFile("/tmp/nonexistent_argon_file.txt");
+println(err.isErr);       // true
+println(err.error.code);  // ENOENT
+
+// Get temp directory
+const tmp = tempDir();
+println(tmp.value);  // /tmp or platform temp dir
+
+// Cleanup
+remove("/tmp/argon_fs_demo.txt");
+remove("/tmp/argon_handle_demo.txt");

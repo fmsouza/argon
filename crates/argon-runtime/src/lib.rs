@@ -3,6 +3,7 @@
 use argon_ast::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::{Read as IoRead, Seek as IoSeek, Write as IoWrite};
 use std::rc::Rc;
 
 #[derive(Debug, Clone)]
@@ -83,11 +84,64 @@ enum ExecOutcome {
     Continue,
 }
 
+/// Shared resource table for OS handles (files, sockets, etc.)
+/// that need to persist across function call boundaries.
+#[derive(Debug, Default, Clone)]
+struct ResourceTable {
+    inner: Rc<RefCell<ResourceTableInner>>,
+}
+
+#[derive(Debug, Default)]
+struct ResourceTableInner {
+    file_handles: HashMap<u64, std::fs::File>,
+    next_id: u64,
+}
+
+impl ResourceTable {
+    fn new() -> Self {
+        Self {
+            inner: Rc::new(RefCell::new(ResourceTableInner {
+                file_handles: HashMap::new(),
+                next_id: 1,
+            })),
+        }
+    }
+
+    fn insert_file(&self, file: std::fs::File) -> u64 {
+        let mut inner = self.inner.borrow_mut();
+        let id = inner.next_id;
+        inner.next_id += 1;
+        inner.file_handles.insert(id, file);
+        id
+    }
+
+    fn with_file<F, R>(&self, id: u64, f: F) -> Result<R, RuntimeError>
+    where
+        F: FnOnce(&mut std::fs::File) -> Result<R, RuntimeError>,
+    {
+        let mut inner = self.inner.borrow_mut();
+        let file = inner
+            .file_handles
+            .get_mut(&id)
+            .ok_or_else(|| RuntimeError::TypeError("invalid file handle".to_string()))?;
+        f(file)
+    }
+
+    fn remove_file(&self, id: u64) -> Result<std::fs::File, RuntimeError> {
+        self.inner
+            .borrow_mut()
+            .file_handles
+            .remove(&id)
+            .ok_or_else(|| RuntimeError::TypeError("invalid file handle".to_string()))
+    }
+}
+
 pub struct Runtime {
     scope: Scope,
     globals: HashMap<String, Value>,
     struct_defs: HashMap<String, RuntimeStructDef>,
     skill_defs: HashMap<String, RuntimeSkillDef>,
+    resources: ResourceTable,
 }
 
 impl Default for Runtime {
@@ -167,11 +221,42 @@ impl Runtime {
             Value::Object(Rc::new(RefCell::new(math_obj))),
         );
 
+        // Register std:fs native functions
+        for name in &[
+            "readFile",
+            "writeFile",
+            "readBytes",
+            "writeBytes",
+            "appendFile",
+            "readDir",
+            "mkdir",
+            "mkdirRecursive",
+            "rmdir",
+            "removeRecursive",
+            "exists",
+            "stat",
+            "rename",
+            "remove",
+            "copy",
+            "symlink",
+            "readlink",
+            "tempDir",
+            "open",
+        ] {
+            globals.insert(
+                name.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("fs.{}", name),
+                }),
+            );
+        }
+
         Self {
             scope: Scope::new(),
             globals,
             struct_defs: HashMap::new(),
             skill_defs: HashMap::new(),
+            resources: ResourceTable::new(),
         }
     }
 
@@ -596,8 +681,41 @@ impl Runtime {
                 }
             }
             Expr::Call(c) => {
-                let callee = self.evaluate_expression(&c.callee)?;
+                // For method calls on objects (e.g., file.read(1024)),
+                // pass the receiver object as the first arg to native functions.
+                let (callee, receiver) = if let Expr::Member(m) = &*c.callee {
+                    let obj = self.evaluate_expression(&m.object)?;
+                    let property = if m.computed {
+                        let key = self.evaluate_expression(&m.property)?;
+                        self.value_to_string(&key)
+                    } else {
+                        self.property_key(&m.property)?
+                    };
+                    let callee_val = match &obj {
+                        Value::Object(map) => map
+                            .borrow()
+                            .get(&property)
+                            .cloned()
+                            .unwrap_or(Value::Undefined),
+                        Value::Array(values) => {
+                            if let Ok(idx) = property.parse::<usize>() {
+                                values.get(idx).cloned().unwrap_or(Value::Undefined)
+                            } else {
+                                Value::Undefined
+                            }
+                        }
+                        _ => Value::Undefined,
+                    };
+                    (callee_val, Some(obj))
+                } else {
+                    (self.evaluate_expression(&c.callee)?, None)
+                };
+
                 let mut args = Vec::new();
+                // For native function method calls, prepend the receiver as first arg
+                if let (Value::NativeFunction(_), Some(recv)) = (&callee, receiver) {
+                    args.push(recv);
+                }
                 for arg in &c.arguments {
                     match arg {
                         ExprOrSpread::Expr(e) => args.push(self.evaluate_expression(e)?),
@@ -708,6 +826,7 @@ impl Runtime {
                     globals: self.globals.clone(),
                     struct_defs: self.struct_defs.clone(),
                     skill_defs: self.skill_defs.clone(),
+                    resources: self.resources.clone(),
                 };
                 rt.execute_function_body(&func.body)
             }
@@ -842,6 +961,7 @@ impl Runtime {
                 globals: self.globals.clone(),
                 struct_defs: self.struct_defs.clone(),
                 skill_defs: self.skill_defs.clone(),
+                resources: self.resources.clone(),
             };
             for stmt in &constructor.body.statements {
                 match ctor_rt.execute_statement(stmt)? {
@@ -975,8 +1095,334 @@ impl Runtime {
             "Math.pow" => two_numbers(args, |a, b| Value::Number(a.powf(b))),
             "Math.max" => two_numbers(args, |a, b| Value::Number(a.max(b))),
             "Math.min" => two_numbers(args, |a, b| Value::Number(a.min(b))),
+
+            // --- std:fs ---
+            "fs.readFile" => {
+                let path = expect_string(args, 0, "readFile: path")?;
+                match std::fs::read_to_string(&path) {
+                    Ok(content) => Ok(make_ok(Value::String(content))),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.writeFile" => {
+                let path = expect_string(args, 0, "writeFile: path")?;
+                let content = expect_string(args, 1, "writeFile: content")?;
+                match std::fs::write(&path, &content) {
+                    Ok(()) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.readBytes" => {
+                let path = expect_string(args, 0, "readBytes: path")?;
+                match std::fs::read(&path) {
+                    Ok(bytes) => {
+                        let arr = bytes.into_iter().map(|b| Value::Number(b as f64)).collect();
+                        Ok(make_ok(Value::Array(arr)))
+                    }
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.writeBytes" => {
+                let path = expect_string(args, 0, "writeBytes: path")?;
+                let data = expect_byte_array(args, 1, "writeBytes: data")?;
+                match std::fs::write(&path, &data) {
+                    Ok(()) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.appendFile" => {
+                let path = expect_string(args, 0, "appendFile: path")?;
+                let content = expect_string(args, 1, "appendFile: content")?;
+                match std::fs::OpenOptions::new().append(true).create(true).open(&path) {
+                    Ok(mut file) => match std::io::Write::write_all(&mut file, content.as_bytes()) {
+                        Ok(()) => Ok(make_ok(Value::Undefined)),
+                        Err(e) => Ok(make_err(io_error_from(&e))),
+                    },
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.readDir" => {
+                let path = expect_string(args, 0, "readDir: path")?;
+                match std::fs::read_dir(&path) {
+                    Ok(entries) => {
+                        let mut result = Vec::new();
+                        for entry in entries {
+                            match entry {
+                                Ok(e) => {
+                                    let mut obj = HashMap::new();
+                                    obj.insert(
+                                        "name".to_string(),
+                                        Value::String(e.file_name().to_string_lossy().to_string()),
+                                    );
+                                    let ft = e.file_type().ok();
+                                    obj.insert(
+                                        "isFile".to_string(),
+                                        Value::Boolean(ft.as_ref().map_or(false, |t| t.is_file())),
+                                    );
+                                    obj.insert(
+                                        "isDir".to_string(),
+                                        Value::Boolean(ft.as_ref().map_or(false, |t| t.is_dir())),
+                                    );
+                                    obj.insert(
+                                        "isSymlink".to_string(),
+                                        Value::Boolean(
+                                            ft.as_ref().map_or(false, |t| t.is_symlink()),
+                                        ),
+                                    );
+                                    result.push(Value::Object(Rc::new(RefCell::new(obj))));
+                                }
+                                Err(e) => return Ok(make_err(io_error_from(&e))),
+                            }
+                        }
+                        Ok(make_ok(Value::Array(result)))
+                    }
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.mkdir" => {
+                let path = expect_string(args, 0, "mkdir: path")?;
+                match std::fs::create_dir(&path) {
+                    Ok(()) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.mkdirRecursive" => {
+                let path = expect_string(args, 0, "mkdirRecursive: path")?;
+                match std::fs::create_dir_all(&path) {
+                    Ok(()) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.rmdir" => {
+                let path = expect_string(args, 0, "rmdir: path")?;
+                match std::fs::remove_dir(&path) {
+                    Ok(()) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.removeRecursive" => {
+                let path = expect_string(args, 0, "removeRecursive: path")?;
+                match std::fs::remove_dir_all(&path) {
+                    Ok(()) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.exists" => {
+                let path = expect_string(args, 0, "exists: path")?;
+                Ok(make_ok(Value::Boolean(std::path::Path::new(&path).exists())))
+            }
+            "fs.stat" => {
+                let path = expect_string(args, 0, "stat: path")?;
+                match std::fs::metadata(&path) {
+                    Ok(meta) => {
+                        let mut obj = HashMap::new();
+                        obj.insert("size".to_string(), Value::Number(meta.len() as f64));
+                        obj.insert("isFile".to_string(), Value::Boolean(meta.is_file()));
+                        obj.insert("isDir".to_string(), Value::Boolean(meta.is_dir()));
+                        obj.insert("isSymlink".to_string(), Value::Boolean(meta.is_symlink()));
+                        obj.insert(
+                            "modified".to_string(),
+                            Value::Number(
+                                meta.modified()
+                                    .ok()
+                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                    .map_or(0.0, |d| d.as_millis() as f64),
+                            ),
+                        );
+                        obj.insert(
+                            "created".to_string(),
+                            Value::Number(
+                                meta.created()
+                                    .ok()
+                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                    .map_or(0.0, |d| d.as_millis() as f64),
+                            ),
+                        );
+                        Ok(make_ok(Value::Object(Rc::new(RefCell::new(obj)))))
+                    }
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.rename" => {
+                let from = expect_string(args, 0, "rename: from")?;
+                let to = expect_string(args, 1, "rename: to")?;
+                match std::fs::rename(&from, &to) {
+                    Ok(()) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.remove" => {
+                let path = expect_string(args, 0, "remove: path")?;
+                match std::fs::remove_file(&path) {
+                    Ok(()) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.copy" => {
+                let from = expect_string(args, 0, "copy: from")?;
+                let to = expect_string(args, 1, "copy: to")?;
+                match std::fs::copy(&from, &to) {
+                    Ok(_) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.symlink" => {
+                let target = expect_string(args, 0, "symlink: target")?;
+                let path = expect_string(args, 1, "symlink: path")?;
+                #[cfg(unix)]
+                let result = std::os::unix::fs::symlink(&target, &path);
+                #[cfg(windows)]
+                let result = std::os::windows::fs::symlink_file(&target, &path);
+                match result {
+                    Ok(()) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.readlink" => {
+                let path = expect_string(args, 0, "readlink: path")?;
+                match std::fs::read_link(&path) {
+                    Ok(target) => Ok(make_ok(Value::String(
+                        target.to_string_lossy().to_string(),
+                    ))),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.tempDir" => Ok(make_ok(Value::String(
+                std::env::temp_dir().to_string_lossy().to_string(),
+            ))),
+            "fs.open" => {
+                let path = expect_string(args, 0, "open: path")?;
+                let mode = expect_string(args, 1, "open: mode").unwrap_or_else(|_| "Read".to_string());
+                let result = match mode.as_str() {
+                    "Read" => std::fs::File::open(&path),
+                    "Write" => std::fs::File::create(&path),
+                    "Append" => std::fs::OpenOptions::new()
+                        .append(true)
+                        .create(true)
+                        .open(&path),
+                    "ReadWrite" => std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .create(true)
+                        .open(&path),
+                    "WriteAppend" => std::fs::OpenOptions::new()
+                        .write(true)
+                        .append(true)
+                        .create(true)
+                        .open(&path),
+                    _ => {
+                        return Ok(make_err(make_io_error("EINVAL", &format!("invalid file mode: {}", mode))));
+                    }
+                };
+                match result {
+                    Ok(file) => {
+                        let handle_id = self.resources.insert_file(file);
+                        Ok(make_ok(self.make_file_object(handle_id)))
+                    }
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+
+            // --- File handle methods ---
+            "File.read" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let max_bytes = expect_usize(args, 1, "File.read: maxBytes")?;
+                self.resources.with_file(handle_id, |file| {
+                    let mut buf = vec![0u8; max_bytes];
+                    match file.read(&mut buf) {
+                        Ok(n) => {
+                            buf.truncate(n);
+                            match String::from_utf8(buf) {
+                                Ok(s) => Ok(make_ok(Value::String(s))),
+                                Err(e) => Ok(make_err(make_io_error("EILSEQ", &e.to_string()))),
+                            }
+                        }
+                        Err(e) => Ok(make_err(io_error_from(&e))),
+                    }
+                })
+            }
+            "File.readBytes" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let max_bytes = expect_usize(args, 1, "File.readBytes: maxBytes")?;
+                self.resources.with_file(handle_id, |file| {
+                    let mut buf = vec![0u8; max_bytes];
+                    match file.read(&mut buf) {
+                        Ok(n) => {
+                            buf.truncate(n);
+                            let arr = buf.into_iter().map(|b| Value::Number(b as f64)).collect();
+                            Ok(make_ok(Value::Array(arr)))
+                        }
+                        Err(e) => Ok(make_err(io_error_from(&e))),
+                    }
+                })
+            }
+            "File.write" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let data = expect_string(args, 1, "File.write: data")?;
+                self.resources.with_file(handle_id, |file| {
+                    match file.write(data.as_bytes()) {
+                        Ok(n) => Ok(make_ok(Value::Number(n as f64))),
+                        Err(e) => Ok(make_err(io_error_from(&e))),
+                    }
+                })
+            }
+            "File.writeBytes" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let data = expect_byte_array(args, 1, "File.writeBytes: data")?;
+                self.resources.with_file(handle_id, |file| {
+                    match file.write(&data) {
+                        Ok(n) => Ok(make_ok(Value::Number(n as f64))),
+                        Err(e) => Ok(make_err(io_error_from(&e))),
+                    }
+                })
+            }
+            "File.seek" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let offset = expect_number(args, 1, "File.seek: offset")? as i64;
+                let whence = expect_string(args, 2, "File.seek: whence").unwrap_or_else(|_| "Start".to_string());
+                let seek_from = match whence.as_str() {
+                    "Start" => std::io::SeekFrom::Start(offset as u64),
+                    "Current" => std::io::SeekFrom::Current(offset),
+                    "End" => std::io::SeekFrom::End(offset),
+                    _ => {
+                        return Ok(make_err(make_io_error("EINVAL", &format!("invalid seek whence: {}", whence))));
+                    }
+                };
+                self.resources.with_file(handle_id, |file| {
+                    match file.seek(seek_from) {
+                        Ok(_) => Ok(make_ok(Value::Undefined)),
+                        Err(e) => Ok(make_err(io_error_from(&e))),
+                    }
+                })
+            }
+            "File.close" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                match self.resources.remove_file(handle_id) {
+                    Ok(_file) => Ok(make_ok(Value::Undefined)), // file dropped, closes fd
+                    Err(e) => Err(e),
+                }
+            }
+
             _ => Ok(Value::Undefined),
         }
+    }
+
+    /// Create a File intrinsic struct object with native method functions.
+    /// The object carries a `__handle` field for resource lookup.
+    fn make_file_object(&self, handle_id: u64) -> Value {
+        let mut obj = HashMap::new();
+        obj.insert("__handle".to_string(), Value::Number(handle_id as f64));
+
+        for method in &["read", "readBytes", "write", "writeBytes", "seek", "close"] {
+            obj.insert(
+                method.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("File.{}", method),
+                }),
+            );
+        }
+
+        Value::Object(Rc::new(RefCell::new(obj)))
     }
 
     fn eval_binary(
@@ -1140,6 +1586,135 @@ where
             "comparison operator expects numbers".to_string(),
         ))
     }
+}
+
+// --- fs helper functions ---
+
+fn expect_string(args: &[Value], idx: usize, context: &str) -> Result<String, RuntimeError> {
+    match args.get(idx) {
+        Some(Value::String(s)) => Ok(strip_quotes(s)),
+        Some(v) => Err(RuntimeError::TypeError(format!(
+            "{} expects a string, got {:?}",
+            context, v
+        ))),
+        None => Err(RuntimeError::TypeError(format!(
+            "{} missing argument at index {}",
+            context, idx
+        ))),
+    }
+}
+
+/// Strip surrounding quotes from a string value.
+/// The Argon parser preserves quotes in StringLiteral values.
+fn strip_quotes(s: &str) -> String {
+    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+        s[1..s.len() - 1].to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+fn expect_number(args: &[Value], idx: usize, context: &str) -> Result<f64, RuntimeError> {
+    match args.get(idx) {
+        Some(Value::Number(n)) => Ok(*n),
+        Some(v) => Err(RuntimeError::TypeError(format!(
+            "{} expects a number, got {:?}",
+            context, v
+        ))),
+        None => Err(RuntimeError::TypeError(format!(
+            "{} missing argument at index {}",
+            context, idx
+        ))),
+    }
+}
+
+fn expect_usize(args: &[Value], idx: usize, context: &str) -> Result<usize, RuntimeError> {
+    expect_number(args, idx, context).map(|n| n as usize)
+}
+
+fn expect_byte_array(args: &[Value], idx: usize, context: &str) -> Result<Vec<u8>, RuntimeError> {
+    match args.get(idx) {
+        Some(Value::Array(arr)) => {
+            let mut bytes = Vec::with_capacity(arr.len());
+            for v in arr {
+                match v {
+                    Value::Number(n) => bytes.push(*n as u8),
+                    _ => {
+                        return Err(RuntimeError::TypeError(format!(
+                            "{} expects an array of numbers",
+                            context
+                        )))
+                    }
+                }
+            }
+            Ok(bytes)
+        }
+        _ => Err(RuntimeError::TypeError(format!(
+            "{} expects a byte array",
+            context
+        ))),
+    }
+}
+
+/// Extract the __handle ID from a File-method call's first arg (the `this` object).
+fn expect_handle_id(args: &[Value], idx: usize) -> Result<u64, RuntimeError> {
+    match args.get(idx) {
+        Some(Value::Number(n)) => Ok(*n as u64),
+        Some(Value::Object(obj)) => {
+            let map = obj.borrow();
+            match map.get("__handle") {
+                Some(Value::Number(n)) => Ok(*n as u64),
+                _ => Err(RuntimeError::TypeError(
+                    "expected object with __handle".to_string(),
+                )),
+            }
+        }
+        _ => Err(RuntimeError::TypeError(
+            "expected handle ID or object with __handle".to_string(),
+        )),
+    }
+}
+
+/// Create an Ok result value (wraps value in an object with `value` and `isOk` fields).
+fn make_ok(value: Value) -> Value {
+    let mut obj = HashMap::new();
+    obj.insert("value".to_string(), value);
+    obj.insert("isOk".to_string(), Value::Boolean(true));
+    obj.insert("isErr".to_string(), Value::Boolean(false));
+    Value::Object(Rc::new(RefCell::new(obj)))
+}
+
+/// Create an Err result value (wraps error in an object with `error` and `isErr` fields).
+fn make_err(error: Value) -> Value {
+    let mut obj = HashMap::new();
+    obj.insert("error".to_string(), error);
+    obj.insert("isOk".to_string(), Value::Boolean(false));
+    obj.insert("isErr".to_string(), Value::Boolean(true));
+    Value::Object(Rc::new(RefCell::new(obj)))
+}
+
+/// Create an IoError value object from a Rust std::io::Error.
+fn io_error_from(e: &std::io::Error) -> Value {
+    let code = match e.kind() {
+        std::io::ErrorKind::NotFound => "ENOENT",
+        std::io::ErrorKind::PermissionDenied => "EACCES",
+        std::io::ErrorKind::AlreadyExists => "EEXIST",
+        std::io::ErrorKind::ConnectionRefused => "ECONNREFUSED",
+        std::io::ErrorKind::ConnectionReset => "ECONNRESET",
+        std::io::ErrorKind::AddrInUse => "EADDRINUSE",
+        std::io::ErrorKind::TimedOut => "ETIMEDOUT",
+        std::io::ErrorKind::BrokenPipe => "EPIPE",
+        _ => "EIO",
+    };
+    make_io_error(code, &e.to_string())
+}
+
+/// Create an IoError value object with given code and message.
+fn make_io_error(code: &str, message: &str) -> Value {
+    let mut obj = HashMap::new();
+    obj.insert("code".to_string(), Value::String(code.to_string()));
+    obj.insert("message".to_string(), Value::String(message.to_string()));
+    Value::Object(Rc::new(RefCell::new(obj)))
 }
 
 #[derive(Debug)]
