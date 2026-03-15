@@ -4,9 +4,13 @@ use argon_ast::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{Read as IoRead, Seek as IoSeek, Write as IoWrite};
+use std::pin::Pin;
 use std::rc::Rc;
 
-#[derive(Debug, Clone)]
+/// A boxed future that resolves to a Value. Stored inside Rc<RefCell<Option<...>>>
+/// so it can be taken once and awaited.
+type BoxFuture = Pin<Box<dyn std::future::Future<Output = Value>>>;
+
 pub enum Value {
     Number(f64),
     String(String),
@@ -17,6 +21,43 @@ pub enum Value {
     NativeFunction(NativeFunction),
     Object(Rc<RefCell<HashMap<String, Value>>>),
     Array(Vec<Value>),
+    /// An async future that resolves to a Value.
+    Future(Rc<RefCell<Option<BoxFuture>>>),
+}
+
+impl std::fmt::Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Number(n) => write!(f, "Number({})", n),
+            Value::String(s) => write!(f, "String({:?})", s),
+            Value::Boolean(b) => write!(f, "Boolean({})", b),
+            Value::Null => write!(f, "Null"),
+            Value::Undefined => write!(f, "Undefined"),
+            Value::Function(func) => write!(f, "Function({:?})", func.name),
+            Value::NativeFunction(nf) => write!(f, "NativeFunction({})", nf.name),
+            Value::Object(_) => write!(f, "Object(...)"),
+            Value::Array(arr) => write!(f, "Array(len={})", arr.len()),
+            Value::Future(_) => write!(f, "Future(...)"),
+        }
+    }
+}
+
+impl Clone for Value {
+    fn clone(&self) -> Self {
+        match self {
+            Value::Number(n) => Value::Number(*n),
+            Value::String(s) => Value::String(s.clone()),
+            Value::Boolean(b) => Value::Boolean(*b),
+            Value::Null => Value::Null,
+            Value::Undefined => Value::Undefined,
+            Value::Function(f) => Value::Function(f.clone()),
+            Value::NativeFunction(nf) => Value::NativeFunction(nf.clone()),
+            Value::Object(o) => Value::Object(o.clone()),
+            Value::Array(a) => Value::Array(a.clone()),
+            // Futures cannot be cloned — cloning produces Undefined
+            Value::Future(_) => Value::Undefined,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -432,6 +473,20 @@ impl Runtime {
                 }),
             );
         }
+
+        // Register std:async native functions
+        globals.insert(
+            "sleep".to_string(),
+            Value::NativeFunction(NativeFunction {
+                name: "async.sleep".to_string(),
+            }),
+        );
+        globals.insert(
+            "spawn".to_string(),
+            Value::NativeFunction(NativeFunction {
+                name: "async.spawn".to_string(),
+            }),
+        );
 
         // Register std:ws native functions
         for name in &["wsConnect", "wsListen"] {
@@ -989,7 +1044,25 @@ impl Runtime {
                     ))
                 }
             }
-            Expr::Await(a) | Expr::AwaitPromised(a) => self.evaluate_expression(&a.argument),
+            Expr::Await(a) | Expr::AwaitPromised(a) => {
+                let val = self.evaluate_expression(&a.argument)?;
+                match val {
+                    Value::Future(future_cell) => {
+                        let future = future_cell
+                            .borrow_mut()
+                            .take()
+                            .ok_or_else(|| {
+                                RuntimeError::TypeError("future already consumed".to_string())
+                            })?;
+                        // Block on the future using tokio if available
+                        match tokio::runtime::Handle::try_current() {
+                            Ok(h) => Ok(h.block_on(future)),
+                            Err(_) => Ok(Value::Undefined), // no tokio runtime, fall back
+                        }
+                    }
+                    other => Ok(other), // sync value, pass through
+                }
+            }
             Expr::Ref(r) => self.evaluate_expression(&r.expr),
             Expr::MutRef(r) => self.evaluate_expression(&r.expr),
             _ => Err(RuntimeError::Unsupported(format!(
@@ -2168,6 +2241,21 @@ impl Runtime {
                     Err(e) => Err(e),
                 }
             }
+            // --- std:async ---
+            "async.sleep" => {
+                let ms = expect_number(args, 0, "sleep: ms")? as u64;
+                let future: BoxFuture = Box::pin(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                    Value::Undefined
+                });
+                Ok(Value::Future(Rc::new(RefCell::new(Some(future)))))
+            }
+            "async.spawn" => {
+                // In the single-threaded interpreter, spawn just runs the future immediately
+                // (no true concurrency). Returns a Task-like value.
+                Ok(Value::Undefined)
+            }
+
             "WsServer.addr" => {
                 let handle_id = expect_handle_id(args, 0)?;
                 self.resources.with_tcp_listener(handle_id, |listener| {
@@ -2399,9 +2487,11 @@ impl Runtime {
             Value::Number(n) => *n != 0.0,
             Value::String(s) => !s.is_empty(),
             Value::Null | Value::Undefined => false,
-            Value::Object(_) | Value::Array(_) | Value::Function(_) | Value::NativeFunction(_) => {
-                true
-            }
+            Value::Object(_)
+            | Value::Array(_)
+            | Value::Function(_)
+            | Value::NativeFunction(_)
+            | Value::Future(_) => true,
         }
     }
 
@@ -2419,6 +2509,7 @@ impl Runtime {
             }
             Value::Function(_) => "[function]".to_string(),
             Value::NativeFunction(nf) => format!("[function: {}]", nf.name),
+            Value::Future(_) => "[future]".to_string(),
         }
     }
 }
@@ -2682,8 +2773,28 @@ impl std::fmt::Display for RuntimeError {
 impl std::error::Error for RuntimeError {}
 
 pub fn execute_ast(ast: &SourceFile) -> Result<Value, RuntimeError> {
+    // Create a multi-threaded tokio runtime with 1 worker thread.
+    // This allows us to call Handle::block_on from the main thread
+    // to await futures without the "nested block_on" panic that
+    // current_thread triggers.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .map_err(|e| {
+            RuntimeError::Unsupported(format!("failed to create async runtime: {}", e))
+        })?;
+
+    // Enter the runtime context so Handle::try_current() works
+    let _guard = rt.enter();
+
     let mut runtime = Runtime::new();
-    runtime.execute(ast)
+    let result = runtime.execute(ast);
+
+    drop(_guard);
+    drop(rt);
+
+    result
 }
 
 fn detect_compile_only_feature_in_source(source: &SourceFile) -> Option<&'static str> {

@@ -370,6 +370,12 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                         .ins()
                         .trap(cranelift_codegen::ir::TrapCode::unwrap_user(0));
                 }
+                Terminator::EnumMatch { .. } => {
+                    // Async state machine enum match — not yet implemented in native codegen
+                    self.builder
+                        .ins()
+                        .trap(cranelift_codegen::ir::TrapCode::unwrap_user(0));
+                }
             }
         }
 
@@ -665,6 +671,17 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                     "await is not supported for the native target".to_string(),
                 ));
             }
+
+            // Async state machine instructions — stub for now
+            IrInstruction::EnumConstruct { dest, .. } => {
+                let zero = self.builder.ins().f64const(0.0);
+                self.values.insert(*dest, zero);
+            }
+            IrInstruction::EnumField { dest, .. } => {
+                let zero = self.builder.ins().f64const(0.0);
+                self.values.insert(*dest, zero);
+            }
+            IrInstruction::EnumMutate { .. } => {}
 
             IrInstruction::Load { dest, src } => {
                 let val = self.get_value(*src)?;

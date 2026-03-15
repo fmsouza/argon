@@ -17,6 +17,7 @@ members = [
     "crates/argon-runtime",
     "crates/argon-target",
     "crates/argon-backend-traits",
+    "crates/argon-async",
 ]
 resolver = "2"
 

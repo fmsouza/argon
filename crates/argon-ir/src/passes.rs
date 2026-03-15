@@ -6,6 +6,8 @@ use crate::{
 };
 use std::collections::{HashMap, HashSet};
 
+pub mod async_lowering;
+pub mod cfg_flatten;
 pub mod ssa;
 
 #[derive(Debug, Clone)]
@@ -50,6 +52,13 @@ fn terminator_succs(term: &Terminator) -> Vec<BlockId> {
         Terminator::Return(_) | Terminator::Unreachable => Vec::new(),
         Terminator::Jump(t) => vec![*t],
         Terminator::Branch { then, else_, .. } => vec![*then, *else_],
+        Terminator::EnumMatch { arms, default, .. } => {
+            let mut succs: Vec<BlockId> = arms.iter().map(|(_, _, b)| *b).collect();
+            if let Some(d) = default {
+                succs.push(*d);
+            }
+            succs
+        }
     }
 }
 
@@ -445,6 +454,9 @@ fn add_terminator_uses(term: &Terminator, live: &mut HashSet<ValueId>) {
         Terminator::Branch { cond, .. } => {
             live.insert(*cond);
         }
+        Terminator::EnumMatch { value, .. } => {
+            live.insert(*value);
+        }
         _ => {}
     }
 }
@@ -566,6 +578,17 @@ fn inst_def_uses(inst: &Instruction) -> (Option<ValueId>, Vec<ValueId>, bool) {
                 let (_, u, _) = inst_def_uses(i);
                 uses.extend(u);
             }
+            (None, uses, true)
+        }
+        Instruction::EnumConstruct { dest, fields, .. } => {
+            (Some(*dest), fields.iter().map(|(_, v)| *v).collect(), false)
+        }
+        Instruction::EnumField { dest, value, .. } => {
+            (Some(*dest), vec![*value], false)
+        }
+        Instruction::EnumMutate { target, fields, .. } => {
+            let mut uses: Vec<ValueId> = vec![*target];
+            uses.extend(fields.iter().map(|(_, v)| *v));
             (None, uses, true)
         }
         Instruction::Break | Instruction::Continue => (None, Vec::new(), true),

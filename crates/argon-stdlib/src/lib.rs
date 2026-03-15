@@ -19,13 +19,14 @@ pub fn resolve_std_module(name: &str) -> Option<&'static str> {
         "net" => Some(include_str!("../stdlib/net.arg")),
         "http" => Some(include_str!("../stdlib/http.arg")),
         "ws" => Some(include_str!("../stdlib/ws.arg")),
+        "async" => Some(include_str!("../stdlib/async.arg")),
         _ => None,
     }
 }
 
 /// List all available `std:*` module names.
 pub fn available_modules() -> &'static [&'static str] {
-    &["io", "math", "error", "fs", "net", "http", "ws"]
+    &["io", "math", "error", "fs", "net", "http", "ws", "async"]
 }
 
 #[cfg(test)]
@@ -119,5 +120,6 @@ mod tests {
         assert!(mods.contains(&"net"));
         assert!(mods.contains(&"http"));
         assert!(mods.contains(&"ws"));
+        assert!(mods.contains(&"async"));
     }
 }

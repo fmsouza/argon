@@ -1,0 +1,13 @@
+[package]
+name = "argon-async"
+version.workspace = true
+edition.workspace = true
+description = "Async runtime with work-stealing scheduler and mio-based I/O reactor for Argon"
+
+[lib]
+crate-type = ["lib", "staticlib"]
+
+[dependencies]
+mio = { version = "0.8", features = ["net", "os-poll"] }
+crossbeam-deque = "0.8"
+crossbeam-utils = "0.8"
