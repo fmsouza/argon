@@ -976,6 +976,12 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                     | "get" | "post" | "put" | "del" | "request"
                     | "createHeaders" | "serve"
                     | "wsConnect" | "wsListen"
+                    | "sleep" | "spawn"
+                    | "readFileAsync" | "writeFileAsync" | "readBytesAsync"
+                    | "writeBytesAsync" | "appendFileAsync" | "readDirAsync"
+                    | "statAsync" | "copyAsync" | "connectAsync"
+                    | "getAsync" | "postAsync" | "putAsync" | "delAsync"
+                    | "requestAsync" | "wsConnectAsync" | "serveAsync"
             ) {
                 // These intrinsics are recognized but produce a stub return value
                 // in native mode. Full implementation requires struct/object

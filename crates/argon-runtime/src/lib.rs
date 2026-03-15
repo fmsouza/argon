@@ -454,6 +454,53 @@ impl Runtime {
             );
         }
 
+        // Register async variants of std:fs, std:net, std:http
+        for name in &[
+            "readFileAsync",
+            "writeFileAsync",
+            "readBytesAsync",
+            "writeBytesAsync",
+            "appendFileAsync",
+            "readDirAsync",
+            "statAsync",
+            "copyAsync",
+        ] {
+            globals.insert(
+                name.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("fs.{}", name),
+                }),
+            );
+        }
+        for name in &["connectAsync"] {
+            globals.insert(
+                name.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("net.{}", name),
+                }),
+            );
+        }
+        for name in &[
+            "getAsync",
+            "postAsync",
+            "putAsync",
+            "delAsync",
+            "requestAsync",
+        ] {
+            globals.insert(
+                name.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("http.{}", name),
+                }),
+            );
+        }
+        globals.insert(
+            "wsConnectAsync".to_string(),
+            Value::NativeFunction(NativeFunction {
+                name: "ws.wsConnectAsync".to_string(),
+            }),
+        );
+
         // Register std:net native functions
         for name in &["bind", "connect", "bindUdp", "resolve"] {
             globals.insert(
@@ -2254,6 +2301,205 @@ impl Runtime {
                 // In the single-threaded interpreter, spawn just runs the future immediately
                 // (no true concurrency). Returns a Task-like value.
                 Ok(Value::Undefined)
+            }
+
+            // --- Async fs ---
+            "fs.readFileAsync" => {
+                let path = expect_string(args, 0, "readFileAsync: path")?;
+                let future: BoxFuture = Box::pin(async move {
+                    match tokio::fs::read_to_string(&path).await {
+                        Ok(content) => make_ok(Value::String(content)),
+                        Err(e) => make_err(io_error_from(&e)),
+                    }
+                });
+                Ok(Value::Future(Rc::new(RefCell::new(Some(future)))))
+            }
+            "fs.writeFileAsync" => {
+                let path = expect_string(args, 0, "writeFileAsync: path")?;
+                let content = expect_string(args, 1, "writeFileAsync: content")?;
+                let future: BoxFuture = Box::pin(async move {
+                    match tokio::fs::write(&path, &content).await {
+                        Ok(()) => make_ok(Value::Undefined),
+                        Err(e) => make_err(io_error_from(&e)),
+                    }
+                });
+                Ok(Value::Future(Rc::new(RefCell::new(Some(future)))))
+            }
+            "fs.readBytesAsync" => {
+                let path = expect_string(args, 0, "readBytesAsync: path")?;
+                let future: BoxFuture = Box::pin(async move {
+                    match tokio::fs::read(&path).await {
+                        Ok(bytes) => {
+                            let arr = bytes.into_iter().map(|b| Value::Number(b as f64)).collect();
+                            make_ok(Value::Array(arr))
+                        }
+                        Err(e) => make_err(io_error_from(&e)),
+                    }
+                });
+                Ok(Value::Future(Rc::new(RefCell::new(Some(future)))))
+            }
+            "fs.writeBytesAsync" => {
+                let path = expect_string(args, 0, "writeBytesAsync: path")?;
+                let data = expect_byte_array(args, 1, "writeBytesAsync: data")?;
+                let future: BoxFuture = Box::pin(async move {
+                    match tokio::fs::write(&path, &data).await {
+                        Ok(()) => make_ok(Value::Undefined),
+                        Err(e) => make_err(io_error_from(&e)),
+                    }
+                });
+                Ok(Value::Future(Rc::new(RefCell::new(Some(future)))))
+            }
+            "fs.appendFileAsync" => {
+                let path = expect_string(args, 0, "appendFileAsync: path")?;
+                let content = expect_string(args, 1, "appendFileAsync: content")?;
+                let future: BoxFuture = Box::pin(async move {
+                    match tokio::fs::OpenOptions::new()
+                        .append(true)
+                        .create(true)
+                        .open(&path)
+                        .await
+                    {
+                        Ok(mut file) => {
+                            use tokio::io::AsyncWriteExt;
+                            match file.write_all(content.as_bytes()).await {
+                                Ok(()) => make_ok(Value::Undefined),
+                                Err(e) => make_err(io_error_from(&e)),
+                            }
+                        }
+                        Err(e) => make_err(io_error_from(&e)),
+                    }
+                });
+                Ok(Value::Future(Rc::new(RefCell::new(Some(future)))))
+            }
+            "fs.readDirAsync" | "fs.statAsync" | "fs.copyAsync" => {
+                // These async variants fall back to sync for now
+                // (tokio::fs covers read/write but readdir/stat/copy are less common)
+                let sync_name = name.trim_end_matches("Async");
+                self.execute_native_function(sync_name, args)
+            }
+
+            // --- Async net ---
+            "net.connectAsync" => {
+                let addr = expect_string(args, 0, "connectAsync: addr")?;
+                let port = expect_number(args, 1, "connectAsync: port")? as u16;
+                let resources = self.resources.clone();
+                let future: BoxFuture = Box::pin(async move {
+                    let addr_str = format!("{}:{}", addr, port);
+                    match tokio::net::TcpStream::connect(&addr_str).await {
+                        Ok(stream) => {
+                            // Convert tokio stream to std stream for our resource table
+                            match stream.into_std() {
+                                Ok(std_stream) => {
+                                    let handle_id = resources.insert_tcp_stream(std_stream);
+                                    let mut obj = HashMap::new();
+                                    obj.insert(
+                                        "__handle".to_string(),
+                                        Value::Number(handle_id as f64),
+                                    );
+                                    for method in
+                                        &["read", "write", "shutdown", "close", "peerAddr"]
+                                    {
+                                        obj.insert(
+                                            method.to_string(),
+                                            Value::NativeFunction(NativeFunction {
+                                                name: format!("TcpStream.{}", method),
+                                            }),
+                                        );
+                                    }
+                                    make_ok(Value::Object(Rc::new(RefCell::new(obj))))
+                                }
+                                Err(e) => make_err(io_error_from(&e)),
+                            }
+                        }
+                        Err(e) => make_err(io_error_from(&e)),
+                    }
+                });
+                Ok(Value::Future(Rc::new(RefCell::new(Some(future)))))
+            }
+
+            // --- Async http ---
+            "http.getAsync" => {
+                let url = expect_string(args, 0, "getAsync: url")?;
+                let future: BoxFuture = Box::pin(async move {
+                    // Use blocking ureq in a spawn_blocking context
+                    match tokio::task::spawn_blocking(move || ureq::get(&url).call()).await {
+                        Ok(Ok(resp)) => {
+                            let status = resp.status() as f64;
+                            let body = resp.into_string().unwrap_or_default();
+                            let mut obj = HashMap::new();
+                            obj.insert("status".to_string(), Value::Number(status));
+                            obj.insert("body".to_string(), Value::String(body));
+                            obj.insert("headers".to_string(), Value::Object(Rc::new(RefCell::new(HashMap::new()))));
+                            make_ok(Value::Object(Rc::new(RefCell::new(obj))))
+                        }
+                        Ok(Err(e)) => make_err(http_error_from(&e)),
+                        Err(e) => make_err(make_io_error("EIO", &e.to_string())),
+                    }
+                });
+                Ok(Value::Future(Rc::new(RefCell::new(Some(future)))))
+            }
+            "http.postAsync" => {
+                let url = expect_string(args, 0, "postAsync: url")?;
+                let body = expect_string(args, 1, "postAsync: body")?;
+                let future: BoxFuture = Box::pin(async move {
+                    match tokio::task::spawn_blocking(move || {
+                        ureq::post(&url).send_string(&body)
+                    })
+                    .await
+                    {
+                        Ok(Ok(resp)) => {
+                            let status = resp.status() as f64;
+                            let rbody = resp.into_string().unwrap_or_default();
+                            let mut obj = HashMap::new();
+                            obj.insert("status".to_string(), Value::Number(status));
+                            obj.insert("body".to_string(), Value::String(rbody));
+                            obj.insert("headers".to_string(), Value::Object(Rc::new(RefCell::new(HashMap::new()))));
+                            make_ok(Value::Object(Rc::new(RefCell::new(obj))))
+                        }
+                        Ok(Err(e)) => make_err(http_error_from(&e)),
+                        Err(e) => make_err(make_io_error("EIO", &e.to_string())),
+                    }
+                });
+                Ok(Value::Future(Rc::new(RefCell::new(Some(future)))))
+            }
+            "http.putAsync" | "http.delAsync" | "http.requestAsync" => {
+                // Fall back to sync for less common methods
+                let sync_name = name.trim_end_matches("Async");
+                self.execute_native_function(sync_name, args)
+            }
+
+            // --- Async ws ---
+            "ws.wsConnectAsync" => {
+                let url = expect_string(args, 0, "wsConnectAsync: url")?;
+                let resources = self.resources.clone();
+                let future: BoxFuture = Box::pin(async move {
+                    match tokio::task::spawn_blocking(move || tungstenite::connect(&url)).await {
+                        Ok(Ok((ws, _response))) => {
+                            let handle_id = resources.insert_ws(WsConn::Client(ws));
+                            let mut obj = HashMap::new();
+                            obj.insert(
+                                "__handle".to_string(),
+                                Value::Number(handle_id as f64),
+                            );
+                            for method in
+                                &["send", "sendBytes", "recv", "ping", "close", "isOpen"]
+                            {
+                                obj.insert(
+                                    method.to_string(),
+                                    Value::NativeFunction(NativeFunction {
+                                        name: format!("WsConnection.{}", method),
+                                    }),
+                                );
+                            }
+                            make_ok(Value::Object(Rc::new(RefCell::new(obj))))
+                        }
+                        Ok(Err(e)) => {
+                            make_err(make_io_error("WS_ERROR", &e.to_string()))
+                        }
+                        Err(e) => make_err(make_io_error("EIO", &e.to_string())),
+                    }
+                });
+                Ok(Value::Future(Rc::new(RefCell::new(Some(future)))))
             }
 
             "WsServer.addr" => {

@@ -1,0 +1,22 @@
+// Test async file system operations
+from "std:io" import { println };
+from "std:fs" import { readFileAsync, writeFileAsync, remove };
+
+// Async write
+const wr = await writeFileAsync("/tmp/argon_async_test.txt", "async hello!");
+println(wr.isOk);
+
+// Async read
+const rd = await readFileAsync("/tmp/argon_async_test.txt");
+println(rd.isOk);
+println(rd.value);
+
+// Clean up (sync is fine)
+remove("/tmp/argon_async_test.txt");
+
+// Test error handling
+const err = await readFileAsync("/tmp/nonexistent_argon_async.txt");
+println(err.isOk);
+println(err.error.code);
+
+println("async fs done!");

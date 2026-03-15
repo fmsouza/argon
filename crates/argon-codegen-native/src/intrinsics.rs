@@ -388,6 +388,26 @@ pub fn is_intrinsic(name: &str) -> bool {
             // std:ws
             | "wsConnect"
             | "wsListen"
+            // std:async
+            | "sleep"
+            | "spawn"
+            // Async variants
+            | "readFileAsync"
+            | "writeFileAsync"
+            | "readBytesAsync"
+            | "writeBytesAsync"
+            | "appendFileAsync"
+            | "readDirAsync"
+            | "statAsync"
+            | "copyAsync"
+            | "connectAsync"
+            | "getAsync"
+            | "postAsync"
+            | "putAsync"
+            | "delAsync"
+            | "requestAsync"
+            | "wsConnectAsync"
+            | "serveAsync"
             // std:fs (continued)
             | "writeFile"
             | "appendFile"

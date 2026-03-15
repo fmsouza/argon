@@ -1,0 +1,11 @@
+// Test async HTTP client
+from "std:io" import { println };
+from "std:http" import { getAsync };
+
+// Test error handling (connection refused — no external network needed)
+const err = await getAsync("http://127.0.0.1:19999/test");
+println(err.isOk);
+println(err.isErr);
+println(err.error.code);
+
+println("async http done!");
