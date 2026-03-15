@@ -8,6 +8,7 @@ use cranelift_codegen::ir::{AbiParam, Type};
 use cranelift_module::{Linkage, Module};
 
 /// Declare libc functions that intrinsics depend on.
+#[allow(clippy::result_large_err)]
 pub fn declare_libc_functions<M: Module>(
     module: &mut M,
     pointer_type: Type,
@@ -132,8 +133,11 @@ pub fn declare_libc_functions<M: Module>(
     fs_append_file_sig.params.push(AbiParam::new(pointer_type));
     fs_append_file_sig.params.push(AbiParam::new(pointer_type));
     fs_append_file_sig.returns.push(AbiParam::new(types::I32));
-    let fs_append_file_fn =
-        module.declare_function("__argon_fs_append_file", Linkage::Import, &fs_append_file_sig)?;
+    let fs_append_file_fn = module.declare_function(
+        "__argon_fs_append_file",
+        Linkage::Import,
+        &fs_append_file_sig,
+    )?;
 
     // int __argon_fs_exists(path, path_len)
     let mut fs_exists_sig = module.make_signature();
@@ -218,15 +222,21 @@ pub fn declare_libc_functions<M: Module>(
     net_tcp_connect_sig.params.push(AbiParam::new(pointer_type));
     net_tcp_connect_sig.params.push(AbiParam::new(types::I32));
     net_tcp_connect_sig.returns.push(AbiParam::new(types::I32));
-    let net_tcp_connect_fn =
-        module.declare_function("__argon_net_tcp_connect", Linkage::Import, &net_tcp_connect_sig)?;
+    let net_tcp_connect_fn = module.declare_function(
+        "__argon_net_tcp_connect",
+        Linkage::Import,
+        &net_tcp_connect_sig,
+    )?;
 
     // int __argon_net_tcp_accept(listen_fd)
     let mut net_tcp_accept_sig = module.make_signature();
     net_tcp_accept_sig.params.push(AbiParam::new(types::I32));
     net_tcp_accept_sig.returns.push(AbiParam::new(types::I32));
-    let net_tcp_accept_fn =
-        module.declare_function("__argon_net_tcp_accept", Linkage::Import, &net_tcp_accept_sig)?;
+    let net_tcp_accept_fn = module.declare_function(
+        "__argon_net_tcp_accept",
+        Linkage::Import,
+        &net_tcp_accept_sig,
+    )?;
 
     // long __argon_net_tcp_read(fd, buf, max_bytes)
     let mut net_tcp_read_sig = module.make_signature();

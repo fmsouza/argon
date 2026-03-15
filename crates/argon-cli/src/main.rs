@@ -161,6 +161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile(
     input: &PathBuf,
     output: Option<&PathBuf>,

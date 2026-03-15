@@ -1696,7 +1696,9 @@ impl<'a> ModuleLowerer<'a> {
                     IrInstruction::Const { dest, .. } => touch_value(&mut max_value, *dest),
                     IrInstruction::EnumConstruct { dest, fields, .. } => {
                         touch_value(&mut max_value, *dest);
-                        for (_, v) in fields { touch_value(&mut max_value, *v); }
+                        for (_, v) in fields {
+                            touch_value(&mut max_value, *v);
+                        }
                     }
                     IrInstruction::EnumField { dest, value, .. } => {
                         touch_value(&mut max_value, *dest);
@@ -1704,7 +1706,9 @@ impl<'a> ModuleLowerer<'a> {
                     }
                     IrInstruction::EnumMutate { target, fields, .. } => {
                         touch_value(&mut max_value, *target);
-                        for (_, v) in fields { touch_value(&mut max_value, *v); }
+                        for (_, v) in fields {
+                            touch_value(&mut max_value, *v);
+                        }
                     }
                 }
             }
@@ -1714,7 +1718,9 @@ impl<'a> ModuleLowerer<'a> {
                     touch_value(&mut max_value, *v);
                 }
                 Terminator::Return(None) | Terminator::Jump(_) | Terminator::Unreachable => {}
-                Terminator::EnumMatch { value, .. } => { touch_value(&mut max_value, *value); }
+                Terminator::EnumMatch { value, .. } => {
+                    touch_value(&mut max_value, *value);
+                }
             }
         }
 
@@ -1968,7 +1974,9 @@ impl<'a> ModuleLowerer<'a> {
             }
             IrInstruction::EnumConstruct { dest, fields, .. } => {
                 touch_value(max_value, *dest);
-                for (_, v) in fields { touch_value(max_value, *v); }
+                for (_, v) in fields {
+                    touch_value(max_value, *v);
+                }
                 0
             }
             IrInstruction::EnumField { dest, value, .. } => {
@@ -1978,7 +1986,9 @@ impl<'a> ModuleLowerer<'a> {
             }
             IrInstruction::EnumMutate { target, fields, .. } => {
                 touch_value(max_value, *target);
-                for (_, v) in fields { touch_value(max_value, *v); }
+                for (_, v) in fields {
+                    touch_value(max_value, *v);
+                }
                 0
             }
         }

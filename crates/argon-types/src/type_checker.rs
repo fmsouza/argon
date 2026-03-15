@@ -1603,23 +1603,20 @@ impl TypeChecker {
     ) {
         // Struct literal `Name { k: v }` is lowered to `new Name({ k: v })`.
         // Extract properties from the init object and match by name.
-        if let Some(ExprOrSpread::Expr(arg)) = n.arguments.first() {
-            if let Expr::Object(obj) = arg {
-                for prop in &obj.properties {
-                    if let ObjectProperty::Property(p) = prop {
-                        let key_name = match &p.key {
-                            Expr::Identifier(id) => Some(id.sym.clone()),
-                            Expr::Literal(Literal::String(s)) => Some(s.value.clone()),
-                            _ => None,
-                        };
-                        if let Some(name) = key_name {
-                            if let Some((_, expected_ty)) =
-                                ctor_params.iter().find(|(n, _)| n == &name)
-                            {
-                                if let ExprOrSpread::Expr(val) = &p.value {
-                                    let found_ty = self.infer_expression(val);
-                                    self.unify(found_ty, *expected_ty);
-                                }
+        if let Some(ExprOrSpread::Expr(Expr::Object(obj))) = n.arguments.first() {
+            for prop in &obj.properties {
+                if let ObjectProperty::Property(p) = prop {
+                    let key_name = match &p.key {
+                        Expr::Identifier(id) => Some(id.sym.clone()),
+                        Expr::Literal(Literal::String(s)) => Some(s.value.clone()),
+                        _ => None,
+                    };
+                    if let Some(name) = key_name {
+                        if let Some((_, expected_ty)) = ctor_params.iter().find(|(n, _)| n == &name)
+                        {
+                            if let ExprOrSpread::Expr(val) = &p.value {
+                                let found_ty = self.infer_expression(val);
+                                self.unify(found_ty, *expected_ty);
                             }
                         }
                     }
@@ -1649,30 +1646,28 @@ impl TypeChecker {
                     // Infer type args from init object properties matched against constructor params
                     let mut inferred: Vec<Option<TypeId>> =
                         vec![None; generic_struct.type_params.len()];
-                    if let Some(ExprOrSpread::Expr(arg)) = n.arguments.first() {
-                        if let Expr::Object(obj) = arg {
-                            for prop in &obj.properties {
-                                if let ObjectProperty::Property(p) = prop {
-                                    let key_name = match &p.key {
-                                        Expr::Identifier(kid) => Some(kid.sym.clone()),
-                                        _ => None,
-                                    };
-                                    if let Some(name) = key_name {
-                                        if let ExprOrSpread::Expr(val) = &p.value {
-                                            let val_ty = self.infer_expression(val);
-                                            // Find which type param this constructor param uses
-                                            if let Some((_, param_ty)) =
-                                                ctor_params.iter().find(|(n, _)| n == &name)
+                    if let Some(ExprOrSpread::Expr(Expr::Object(obj))) = n.arguments.first() {
+                        for prop in &obj.properties {
+                            if let ObjectProperty::Property(p) = prop {
+                                let key_name = match &p.key {
+                                    Expr::Identifier(kid) => Some(kid.sym.clone()),
+                                    _ => None,
+                                };
+                                if let Some(name) = key_name {
+                                    if let ExprOrSpread::Expr(val) = &p.value {
+                                        let val_ty = self.infer_expression(val);
+                                        // Find which type param this constructor param uses
+                                        if let Some((_, param_ty)) =
+                                            ctor_params.iter().find(|(n, _)| n == &name)
+                                        {
+                                            for (i, tp) in
+                                                generic_struct.type_params.iter().enumerate()
                                             {
-                                                for (i, tp) in
-                                                    generic_struct.type_params.iter().enumerate()
+                                                if let Some(CompType::TypeParam(ref tp_def)) =
+                                                    self.type_table.get(*param_ty).cloned()
                                                 {
-                                                    if let Some(CompType::TypeParam(ref tp_def)) =
-                                                        self.type_table.get(*param_ty).cloned()
-                                                    {
-                                                        if tp_def.name == tp.name.sym {
-                                                            inferred[i] = Some(val_ty);
-                                                        }
+                                                    if tp_def.name == tp.name.sym {
+                                                        inferred[i] = Some(val_ty);
                                                     }
                                                 }
                                             }

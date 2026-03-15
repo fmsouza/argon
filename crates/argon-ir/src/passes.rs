@@ -583,9 +583,7 @@ fn inst_def_uses(inst: &Instruction) -> (Option<ValueId>, Vec<ValueId>, bool) {
         Instruction::EnumConstruct { dest, fields, .. } => {
             (Some(*dest), fields.iter().map(|(_, v)| *v).collect(), false)
         }
-        Instruction::EnumField { dest, value, .. } => {
-            (Some(*dest), vec![*value], false)
-        }
+        Instruction::EnumField { dest, value, .. } => (Some(*dest), vec![*value], false),
         Instruction::EnumMutate { target, fields, .. } => {
             let mut uses: Vec<ValueId> = vec![*target];
             uses.extend(fields.iter().map(|(_, v)| *v));

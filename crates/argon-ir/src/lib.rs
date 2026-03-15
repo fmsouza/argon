@@ -271,11 +271,20 @@ pub enum UnOp {
 
 #[derive(Debug, Clone)]
 pub enum TypeDef {
-    Struct { name: String, fields: Vec<Field> },
-    Array { element_type: TypeId, length: usize },
+    Struct {
+        name: String,
+        fields: Vec<Field>,
+    },
+    Array {
+        element_type: TypeId,
+        length: usize,
+    },
     Pointer(TypeId),
     /// Enum type for async state machines. Each variant carries named fields.
-    Enum { name: String, variants: Vec<EnumVariant> },
+    Enum {
+        name: String,
+        variants: Vec<EnumVariant>,
+    },
 }
 
 /// A variant of an enum type, carrying named fields.

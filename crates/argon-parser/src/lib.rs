@@ -1415,7 +1415,7 @@ impl Parser {
                     };
 
                     let end = self.previous().span.end;
-                    items.push(SkillItem::ConcreteMethod(MethodDefinition {
+                    items.push(SkillItem::ConcreteMethod(Box::new(MethodDefinition {
                         key,
                         value: FunctionDecl {
                             id: None,
@@ -1431,7 +1431,7 @@ impl Parser {
                         kind: MethodKind::Method,
                         is_static: false,
                         span: start..end,
-                    }));
+                    })));
                 } else {
                     // Abstract method (signature only)
                     let end = self.previous().span.end;

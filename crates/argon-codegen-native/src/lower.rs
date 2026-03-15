@@ -972,16 +972,37 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
             // which need further infrastructure work)
             if matches!(
                 name.as_str(),
-                "bind" | "connect" | "bindUdp" | "resolve"
-                    | "get" | "post" | "put" | "del" | "request"
-                    | "createHeaders" | "serve"
-                    | "wsConnect" | "wsListen"
-                    | "sleep" | "spawn"
-                    | "readFileAsync" | "writeFileAsync" | "readBytesAsync"
-                    | "writeBytesAsync" | "appendFileAsync" | "readDirAsync"
-                    | "statAsync" | "copyAsync" | "connectAsync"
-                    | "getAsync" | "postAsync" | "putAsync" | "delAsync"
-                    | "requestAsync" | "wsConnectAsync" | "serveAsync"
+                "bind"
+                    | "connect"
+                    | "bindUdp"
+                    | "resolve"
+                    | "get"
+                    | "post"
+                    | "put"
+                    | "del"
+                    | "request"
+                    | "createHeaders"
+                    | "serve"
+                    | "wsConnect"
+                    | "wsListen"
+                    | "sleep"
+                    | "spawn"
+                    | "readFileAsync"
+                    | "writeFileAsync"
+                    | "readBytesAsync"
+                    | "writeBytesAsync"
+                    | "appendFileAsync"
+                    | "readDirAsync"
+                    | "statAsync"
+                    | "copyAsync"
+                    | "connectAsync"
+                    | "getAsync"
+                    | "postAsync"
+                    | "putAsync"
+                    | "delAsync"
+                    | "requestAsync"
+                    | "wsConnectAsync"
+                    | "serveAsync"
             ) {
                 // These intrinsics are recognized but produce a stub return value
                 // in native mode. Full implementation requires struct/object
@@ -1187,11 +1208,13 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                             ),
                         );
                         let out_len_ptr =
-                            self.builder.ins().stack_addr(self.ptr_type, out_len_slot, 0);
-                        let call =
                             self.builder
                                 .ins()
-                                .call(func_ref, &[path_val, path_len, out_len_ptr]);
+                                .stack_addr(self.ptr_type, out_len_slot, 0);
+                        let call = self
+                            .builder
+                            .ins()
+                            .call(func_ref, &[path_val, path_len, out_len_ptr]);
                         let buf_ptr = self.builder.inst_results(call)[0];
                         // Return the buffer pointer — native callers use this
                         // as an opaque result. Full Result<> wrapping is a
@@ -1213,10 +1236,10 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                             .declare_func_in_func(libc.fs_write_file, self.builder.func);
                         let pl = self.builder.ins().iconst(self.ptr_type, path_len as i64);
                         let dl = self.builder.ins().iconst(self.ptr_type, data_len as i64);
-                        let call =
-                            self.builder
-                                .ins()
-                                .call(func_ref, &[path_val, pl, data_val, dl]);
+                        let call = self
+                            .builder
+                            .ins()
+                            .call(func_ref, &[path_val, pl, data_val, dl]);
                         let result = self.builder.inst_results(call)[0];
                         // Convert i32 result to f64 (0.0 on success)
                         let result_f64 = self.builder.ins().fcvt_from_sint(types::F64, result);
@@ -1237,10 +1260,10 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                             .declare_func_in_func(libc.fs_append_file, self.builder.func);
                         let pl = self.builder.ins().iconst(self.ptr_type, path_len as i64);
                         let dl = self.builder.ins().iconst(self.ptr_type, data_len as i64);
-                        let call =
-                            self.builder
-                                .ins()
-                                .call(func_ref, &[path_val, pl, data_val, dl]);
+                        let call = self
+                            .builder
+                            .ins()
+                            .call(func_ref, &[path_val, pl, data_val, dl]);
                         let result = self.builder.inst_results(call)[0];
                         let result_f64 = self.builder.ins().fcvt_from_sint(types::F64, result);
                         return Ok(Some(result_f64));
@@ -1336,10 +1359,10 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                             .declare_func_in_func(libc.fs_rename, self.builder.func);
                         let fl = self.builder.ins().iconst(self.ptr_type, from_len as i64);
                         let tl = self.builder.ins().iconst(self.ptr_type, to_len as i64);
-                        let call =
-                            self.builder
-                                .ins()
-                                .call(func_ref, &[from_val, fl, to_val, tl]);
+                        let call = self
+                            .builder
+                            .ins()
+                            .call(func_ref, &[from_val, fl, to_val, tl]);
                         let result = self.builder.inst_results(call)[0];
                         let result_f64 = self.builder.ins().fcvt_from_sint(types::F64, result);
                         return Ok(Some(result_f64));

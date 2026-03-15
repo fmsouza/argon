@@ -296,7 +296,10 @@ impl Compiler {
                         source,
                         source_name,
                         "wasm target error",
-                        &format!("'{}' is not available on the WASM target. {}", spec, suggestion),
+                        &format!(
+                            "'{}' is not available on the WASM target. {}",
+                            spec, suggestion
+                        ),
                     ));
                 }
             }

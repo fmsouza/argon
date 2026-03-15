@@ -355,34 +355,84 @@ impl CfgFlattener {
         }
         // Recurse into nested instructions
         match inst {
-            Instruction::If { then_body, else_body, .. } => {
-                for i in then_body { Self::collect_max_value_id(i, max); }
-                for i in else_body { Self::collect_max_value_id(i, max); }
+            Instruction::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                for i in then_body {
+                    Self::collect_max_value_id(i, max);
+                }
+                for i in else_body {
+                    Self::collect_max_value_id(i, max);
+                }
             }
-            Instruction::While { cond_instructions, body, .. } => {
-                for i in cond_instructions { Self::collect_max_value_id(i, max); }
-                for i in body { Self::collect_max_value_id(i, max); }
+            Instruction::While {
+                cond_instructions,
+                body,
+                ..
+            } => {
+                for i in cond_instructions {
+                    Self::collect_max_value_id(i, max);
+                }
+                for i in body {
+                    Self::collect_max_value_id(i, max);
+                }
             }
-            Instruction::For { init, cond_instructions, update, body, .. } => {
-                for i in init { Self::collect_max_value_id(i, max); }
-                for i in cond_instructions { Self::collect_max_value_id(i, max); }
-                for i in update { Self::collect_max_value_id(i, max); }
-                for i in body { Self::collect_max_value_id(i, max); }
+            Instruction::For {
+                init,
+                cond_instructions,
+                update,
+                body,
+                ..
+            } => {
+                for i in init {
+                    Self::collect_max_value_id(i, max);
+                }
+                for i in cond_instructions {
+                    Self::collect_max_value_id(i, max);
+                }
+                for i in update {
+                    Self::collect_max_value_id(i, max);
+                }
+                for i in body {
+                    Self::collect_max_value_id(i, max);
+                }
             }
-            Instruction::DoWhile { body, cond_instructions, .. } => {
-                for i in body { Self::collect_max_value_id(i, max); }
-                for i in cond_instructions { Self::collect_max_value_id(i, max); }
+            Instruction::DoWhile {
+                body,
+                cond_instructions,
+                ..
+            } => {
+                for i in body {
+                    Self::collect_max_value_id(i, max);
+                }
+                for i in cond_instructions {
+                    Self::collect_max_value_id(i, max);
+                }
             }
             Instruction::Loop { body } => {
-                for i in body { Self::collect_max_value_id(i, max); }
+                for i in body {
+                    Self::collect_max_value_id(i, max);
+                }
             }
-            Instruction::Try { try_body, catch, finally_body } => {
-                for i in try_body { Self::collect_max_value_id(i, max); }
+            Instruction::Try {
+                try_body,
+                catch,
+                finally_body,
+            } => {
+                for i in try_body {
+                    Self::collect_max_value_id(i, max);
+                }
                 if let Some(c) = catch {
-                    for i in &c.body { Self::collect_max_value_id(i, max); }
+                    for i in &c.body {
+                        Self::collect_max_value_id(i, max);
+                    }
                 }
                 if let Some(f) = finally_body {
-                    for i in f { Self::collect_max_value_id(i, max); }
+                    for i in f {
+                        Self::collect_max_value_id(i, max);
+                    }
                 }
             }
             _ => {}
