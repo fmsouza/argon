@@ -91,12 +91,55 @@ struct ResourceTable {
     inner: Rc<RefCell<ResourceTableInner>>,
 }
 
+/// WebSocket connection variants (client uses MaybeTlsStream, server uses raw TcpStream).
+enum WsConn {
+    Client(tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>),
+    Server(tungstenite::WebSocket<std::net::TcpStream>),
+}
+
+impl std::fmt::Debug for WsConn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WsConn::Client(_) => write!(f, "WsConn::Client(...)"),
+            WsConn::Server(_) => write!(f, "WsConn::Server(...)"),
+        }
+    }
+}
+
+impl WsConn {
+    fn send(&mut self, msg: tungstenite::Message) -> Result<(), tungstenite::Error> {
+        match self {
+            WsConn::Client(ws) => ws.send(msg),
+            WsConn::Server(ws) => ws.send(msg),
+        }
+    }
+    fn read(&mut self) -> Result<tungstenite::Message, tungstenite::Error> {
+        match self {
+            WsConn::Client(ws) => ws.read(),
+            WsConn::Server(ws) => ws.read(),
+        }
+    }
+    fn close(&mut self, frame: Option<tungstenite::protocol::CloseFrame>) -> Result<(), tungstenite::Error> {
+        match self {
+            WsConn::Client(ws) => ws.close(frame),
+            WsConn::Server(ws) => ws.close(frame),
+        }
+    }
+    fn can_write(&self) -> bool {
+        match self {
+            WsConn::Client(ws) => ws.can_write(),
+            WsConn::Server(ws) => ws.can_write(),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct ResourceTableInner {
     file_handles: HashMap<u64, std::fs::File>,
     tcp_listeners: HashMap<u64, std::net::TcpListener>,
     tcp_streams: HashMap<u64, std::net::TcpStream>,
     udp_sockets: HashMap<u64, std::net::UdpSocket>,
+    ws_connections: HashMap<u64, WsConn>,
     next_id: u64,
 }
 
@@ -108,6 +151,7 @@ impl ResourceTable {
                 tcp_listeners: HashMap::new(),
                 tcp_streams: HashMap::new(),
                 udp_sockets: HashMap::new(),
+                ws_connections: HashMap::new(),
                 next_id: 1,
             })),
         }
@@ -223,6 +267,34 @@ impl ResourceTable {
             .udp_sockets
             .remove(&id)
             .ok_or_else(|| RuntimeError::TypeError("invalid udp socket handle".to_string()))
+    }
+
+    fn insert_ws(&self, ws: WsConn) -> u64 {
+        let mut inner = self.inner.borrow_mut();
+        let id = inner.next_id;
+        inner.next_id += 1;
+        inner.ws_connections.insert(id, ws);
+        id
+    }
+
+    fn with_ws<F, R>(&self, id: u64, f: F) -> Result<R, RuntimeError>
+    where
+        F: FnOnce(&mut WsConn) -> Result<R, RuntimeError>,
+    {
+        let mut inner = self.inner.borrow_mut();
+        let ws = inner
+            .ws_connections
+            .get_mut(&id)
+            .ok_or_else(|| RuntimeError::TypeError("invalid websocket handle".to_string()))?;
+        f(ws)
+    }
+
+    fn remove_ws(&self, id: u64) -> Result<WsConn, RuntimeError> {
+        self.inner
+            .borrow_mut()
+            .ws_connections
+            .remove(&id)
+            .ok_or_else(|| RuntimeError::TypeError("invalid websocket handle".to_string()))
     }
 }
 
@@ -347,6 +419,26 @@ impl Runtime {
                 name.to_string(),
                 Value::NativeFunction(NativeFunction {
                     name: format!("net.{}", name),
+                }),
+            );
+        }
+
+        // Register std:http native functions
+        for name in &["get", "post", "put", "del", "request", "createHeaders"] {
+            globals.insert(
+                name.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("http.{}", name),
+                }),
+            );
+        }
+
+        // Register std:ws native functions
+        for name in &["wsConnect", "wsListen"] {
+            globals.insert(
+                name.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("ws.{}", name),
                 }),
             );
         }
@@ -1683,8 +1775,382 @@ impl Runtime {
                 }
             }
 
+            // --- std:http ---
+            "http.get" => {
+                let url = expect_string(args, 0, "get: url")?;
+                match ureq::get(&url).call() {
+                    Ok(resp) => Ok(make_ok(self.ureq_response_to_value(resp))),
+                    Err(e) => Ok(make_err(http_error_from(&e))),
+                }
+            }
+            "http.post" => {
+                let url = expect_string(args, 0, "post: url")?;
+                let body = expect_string(args, 1, "post: body")?;
+                let req = ureq::post(&url);
+                let req = self.apply_headers_arg(req, args, 2);
+                match req.send_string(&body) {
+                    Ok(resp) => Ok(make_ok(self.ureq_response_to_value(resp))),
+                    Err(e) => Ok(make_err(http_error_from(&e))),
+                }
+            }
+            "http.put" => {
+                let url = expect_string(args, 0, "put: url")?;
+                let body = expect_string(args, 1, "put: body")?;
+                let req = ureq::put(&url);
+                let req = self.apply_headers_arg(req, args, 2);
+                match req.send_string(&body) {
+                    Ok(resp) => Ok(make_ok(self.ureq_response_to_value(resp))),
+                    Err(e) => Ok(make_err(http_error_from(&e))),
+                }
+            }
+            "http.del" => {
+                let url = expect_string(args, 0, "del: url")?;
+                match ureq::delete(&url).call() {
+                    Ok(resp) => Ok(make_ok(self.ureq_response_to_value(resp))),
+                    Err(e) => Ok(make_err(http_error_from(&e))),
+                }
+            }
+            "http.request" => {
+                // args[0] is a RequestOptions object
+                if let Some(Value::Object(opts)) = args.first() {
+                    let opts = opts.borrow();
+                    let method = opts
+                        .get("method")
+                        .and_then(|v| if let Value::String(s) = v { Some(strip_quotes(s)) } else { None })
+                        .unwrap_or_else(|| "GET".to_string());
+                    let url = opts
+                        .get("url")
+                        .and_then(|v| if let Value::String(s) = v { Some(strip_quotes(s)) } else { None })
+                        .unwrap_or_default();
+                    let body = opts
+                        .get("body")
+                        .and_then(|v| if let Value::String(s) = v { Some(strip_quotes(s)) } else { None })
+                        .unwrap_or_default();
+
+                    let req = ureq::request(&method, &url);
+                    let result = if body.is_empty() {
+                        req.call()
+                    } else {
+                        req.send_string(&body)
+                    };
+                    match result {
+                        Ok(resp) => Ok(make_ok(self.ureq_response_to_value(resp))),
+                        Err(e) => Ok(make_err(http_error_from(&e))),
+                    }
+                } else {
+                    Ok(make_err(make_io_error("EINVAL", "request expects RequestOptions object")))
+                }
+            }
+            "http.createHeaders" => {
+                let obj = HashMap::new();
+                Ok(self.make_headers_object(obj))
+            }
+
+            // --- Headers methods ---
+            "Headers.get" => {
+                if let Some(Value::Object(obj)) = args.first() {
+                    let name = expect_string(args, 1, "Headers.get: name")?;
+                    let map = obj.borrow();
+                    match map.get(&name.to_lowercase()) {
+                        Some(Value::String(v)) => Ok(make_ok(Value::String(v.clone()))),
+                        _ => Ok(make_err(make_io_error("ENOENT", "header not found"))),
+                    }
+                } else {
+                    Ok(make_err(make_io_error("EINVAL", "invalid headers object")))
+                }
+            }
+            "Headers.set" => {
+                if let Some(Value::Object(obj)) = args.first() {
+                    let name = expect_string(args, 1, "Headers.set: name")?;
+                    let value = expect_string(args, 2, "Headers.set: value")?;
+                    obj.borrow_mut().insert(name.to_lowercase(), Value::String(value));
+                }
+                Ok(Value::Undefined)
+            }
+            "Headers.has" => {
+                if let Some(Value::Object(obj)) = args.first() {
+                    let name = expect_string(args, 1, "Headers.has: name")?;
+                    Ok(Value::Boolean(obj.borrow().contains_key(&name.to_lowercase())))
+                } else {
+                    Ok(Value::Boolean(false))
+                }
+            }
+            "Headers.delete" => {
+                if let Some(Value::Object(obj)) = args.first() {
+                    let name = expect_string(args, 1, "Headers.delete: name")?;
+                    obj.borrow_mut().remove(&name.to_lowercase());
+                }
+                Ok(Value::Undefined)
+            }
+            "Headers.entries" => {
+                if let Some(Value::Object(obj)) = args.first() {
+                    let entries: Vec<Value> = obj
+                        .borrow()
+                        .iter()
+                        .filter(|(k, _)| !k.starts_with("__") && !k.starts_with("get") && !k.starts_with("set") && !k.starts_with("has") && !k.starts_with("delete") && !k.starts_with("entries"))
+                        .map(|(k, v)| {
+                            let mut entry = HashMap::new();
+                            entry.insert("name".to_string(), Value::String(k.clone()));
+                            entry.insert("value".to_string(), v.clone());
+                            Value::Object(Rc::new(RefCell::new(entry)))
+                        })
+                        .collect();
+                    Ok(Value::Array(entries))
+                } else {
+                    Ok(Value::Array(Vec::new()))
+                }
+            }
+
+            // --- std:ws ---
+            "ws.wsConnect" => {
+                let url = expect_string(args, 0, "wsConnect: url")?;
+                match tungstenite::connect(&url) {
+                    Ok((ws, _response)) => {
+                        let handle_id = self.resources.insert_ws(WsConn::Client(ws));
+                        Ok(make_ok(self.make_ws_connection_object(handle_id)))
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        Ok(make_err(make_io_error("WS_ERROR", &msg)))
+                    }
+                }
+            }
+            "ws.wsListen" => {
+                let addr = expect_string(args, 0, "wsListen: addr")?;
+                let port = expect_number(args, 1, "wsListen: port")? as u16;
+                match std::net::TcpListener::bind(format!("{}:{}", addr, port)) {
+                    Ok(listener) => {
+                        let handle_id = self.resources.insert_tcp_listener(listener);
+                        Ok(make_ok(self.make_ws_server_object(handle_id)))
+                    }
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+
+            // --- WsConnection methods ---
+            "WsConnection.send" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let data = expect_string(args, 1, "WsConnection.send: data")?;
+                self.resources.with_ws(handle_id, |ws| {
+                    match ws.send(tungstenite::Message::Text(data.clone())) {
+                        Ok(()) => Ok(make_ok(Value::Undefined)),
+                        Err(e) => Ok(make_err(ws_error_from(&e))),
+                    }
+                })
+            }
+            "WsConnection.sendBytes" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let data = expect_byte_array(args, 1, "WsConnection.sendBytes: data")?;
+                self.resources.with_ws(handle_id, |ws| {
+                    match ws.send(tungstenite::Message::Binary(data.clone())) {
+                        Ok(()) => Ok(make_ok(Value::Undefined)),
+                        Err(e) => Ok(make_err(ws_error_from(&e))),
+                    }
+                })
+            }
+            "WsConnection.recv" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                self.resources.with_ws(handle_id, |ws| {
+                    match ws.read() {
+                        Ok(msg) => {
+                            let mut obj = HashMap::new();
+                            match msg {
+                                tungstenite::Message::Text(text) => {
+                                    obj.insert("data".to_string(), Value::String(text.to_string()));
+                                    obj.insert("bytes".to_string(), Value::Array(Vec::new()));
+                                    obj.insert("isText".to_string(), Value::Boolean(true));
+                                    obj.insert("isBinary".to_string(), Value::Boolean(false));
+                                }
+                                tungstenite::Message::Binary(bytes) => {
+                                    obj.insert("data".to_string(), Value::String(String::new()));
+                                    let arr = bytes.iter().map(|b| Value::Number(*b as f64)).collect();
+                                    obj.insert("bytes".to_string(), Value::Array(arr));
+                                    obj.insert("isText".to_string(), Value::Boolean(false));
+                                    obj.insert("isBinary".to_string(), Value::Boolean(true));
+                                }
+                                tungstenite::Message::Ping(_) | tungstenite::Message::Pong(_) => {
+                                    obj.insert("data".to_string(), Value::String(String::new()));
+                                    obj.insert("bytes".to_string(), Value::Array(Vec::new()));
+                                    obj.insert("isText".to_string(), Value::Boolean(false));
+                                    obj.insert("isBinary".to_string(), Value::Boolean(false));
+                                }
+                                tungstenite::Message::Close(_) => {
+                                    return Ok(make_err(make_io_error("WS_CLOSED", "connection closed")));
+                                }
+                                _ => {
+                                    obj.insert("data".to_string(), Value::String(String::new()));
+                                    obj.insert("bytes".to_string(), Value::Array(Vec::new()));
+                                    obj.insert("isText".to_string(), Value::Boolean(false));
+                                    obj.insert("isBinary".to_string(), Value::Boolean(false));
+                                }
+                            }
+                            Ok(make_ok(Value::Object(Rc::new(RefCell::new(obj)))))
+                        }
+                        Err(e) => Ok(make_err(ws_error_from(&e))),
+                    }
+                })
+            }
+            "WsConnection.ping" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                self.resources.with_ws(handle_id, |ws| {
+                    match ws.send(tungstenite::Message::Ping(Vec::new())) {
+                        Ok(()) => Ok(make_ok(Value::Undefined)),
+                        Err(e) => Ok(make_err(ws_error_from(&e))),
+                    }
+                })
+            }
+            "WsConnection.close" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let code = args.get(1).and_then(|v| if let Value::Number(n) = v { Some(*n as u16) } else { None }).unwrap_or(1000);
+                let reason = args.get(2).and_then(|v| if let Value::String(s) = v { Some(strip_quotes(s)) } else { None }).unwrap_or_default();
+                let close_frame = tungstenite::protocol::CloseFrame {
+                    code: tungstenite::protocol::frame::coding::CloseCode::from(code),
+                    reason: reason.into(),
+                };
+                self.resources.with_ws(handle_id, |ws| {
+                    match ws.close(Some(close_frame.clone())) {
+                        Ok(()) => Ok(make_ok(Value::Undefined)),
+                        Err(e) => Ok(make_err(ws_error_from(&e))),
+                    }
+                })?;
+                // Remove from resource table
+                let _ = self.resources.remove_ws(handle_id);
+                Ok(make_ok(Value::Undefined))
+            }
+            "WsConnection.isOpen" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                self.resources.with_ws(handle_id, |ws| {
+                    Ok(Value::Boolean(ws.can_write()))
+                })
+            }
+
+            // --- WsServer methods ---
+            "WsServer.accept" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                // Accept TCP connection, then upgrade to WebSocket
+                let accept_result = {
+                    let mut inner = self.resources.inner.borrow_mut();
+                    let listener = inner
+                        .tcp_listeners
+                        .get_mut(&handle_id)
+                        .ok_or_else(|| RuntimeError::TypeError("invalid ws server handle".to_string()))?;
+                    listener.accept().map_err(|e| RuntimeError::TypeError(e.to_string()))
+                };
+                match accept_result {
+                    Ok((stream, _addr)) => {
+                        match tungstenite::accept(stream) {
+                            Ok(ws) => {
+                                let ws_id = self.resources.insert_ws(WsConn::Server(ws));
+                                Ok(make_ok(self.make_ws_connection_object(ws_id)))
+                            }
+                            Err(e) => {
+                                let msg = e.to_string();
+                                Ok(make_err(make_io_error("WS_HANDSHAKE_ERROR", &msg)))
+                            }
+                        }
+                    }
+                    Err(e) => Ok(make_err(make_io_error("EIO", &e.to_string()))),
+                }
+            }
+            "WsServer.close" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                match self.resources.remove_tcp_listener(handle_id) {
+                    Ok(_) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Err(e),
+                }
+            }
+            "WsServer.addr" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                self.resources.with_tcp_listener(handle_id, |listener| {
+                    match listener.local_addr() {
+                        Ok(addr) => Ok(Value::String(addr.to_string())),
+                        Err(e) => Err(RuntimeError::TypeError(e.to_string())),
+                    }
+                })
+            }
+
             _ => Ok(Value::Undefined),
         }
+    }
+
+    /// Convert a ureq Response to an Argon Value.
+    fn ureq_response_to_value(&self, resp: ureq::Response) -> Value {
+        let status = resp.status() as f64;
+        // Collect headers
+        let mut headers_map = HashMap::new();
+        for name in resp.headers_names() {
+            if let Some(value) = resp.header(&name) {
+                headers_map.insert(name.to_lowercase(), Value::String(value.to_string()));
+            }
+        }
+        let headers = self.make_headers_object(headers_map);
+        // Read body
+        let body = resp.into_string().unwrap_or_default();
+
+        let mut obj = HashMap::new();
+        obj.insert("status".to_string(), Value::Number(status));
+        obj.insert("headers".to_string(), headers);
+        obj.insert("body".to_string(), Value::String(body));
+        Value::Object(Rc::new(RefCell::new(obj)))
+    }
+
+    /// Apply headers from an argument (if present) to a ureq request.
+    fn apply_headers_arg(&self, mut req: ureq::Request, args: &[Value], idx: usize) -> ureq::Request {
+        if let Some(Value::Object(headers_obj)) = args.get(idx) {
+            let map = headers_obj.borrow();
+            for (key, val) in map.iter() {
+                if !key.starts_with("__") && !matches!(key.as_str(), "get" | "set" | "has" | "delete" | "entries") {
+                    if let Value::String(v) = val {
+                        req = req.set(key, &strip_quotes(v));
+                    }
+                }
+            }
+        }
+        req
+    }
+
+    /// Create WsConnection intrinsic struct object.
+    fn make_ws_connection_object(&self, handle_id: u64) -> Value {
+        let mut obj = HashMap::new();
+        obj.insert("__handle".to_string(), Value::Number(handle_id as f64));
+        for method in &["send", "sendBytes", "recv", "ping", "close", "isOpen"] {
+            obj.insert(
+                method.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("WsConnection.{}", method),
+                }),
+            );
+        }
+        Value::Object(Rc::new(RefCell::new(obj)))
+    }
+
+    /// Create WsServer intrinsic struct object.
+    fn make_ws_server_object(&self, handle_id: u64) -> Value {
+        let mut obj = HashMap::new();
+        obj.insert("__handle".to_string(), Value::Number(handle_id as f64));
+        for method in &["accept", "close", "addr"] {
+            obj.insert(
+                method.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("WsServer.{}", method),
+                }),
+            );
+        }
+        Value::Object(Rc::new(RefCell::new(obj)))
+    }
+
+    /// Create a Headers intrinsic struct object.
+    fn make_headers_object(&self, initial: HashMap<String, Value>) -> Value {
+        let mut obj = initial;
+        for method in &["get", "set", "has", "delete", "entries"] {
+            obj.insert(
+                method.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("Headers.{}", method),
+                }),
+            );
+        }
+        Value::Object(Rc::new(RefCell::new(obj)))
     }
 
     /// Create TcpListener intrinsic struct object.
@@ -2032,6 +2498,45 @@ fn io_error_from(e: &std::io::Error) -> Value {
         _ => "EIO",
     };
     make_io_error(code, &e.to_string())
+}
+
+/// Create an IoError from a tungstenite error.
+fn ws_error_from(e: &tungstenite::Error) -> Value {
+    let (code, message) = match e {
+        tungstenite::Error::ConnectionClosed => ("WS_CLOSED", "connection closed".to_string()),
+        tungstenite::Error::AlreadyClosed => ("WS_CLOSED", "already closed".to_string()),
+        tungstenite::Error::Io(io_err) => {
+            let code = match io_err.kind() {
+                std::io::ErrorKind::ConnectionRefused => "ECONNREFUSED",
+                std::io::ErrorKind::ConnectionReset => "ECONNRESET",
+                _ => "EIO",
+            };
+            (code, io_err.to_string())
+        }
+        tungstenite::Error::Protocol(p) => ("WS_PROTOCOL_ERROR", p.to_string()),
+        _ => ("WS_ERROR", e.to_string()),
+    };
+    make_io_error(code, &message)
+}
+
+/// Create an IoError from a ureq error.
+fn http_error_from(e: &ureq::Error) -> Value {
+    let (code, message) = match e {
+        ureq::Error::Status(status, resp) => {
+            let msg = format!("HTTP {}: {}", status, resp.status_text());
+            (format!("HTTP_{}", status), msg)
+        }
+        ureq::Error::Transport(t) => {
+            let code = match t.kind() {
+                ureq::ErrorKind::Dns => "ENOTFOUND",
+                ureq::ErrorKind::ConnectionFailed => "ECONNREFUSED",
+                ureq::ErrorKind::Io => "EIO",
+                _ => "HTTP_ERROR",
+            };
+            (code.to_string(), t.to_string())
+        }
+    };
+    make_io_error(&code, &message)
 }
 
 /// Create an IoError value object with given code and message.

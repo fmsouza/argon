@@ -1,0 +1,21 @@
+// Test std:http - Headers and error handling
+from "std:io" import { println };
+from "std:http" import { get, createHeaders };
+
+// Test createHeaders
+const headers = createHeaders();
+headers.set("Content-Type", "application/json");
+headers.set("Authorization", "Bearer token123");
+println(headers.has("content-type"));
+println(headers.get("content-type").value);
+println(headers.get("authorization").value);
+
+// Test entries
+const entries = headers.entries();
+println(entries);
+
+// Test error handling (connection refused to localhost on unused port)
+const err = get("http://127.0.0.1:19999/test");
+println(err.isOk);
+println(err.isErr);
+println(err.error.code);

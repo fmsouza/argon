@@ -1,0 +1,21 @@
+// Test std:ws WebSocket - error handling (no external server needed)
+from "std:io" import { println };
+from "std:ws" import { wsConnect, wsListen };
+
+// Test wsListen (create a WS server)
+const server = wsListen("127.0.0.1", 0);
+println(server.isOk);
+
+const ws_server = server.value;
+const addr = ws_server.addr();
+println(addr);
+
+// Close the server
+ws_server.close();
+println(true);
+
+// Test connection error (refused)
+const err = wsConnect("ws://127.0.0.1:19998");
+println(err.isOk);
+println(err.isErr);
+println(err.error.code);

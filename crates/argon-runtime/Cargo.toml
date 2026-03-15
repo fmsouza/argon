@@ -10,6 +10,8 @@ argon-ast = { path = "../argon-ast" }
 argon-types = { path = "../argon-types" }
 argon-borrowck = { path = "../argon-borrowck" }
 anyhow = "1.0"
+ureq = "2.9"
+tungstenite = "0.21"
 
 [dev-dependencies]
 argon-parser = { path = "../argon-parser" }
