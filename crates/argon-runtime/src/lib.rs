@@ -2533,7 +2533,11 @@ impl Runtime {
                 let url = expect_string(args, 0, "getAsync: url")?;
                 let future: BoxFuture = Box::pin(async move {
                     // Use blocking ureq in a spawn_blocking context
-                    match tokio::task::spawn_blocking(move || ureq::get(&url).call()).await {
+                    match tokio::task::spawn_blocking(move || {
+                        ureq::get(&url).call().map_err(|e| ureq_error_to_pair(&e))
+                    })
+                    .await
+                    {
                         Ok(Ok(resp)) => {
                             let status = resp.status() as f64;
                             let body = resp.into_string().unwrap_or_default();
@@ -2546,7 +2550,7 @@ impl Runtime {
                             );
                             make_ok(Value::Object(Rc::new(RefCell::new(obj))))
                         }
-                        Ok(Err(e)) => make_err(http_error_from(&e)),
+                        Ok(Err((code, msg))) => make_err(make_io_error(&code, &msg)),
                         Err(e) => make_err(make_io_error("EIO", &e.to_string())),
                     }
                 });
@@ -2556,8 +2560,12 @@ impl Runtime {
                 let url = expect_string(args, 0, "postAsync: url")?;
                 let body = expect_string(args, 1, "postAsync: body")?;
                 let future: BoxFuture = Box::pin(async move {
-                    match tokio::task::spawn_blocking(move || ureq::post(&url).send_string(&body))
-                        .await
+                    match tokio::task::spawn_blocking(move || {
+                        ureq::post(&url)
+                            .send_string(&body)
+                            .map_err(|e| ureq_error_to_pair(&e))
+                    })
+                    .await
                     {
                         Ok(Ok(resp)) => {
                             let status = resp.status() as f64;
@@ -2571,7 +2579,7 @@ impl Runtime {
                             );
                             make_ok(Value::Object(Rc::new(RefCell::new(obj))))
                         }
-                        Ok(Err(e)) => make_err(http_error_from(&e)),
+                        Ok(Err((code, msg))) => make_err(make_io_error(&code, &msg)),
                         Err(e) => make_err(make_io_error("EIO", &e.to_string())),
                     }
                 });
@@ -2588,7 +2596,11 @@ impl Runtime {
                 let url = expect_string(args, 0, "wsConnectAsync: url")?;
                 let resources = self.resources.clone();
                 let future: BoxFuture = Box::pin(async move {
-                    match tokio::task::spawn_blocking(move || tungstenite::connect(&url)).await {
+                    match tokio::task::spawn_blocking(move || {
+                        tungstenite::connect(&url).map_err(|e| e.to_string())
+                    })
+                    .await
+                    {
                         Ok(Ok((ws, _response))) => {
                             let handle_id = resources.insert_ws(WsConn::Client(ws));
                             let mut obj = HashMap::new();
@@ -2604,7 +2616,7 @@ impl Runtime {
                             }
                             make_ok(Value::Object(Rc::new(RefCell::new(obj))))
                         }
-                        Ok(Err(e)) => make_err(make_io_error("WS_ERROR", &e.to_string())),
+                        Ok(Err(e)) => make_err(make_io_error("WS_ERROR", &e)),
                         Err(e) => make_err(make_io_error("EIO", &e.to_string())),
                     }
                 });
@@ -3083,7 +3095,14 @@ fn ws_error_from(e: &tungstenite::Error) -> Value {
 
 /// Create an IoError from a ureq error.
 fn http_error_from(e: &ureq::Error) -> Value {
-    let (code, message) = match e {
+    let (code, message) = ureq_error_to_pair(e);
+    make_io_error(&code, &message)
+}
+
+/// Convert a ureq error to a Send-safe (String, String) pair.
+/// Used inside spawn_blocking closures where Value (containing Rc) can't be sent.
+fn ureq_error_to_pair(e: &ureq::Error) -> (String, String) {
+    match e {
         ureq::Error::Status(status, resp) => {
             let msg = format!("HTTP {}: {}", status, resp.status_text());
             (format!("HTTP_{}", status), msg)
@@ -3097,8 +3116,7 @@ fn http_error_from(e: &ureq::Error) -> Value {
             };
             (code.to_string(), t.to_string())
         }
-    };
-    make_io_error(&code, &message)
+    }
 }
 
 /// Create an IoError value object with given code and message.
