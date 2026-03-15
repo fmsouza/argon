@@ -950,6 +950,24 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 return Ok(());
             }
 
+            // Check for net/http/ws intrinsics — return 0 for now
+            // (full native net/http/ws requires struct return values
+            // which need further infrastructure work)
+            if matches!(
+                name.as_str(),
+                "bind" | "connect" | "bindUdp" | "resolve"
+                    | "get" | "post" | "put" | "del" | "request"
+                    | "createHeaders" | "serve"
+                    | "wsConnect" | "wsListen"
+            ) {
+                // These intrinsics are recognized but produce a stub return value
+                // in native mode. Full implementation requires struct/object
+                // return values via heap allocation, which is a future enhancement.
+                let zero = self.builder.ins().f64const(0.0);
+                self.values.insert(dest, zero);
+                return Ok(());
+            }
+
             // Regular function call
             if let Some(&func_id) = self.func_ids.get(&name) {
                 let func_ref = self.module.declare_func_in_func(func_id, self.builder.func);

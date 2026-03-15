@@ -201,6 +201,68 @@ pub fn declare_libc_functions<M: Module>(
     let fs_rename_fn =
         module.declare_function("__argon_fs_rename", Linkage::Import, &fs_rename_sig)?;
 
+    // --- Networking helpers from C runtime ---
+
+    // int __argon_net_tcp_bind(addr, addr_len, port)
+    let mut net_tcp_bind_sig = module.make_signature();
+    net_tcp_bind_sig.params.push(AbiParam::new(pointer_type));
+    net_tcp_bind_sig.params.push(AbiParam::new(pointer_type));
+    net_tcp_bind_sig.params.push(AbiParam::new(types::I32));
+    net_tcp_bind_sig.returns.push(AbiParam::new(types::I32));
+    let net_tcp_bind_fn =
+        module.declare_function("__argon_net_tcp_bind", Linkage::Import, &net_tcp_bind_sig)?;
+
+    // int __argon_net_tcp_connect(addr, addr_len, port)
+    let mut net_tcp_connect_sig = module.make_signature();
+    net_tcp_connect_sig.params.push(AbiParam::new(pointer_type));
+    net_tcp_connect_sig.params.push(AbiParam::new(pointer_type));
+    net_tcp_connect_sig.params.push(AbiParam::new(types::I32));
+    net_tcp_connect_sig.returns.push(AbiParam::new(types::I32));
+    let net_tcp_connect_fn =
+        module.declare_function("__argon_net_tcp_connect", Linkage::Import, &net_tcp_connect_sig)?;
+
+    // int __argon_net_tcp_accept(listen_fd)
+    let mut net_tcp_accept_sig = module.make_signature();
+    net_tcp_accept_sig.params.push(AbiParam::new(types::I32));
+    net_tcp_accept_sig.returns.push(AbiParam::new(types::I32));
+    let net_tcp_accept_fn =
+        module.declare_function("__argon_net_tcp_accept", Linkage::Import, &net_tcp_accept_sig)?;
+
+    // long __argon_net_tcp_read(fd, buf, max_bytes)
+    let mut net_tcp_read_sig = module.make_signature();
+    net_tcp_read_sig.params.push(AbiParam::new(types::I32));
+    net_tcp_read_sig.params.push(AbiParam::new(pointer_type));
+    net_tcp_read_sig.params.push(AbiParam::new(pointer_type));
+    net_tcp_read_sig.returns.push(AbiParam::new(pointer_type));
+    let net_tcp_read_fn =
+        module.declare_function("__argon_net_tcp_read", Linkage::Import, &net_tcp_read_sig)?;
+
+    // long __argon_net_tcp_write(fd, data, data_len)
+    let mut net_tcp_write_sig = module.make_signature();
+    net_tcp_write_sig.params.push(AbiParam::new(types::I32));
+    net_tcp_write_sig.params.push(AbiParam::new(pointer_type));
+    net_tcp_write_sig.params.push(AbiParam::new(pointer_type));
+    net_tcp_write_sig.returns.push(AbiParam::new(pointer_type));
+    let net_tcp_write_fn =
+        module.declare_function("__argon_net_tcp_write", Linkage::Import, &net_tcp_write_sig)?;
+
+    // int __argon_net_tcp_close(fd)
+    let mut net_tcp_close_sig = module.make_signature();
+    net_tcp_close_sig.params.push(AbiParam::new(types::I32));
+    net_tcp_close_sig.returns.push(AbiParam::new(types::I32));
+    let net_tcp_close_fn =
+        module.declare_function("__argon_net_tcp_close", Linkage::Import, &net_tcp_close_sig)?;
+
+    // int __argon_net_resolve(host, host_len, out_buf, out_buf_size)
+    let mut net_resolve_sig = module.make_signature();
+    net_resolve_sig.params.push(AbiParam::new(pointer_type));
+    net_resolve_sig.params.push(AbiParam::new(pointer_type));
+    net_resolve_sig.params.push(AbiParam::new(pointer_type));
+    net_resolve_sig.params.push(AbiParam::new(pointer_type));
+    net_resolve_sig.returns.push(AbiParam::new(types::I32));
+    let net_resolve_fn =
+        module.declare_function("__argon_net_resolve", Linkage::Import, &net_resolve_sig)?;
+
     Ok(LibcFunctions {
         write: write_fn,
         malloc: malloc_fn,
@@ -227,6 +289,14 @@ pub fn declare_libc_functions<M: Module>(
         fs_mkdir: fs_mkdir_fn,
         fs_rmdir: fs_rmdir_fn,
         fs_rename: fs_rename_fn,
+        // Networking
+        net_tcp_bind: net_tcp_bind_fn,
+        net_tcp_connect: net_tcp_connect_fn,
+        net_tcp_accept: net_tcp_accept_fn,
+        net_tcp_read: net_tcp_read_fn,
+        net_tcp_write: net_tcp_write_fn,
+        net_tcp_close: net_tcp_close_fn,
+        net_resolve: net_resolve_fn,
     })
 }
 
@@ -259,6 +329,14 @@ pub struct LibcFunctions {
     pub fs_mkdir: cranelift_module::FuncId,
     pub fs_rmdir: cranelift_module::FuncId,
     pub fs_rename: cranelift_module::FuncId,
+    // Networking
+    pub net_tcp_bind: cranelift_module::FuncId,
+    pub net_tcp_connect: cranelift_module::FuncId,
+    pub net_tcp_accept: cranelift_module::FuncId,
+    pub net_tcp_read: cranelift_module::FuncId,
+    pub net_tcp_write: cranelift_module::FuncId,
+    pub net_tcp_close: cranelift_module::FuncId,
+    pub net_resolve: cranelift_module::FuncId,
 }
 
 /// Check if a function name is a known intrinsic.
@@ -294,6 +372,23 @@ pub fn is_intrinsic(name: &str) -> bool {
             | "clamp"
             // std:fs
             | "readFile"
+            // std:net
+            | "bind"
+            | "connect"
+            | "bindUdp"
+            | "resolve"
+            // std:http
+            | "get"
+            | "post"
+            | "put"
+            | "del"
+            | "request"
+            | "createHeaders"
+            | "serve"
+            // std:ws
+            | "wsConnect"
+            | "wsListen"
+            // std:fs (continued)
             | "writeFile"
             | "appendFile"
             | "exists"

@@ -424,7 +424,7 @@ impl Runtime {
         }
 
         // Register std:http native functions
-        for name in &["get", "post", "put", "del", "request", "createHeaders"] {
+        for name in &["get", "post", "put", "del", "request", "createHeaders", "serve"] {
             globals.insert(
                 name.to_string(),
                 Value::NativeFunction(NativeFunction {
@@ -1267,7 +1267,7 @@ impl Runtime {
         Ok(Value::Undefined)
     }
 
-    fn execute_native_function(&self, name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
+    fn execute_native_function(&mut self, name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
         match name {
             "print" => {
                 let output: Vec<String> = args.iter().map(|v| self.value_to_string(v)).collect();
@@ -1844,6 +1844,115 @@ impl Runtime {
             "http.createHeaders" => {
                 let obj = HashMap::new();
                 Ok(self.make_headers_object(obj))
+            }
+            "http.serve" => {
+                let port = expect_number(args, 0, "serve: port")? as u16;
+                let handler = args.get(1).cloned().unwrap_or(Value::Undefined);
+
+                let addr = format!("0.0.0.0:{}", port);
+                match tiny_http::Server::http(&addr) {
+                    Ok(server) => {
+                        let bound_addr = server
+                            .server_addr()
+                            .to_ip()
+                            .map(|a| a.to_string())
+                            .unwrap_or_else(|| addr.clone());
+
+                        // Process requests in a loop until close is called.
+                        // For now, process one request then return (blocking server
+                        // needs threading which is out of scope for the interpreter).
+                        // We'll handle a batch of requests then return the server handle.
+                        // Store the server so it can be closed.
+                        let server_rc = Rc::new(RefCell::new(Some(server)));
+                        // Spawn a blocking request-handling loop
+                        // For the runtime interpreter, we process requests synchronously
+                        if let Value::Function(ref _func) = handler {
+                            let srv = server_rc.clone();
+                            // Process incoming requests until the server is closed
+                            loop {
+                                let maybe_req = {
+                                    let guard = srv.borrow();
+                                    if let Some(ref server) = *guard {
+                                        // Use recv_timeout to avoid blocking forever
+                                        server.recv_timeout(std::time::Duration::from_millis(100)).ok().flatten()
+                                    } else {
+                                        break;
+                                    }
+                                };
+                                if let Some(request) = maybe_req {
+                                    // Build HttpRequest value
+                                    let mut req_obj = HashMap::new();
+                                    req_obj.insert("method".to_string(), Value::String(request.method().to_string()));
+                                    req_obj.insert("url".to_string(), Value::String(request.url().to_string()));
+                                    req_obj.insert("body".to_string(), Value::String(String::new()));
+
+                                    let mut req_headers = HashMap::new();
+                                    for header in request.headers() {
+                                        req_headers.insert(
+                                            header.field.as_str().as_str().to_lowercase(),
+                                            Value::String(header.value.as_str().to_string()),
+                                        );
+                                    }
+                                    req_obj.insert("headers".to_string(), self.make_headers_object(req_headers));
+
+                                    // Build HttpResponse value
+                                    let response_data = Rc::new(RefCell::new((200u16, HashMap::<String, String>::new(), String::new())));
+                                    let rd = response_data.clone();
+
+                                    let mut res_obj = HashMap::new();
+                                    res_obj.insert("__response_data".to_string(), Value::Number(0.0)); // placeholder
+                                    res_obj.insert("setStatus".to_string(), Value::NativeFunction(NativeFunction { name: "HttpResponse.setStatus".to_string() }));
+                                    res_obj.insert("setHeader".to_string(), Value::NativeFunction(NativeFunction { name: "HttpResponse.setHeader".to_string() }));
+                                    res_obj.insert("send".to_string(), Value::NativeFunction(NativeFunction { name: "HttpResponse.send".to_string() }));
+
+                                    let req_val = Value::Object(Rc::new(RefCell::new(req_obj)));
+                                    let res_val = Value::Object(Rc::new(RefCell::new(res_obj)));
+
+                                    // Call the handler
+                                    let _ = self.call_value(handler.clone(), &[req_val, res_val]);
+
+                                    // Send the response
+                                    let (status, ref hdrs, ref body) = *rd.borrow();
+                                    let mut response = tiny_http::Response::from_string(body.clone())
+                                        .with_status_code(tiny_http::StatusCode(status));
+                                    for (k, v) in hdrs {
+                                        if let Ok(header) = tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()) {
+                                            response = response.with_header(header);
+                                        }
+                                    }
+                                    let _ = request.respond(response);
+                                }
+                                // Check if we should keep running (for now just process one request and break)
+                                break;
+                            }
+                        }
+
+                        // Return server handle
+                        let mut obj = HashMap::new();
+                        obj.insert("__addr".to_string(), Value::String(bound_addr));
+                        obj.insert("close".to_string(), Value::NativeFunction(NativeFunction { name: "HttpServer.close".to_string() }));
+                        obj.insert("addr".to_string(), Value::NativeFunction(NativeFunction { name: "HttpServer.addr".to_string() }));
+                        let server_val = Value::Object(Rc::new(RefCell::new(obj)));
+                        Ok(make_ok(server_val))
+                    }
+                    Err(e) => Ok(make_err(make_io_error("EADDRINUSE", &e.to_string()))),
+                }
+            }
+            "HttpServer.close" => {
+                // Server close is a no-op in the simple runtime model
+                // (the server goes out of scope when the handle is dropped)
+                Ok(make_ok(Value::Undefined))
+            }
+            "HttpServer.addr" => {
+                if let Some(Value::Object(obj)) = args.first() {
+                    let map = obj.borrow();
+                    match map.get("__addr") {
+                        Some(Value::String(a)) => Ok(Value::String(a.clone())),
+                        _ => Ok(Value::String(String::new())),
+                    }
+                } else {
+                    Ok(Value::String(String::new()))
+                }
             }
 
             // --- Headers methods ---

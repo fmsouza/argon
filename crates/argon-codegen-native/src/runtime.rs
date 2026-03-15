@@ -282,6 +282,133 @@ int __argon_fs_rename(const char *from, long from_len,
     free(cto);
     return result;
 }
+
+/* ===== Networking helpers ===== */
+
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+
+/* Create a TCP server socket, bind, and listen.
+ * Returns the socket fd, or -1 on error. */
+int __argon_net_tcp_bind(const char *addr, long addr_len, int port) {
+    char *caddr = (char *)malloc(addr_len + 1);
+    if (!caddr) return -1;
+    memcpy(caddr, addr, addr_len);
+    caddr[addr_len] = '\0';
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) { free(caddr); return -1; }
+
+    int opt = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons((unsigned short)port);
+    inet_pton(AF_INET, caddr, &sa.sin_addr);
+    free(caddr);
+
+    if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) { close(fd); return -1; }
+    if (listen(fd, 128) < 0) { close(fd); return -1; }
+    return fd;
+}
+
+/* Accept a connection on a listening socket.
+ * Returns the new socket fd, or -1 on error. */
+int __argon_net_tcp_accept(int listen_fd) {
+    struct sockaddr_in client;
+    socklen_t len = sizeof(client);
+    return accept(listen_fd, (struct sockaddr *)&client, &len);
+}
+
+/* Connect to a TCP server.
+ * Returns the socket fd, or -1 on error. */
+int __argon_net_tcp_connect(const char *addr, long addr_len, int port) {
+    char *caddr = (char *)malloc(addr_len + 1);
+    if (!caddr) return -1;
+    memcpy(caddr, addr, addr_len);
+    caddr[addr_len] = '\0';
+
+    struct addrinfo hints, *res;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    char port_str[16];
+    snprintf(port_str, sizeof(port_str), "%d", port);
+
+    if (getaddrinfo(caddr, port_str, &hints, &res) != 0) {
+        free(caddr);
+        return -1;
+    }
+    free(caddr);
+
+    int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (fd < 0) { freeaddrinfo(res); return -1; }
+
+    if (connect(fd, res->ai_addr, res->ai_addrlen) < 0) {
+        close(fd);
+        freeaddrinfo(res);
+        return -1;
+    }
+    freeaddrinfo(res);
+    return fd;
+}
+
+/* Read from a socket. Returns bytes read, or -1 on error. */
+long __argon_net_tcp_read(int fd, char *buf, long max_bytes) {
+    return recv(fd, buf, max_bytes, 0);
+}
+
+/* Write to a socket. Returns bytes written, or -1 on error. */
+long __argon_net_tcp_write(int fd, const char *data, long data_len) {
+    return send(fd, data, data_len, 0);
+}
+
+/* Shutdown write side of socket. Returns 0 on success. */
+int __argon_net_tcp_shutdown(int fd) {
+    return shutdown(fd, SHUT_WR);
+}
+
+/* Close a socket. */
+int __argon_net_tcp_close(int fd) {
+    return close(fd);
+}
+
+/* Get the local port of a bound socket. Returns port or -1. */
+int __argon_net_local_port(int fd) {
+    struct sockaddr_in sa;
+    socklen_t len = sizeof(sa);
+    if (getsockname(fd, (struct sockaddr *)&sa, &len) < 0) return -1;
+    return ntohs(sa.sin_port);
+}
+
+/* DNS resolve. Writes first resolved IP to out_buf (null-terminated).
+ * Returns 0 on success, -1 on error. */
+int __argon_net_resolve(const char *host, long host_len, char *out_buf, long out_buf_size) {
+    char *chost = (char *)malloc(host_len + 1);
+    if (!chost) return -1;
+    memcpy(chost, host, host_len);
+    chost[host_len] = '\0';
+
+    struct addrinfo hints, *res;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+
+    if (getaddrinfo(chost, NULL, &hints, &res) != 0) {
+        free(chost);
+        return -1;
+    }
+    free(chost);
+
+    struct sockaddr_in *sa = (struct sockaddr_in *)res->ai_addr;
+    inet_ntop(AF_INET, &sa->sin_addr, out_buf, out_buf_size);
+    freeaddrinfo(res);
+    return 0;
+}
 "#;
 
 /// Compile the C runtime to an object file for the given target.
