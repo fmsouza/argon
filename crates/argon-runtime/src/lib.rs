@@ -94,6 +94,9 @@ struct ResourceTable {
 #[derive(Debug, Default)]
 struct ResourceTableInner {
     file_handles: HashMap<u64, std::fs::File>,
+    tcp_listeners: HashMap<u64, std::net::TcpListener>,
+    tcp_streams: HashMap<u64, std::net::TcpStream>,
+    udp_sockets: HashMap<u64, std::net::UdpSocket>,
     next_id: u64,
 }
 
@@ -102,6 +105,9 @@ impl ResourceTable {
         Self {
             inner: Rc::new(RefCell::new(ResourceTableInner {
                 file_handles: HashMap::new(),
+                tcp_listeners: HashMap::new(),
+                tcp_streams: HashMap::new(),
+                udp_sockets: HashMap::new(),
                 next_id: 1,
             })),
         }
@@ -133,6 +139,90 @@ impl ResourceTable {
             .file_handles
             .remove(&id)
             .ok_or_else(|| RuntimeError::TypeError("invalid file handle".to_string()))
+    }
+
+    fn insert_tcp_listener(&self, listener: std::net::TcpListener) -> u64 {
+        let mut inner = self.inner.borrow_mut();
+        let id = inner.next_id;
+        inner.next_id += 1;
+        inner.tcp_listeners.insert(id, listener);
+        id
+    }
+
+    fn with_tcp_listener<F, R>(&self, id: u64, f: F) -> Result<R, RuntimeError>
+    where
+        F: FnOnce(&mut std::net::TcpListener) -> Result<R, RuntimeError>,
+    {
+        let mut inner = self.inner.borrow_mut();
+        let listener = inner
+            .tcp_listeners
+            .get_mut(&id)
+            .ok_or_else(|| RuntimeError::TypeError("invalid tcp listener handle".to_string()))?;
+        f(listener)
+    }
+
+    fn remove_tcp_listener(&self, id: u64) -> Result<std::net::TcpListener, RuntimeError> {
+        self.inner
+            .borrow_mut()
+            .tcp_listeners
+            .remove(&id)
+            .ok_or_else(|| RuntimeError::TypeError("invalid tcp listener handle".to_string()))
+    }
+
+    fn insert_tcp_stream(&self, stream: std::net::TcpStream) -> u64 {
+        let mut inner = self.inner.borrow_mut();
+        let id = inner.next_id;
+        inner.next_id += 1;
+        inner.tcp_streams.insert(id, stream);
+        id
+    }
+
+    fn with_tcp_stream<F, R>(&self, id: u64, f: F) -> Result<R, RuntimeError>
+    where
+        F: FnOnce(&mut std::net::TcpStream) -> Result<R, RuntimeError>,
+    {
+        let mut inner = self.inner.borrow_mut();
+        let stream = inner
+            .tcp_streams
+            .get_mut(&id)
+            .ok_or_else(|| RuntimeError::TypeError("invalid tcp stream handle".to_string()))?;
+        f(stream)
+    }
+
+    fn remove_tcp_stream(&self, id: u64) -> Result<std::net::TcpStream, RuntimeError> {
+        self.inner
+            .borrow_mut()
+            .tcp_streams
+            .remove(&id)
+            .ok_or_else(|| RuntimeError::TypeError("invalid tcp stream handle".to_string()))
+    }
+
+    fn insert_udp_socket(&self, socket: std::net::UdpSocket) -> u64 {
+        let mut inner = self.inner.borrow_mut();
+        let id = inner.next_id;
+        inner.next_id += 1;
+        inner.udp_sockets.insert(id, socket);
+        id
+    }
+
+    fn with_udp_socket<F, R>(&self, id: u64, f: F) -> Result<R, RuntimeError>
+    where
+        F: FnOnce(&mut std::net::UdpSocket) -> Result<R, RuntimeError>,
+    {
+        let mut inner = self.inner.borrow_mut();
+        let socket = inner
+            .udp_sockets
+            .get_mut(&id)
+            .ok_or_else(|| RuntimeError::TypeError("invalid udp socket handle".to_string()))?;
+        f(socket)
+    }
+
+    fn remove_udp_socket(&self, id: u64) -> Result<std::net::UdpSocket, RuntimeError> {
+        self.inner
+            .borrow_mut()
+            .udp_sockets
+            .remove(&id)
+            .ok_or_else(|| RuntimeError::TypeError("invalid udp socket handle".to_string()))
     }
 }
 
@@ -247,6 +337,16 @@ impl Runtime {
                 name.to_string(),
                 Value::NativeFunction(NativeFunction {
                     name: format!("fs.{}", name),
+                }),
+            );
+        }
+
+        // Register std:net native functions
+        for name in &["bind", "connect", "bindUdp", "resolve"] {
+            globals.insert(
+                name.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("net.{}", name),
                 }),
             );
         }
@@ -1403,8 +1503,233 @@ impl Runtime {
                 }
             }
 
+            // --- std:net ---
+            "net.bind" => {
+                let addr = expect_string(args, 0, "bind: addr")?;
+                let port = expect_number(args, 1, "bind: port")? as u16;
+                match std::net::TcpListener::bind(format!("{}:{}", addr, port)) {
+                    Ok(listener) => {
+                        let handle_id = self.resources.insert_tcp_listener(listener);
+                        Ok(make_ok(self.make_tcp_listener_object(handle_id)))
+                    }
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "net.connect" => {
+                let addr = expect_string(args, 0, "connect: addr")?;
+                let port = expect_number(args, 1, "connect: port")? as u16;
+                match std::net::TcpStream::connect(format!("{}:{}", addr, port)) {
+                    Ok(stream) => {
+                        let handle_id = self.resources.insert_tcp_stream(stream);
+                        Ok(make_ok(self.make_tcp_stream_object(handle_id)))
+                    }
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "net.bindUdp" => {
+                let addr = expect_string(args, 0, "bindUdp: addr")?;
+                let port = expect_number(args, 1, "bindUdp: port")? as u16;
+                match std::net::UdpSocket::bind(format!("{}:{}", addr, port)) {
+                    Ok(socket) => {
+                        let handle_id = self.resources.insert_udp_socket(socket);
+                        Ok(make_ok(self.make_udp_socket_object(handle_id)))
+                    }
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "net.resolve" => {
+                let hostname = expect_string(args, 0, "resolve: hostname")?;
+                match std::net::ToSocketAddrs::to_socket_addrs(&format!("{}:0", hostname)) {
+                    Ok(addrs) => {
+                        let ips: Vec<Value> = addrs
+                            .map(|a| Value::String(a.ip().to_string()))
+                            .collect();
+                        Ok(make_ok(Value::Array(ips)))
+                    }
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+
+            // --- TcpListener methods ---
+            "TcpListener.accept" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                // Accept outside the borrow so we can insert the stream
+                let accept_result = {
+                    let mut inner = self.resources.inner.borrow_mut();
+                    let listener = inner
+                        .tcp_listeners
+                        .get_mut(&handle_id)
+                        .ok_or_else(|| RuntimeError::TypeError("invalid tcp listener handle".to_string()))?;
+                    listener.accept().map_err(|e| RuntimeError::TypeError(e.to_string()))
+                };
+                match accept_result {
+                    Ok((stream, _addr)) => {
+                        let stream_id = self.resources.insert_tcp_stream(stream);
+                        Ok(make_ok(self.make_tcp_stream_object(stream_id)))
+                    }
+                    Err(e) => Ok(make_err(make_io_error("EIO", &e.to_string()))),
+                }
+            }
+            "TcpListener.close" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                match self.resources.remove_tcp_listener(handle_id) {
+                    Ok(_) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Err(e),
+                }
+            }
+            "TcpListener.localAddr" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                self.resources.with_tcp_listener(handle_id, |listener| {
+                    match listener.local_addr() {
+                        Ok(addr) => Ok(Value::String(addr.to_string())),
+                        Err(e) => Err(RuntimeError::TypeError(e.to_string())),
+                    }
+                })
+            }
+
+            // --- TcpStream methods ---
+            "TcpStream.read" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let max_bytes = expect_usize(args, 1, "TcpStream.read: maxBytes")?;
+                self.resources.with_tcp_stream(handle_id, |stream| {
+                    let mut buf = vec![0u8; max_bytes];
+                    match stream.read(&mut buf) {
+                        Ok(n) => {
+                            buf.truncate(n);
+                            match String::from_utf8(buf) {
+                                Ok(s) => Ok(make_ok(Value::String(s))),
+                                Err(e) => Ok(make_err(make_io_error("EILSEQ", &e.to_string()))),
+                            }
+                        }
+                        Err(e) => Ok(make_err(io_error_from(&e))),
+                    }
+                })
+            }
+            "TcpStream.write" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let data = expect_string(args, 1, "TcpStream.write: data")?;
+                self.resources.with_tcp_stream(handle_id, |stream| {
+                    match stream.write(data.as_bytes()) {
+                        Ok(n) => Ok(make_ok(Value::Number(n as f64))),
+                        Err(e) => Ok(make_err(io_error_from(&e))),
+                    }
+                })
+            }
+            "TcpStream.shutdown" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                self.resources.with_tcp_stream(handle_id, |stream| {
+                    match stream.shutdown(std::net::Shutdown::Write) {
+                        Ok(()) => Ok(make_ok(Value::Undefined)),
+                        Err(e) => Ok(make_err(io_error_from(&e))),
+                    }
+                })
+            }
+            "TcpStream.close" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                match self.resources.remove_tcp_stream(handle_id) {
+                    Ok(_) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Err(e),
+                }
+            }
+            "TcpStream.peerAddr" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                self.resources.with_tcp_stream(handle_id, |stream| {
+                    match stream.peer_addr() {
+                        Ok(addr) => Ok(Value::String(addr.to_string())),
+                        Err(e) => Err(RuntimeError::TypeError(e.to_string())),
+                    }
+                })
+            }
+
+            // --- UdpSocket methods ---
+            "UdpSocket.sendTo" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let data = expect_string(args, 1, "UdpSocket.sendTo: data")?;
+                let addr = expect_string(args, 2, "UdpSocket.sendTo: addr")?;
+                let port = expect_number(args, 3, "UdpSocket.sendTo: port")? as u16;
+                self.resources.with_udp_socket(handle_id, |socket| {
+                    match socket.send_to(data.as_bytes(), format!("{}:{}", addr, port)) {
+                        Ok(n) => Ok(make_ok(Value::Number(n as f64))),
+                        Err(e) => Ok(make_err(io_error_from(&e))),
+                    }
+                })
+            }
+            "UdpSocket.recvFrom" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let max_bytes = expect_usize(args, 1, "UdpSocket.recvFrom: maxBytes")?;
+                self.resources.with_udp_socket(handle_id, |socket| {
+                    let mut buf = vec![0u8; max_bytes];
+                    match socket.recv_from(&mut buf) {
+                        Ok((n, addr)) => {
+                            buf.truncate(n);
+                            let mut msg = HashMap::new();
+                            msg.insert(
+                                "data".to_string(),
+                                Value::String(String::from_utf8_lossy(&buf).to_string()),
+                            );
+                            msg.insert("addr".to_string(), Value::String(addr.ip().to_string()));
+                            msg.insert("port".to_string(), Value::Number(addr.port() as f64));
+                            Ok(make_ok(Value::Object(Rc::new(RefCell::new(msg)))))
+                        }
+                        Err(e) => Ok(make_err(io_error_from(&e))),
+                    }
+                })
+            }
+            "UdpSocket.close" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                match self.resources.remove_udp_socket(handle_id) {
+                    Ok(_) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Err(e),
+                }
+            }
+
             _ => Ok(Value::Undefined),
         }
+    }
+
+    /// Create TcpListener intrinsic struct object.
+    fn make_tcp_listener_object(&self, handle_id: u64) -> Value {
+        let mut obj = HashMap::new();
+        obj.insert("__handle".to_string(), Value::Number(handle_id as f64));
+        for method in &["accept", "close", "localAddr"] {
+            obj.insert(
+                method.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("TcpListener.{}", method),
+                }),
+            );
+        }
+        Value::Object(Rc::new(RefCell::new(obj)))
+    }
+
+    /// Create TcpStream intrinsic struct object.
+    fn make_tcp_stream_object(&self, handle_id: u64) -> Value {
+        let mut obj = HashMap::new();
+        obj.insert("__handle".to_string(), Value::Number(handle_id as f64));
+        for method in &["read", "write", "shutdown", "close", "peerAddr"] {
+            obj.insert(
+                method.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("TcpStream.{}", method),
+                }),
+            );
+        }
+        Value::Object(Rc::new(RefCell::new(obj)))
+    }
+
+    /// Create UdpSocket intrinsic struct object.
+    fn make_udp_socket_object(&self, handle_id: u64) -> Value {
+        let mut obj = HashMap::new();
+        obj.insert("__handle".to_string(), Value::Number(handle_id as f64));
+        for method in &["sendTo", "recvFrom", "close"] {
+            obj.insert(
+                method.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("UdpSocket.{}", method),
+                }),
+            );
+        }
+        Value::Object(Rc::new(RefCell::new(obj)))
     }
 
     /// Create a File intrinsic struct object with native method functions.

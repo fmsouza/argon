@@ -69,9 +69,16 @@ pub fn define_main_wrapper<M: Module>(
 /// are passed differently).
 const C_RUNTIME_SOURCE: &str = r#"
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <math.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+
+/* ===== Print helpers ===== */
 
 void __argon_print_f64(double value) {
     char buf[64];
@@ -94,6 +101,186 @@ void __argon_print_bool(double value) {
     } else {
         write(1, "false", 5);
     }
+}
+
+/* ===== File system helpers =====
+ *
+ * All fs functions return a result struct as a heap-allocated pair:
+ *   [ptr_to_data, status]
+ * where status: 0 = ok, non-zero = error code
+ * For readFile: data is a {ptr, len} pair with the file contents.
+ * For writeFile etc: data is unused (0).
+ *
+ * We use a simple convention:
+ *   - Return pointer to a heap-allocated buffer on success
+ *   - Return NULL with errno set on failure
+ *   - The caller checks the return value
+ */
+
+/* Read entire file into malloc'd buffer. Returns buffer ptr, sets *out_len.
+ * Returns NULL on error (check errno). */
+char *__argon_fs_read_file(const char *path, long path_len, long *out_len) {
+    /* Create null-terminated path */
+    char *cpath = (char *)malloc(path_len + 1);
+    if (!cpath) return NULL;
+    memcpy(cpath, path, path_len);
+    cpath[path_len] = '\0';
+
+    FILE *f = fopen(cpath, "r");
+    free(cpath);
+    if (!f) return NULL;
+
+    /* Get file size */
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    char *buf = (char *)malloc(size + 1);
+    if (!buf) { fclose(f); return NULL; }
+
+    long nread = fread(buf, 1, size, f);
+    fclose(f);
+    buf[nread] = '\0';
+    *out_len = nread;
+    return buf;
+}
+
+/* Write content to file. Returns 0 on success, -1 on error. */
+int __argon_fs_write_file(const char *path, long path_len,
+                          const char *data, long data_len) {
+    char *cpath = (char *)malloc(path_len + 1);
+    if (!cpath) return -1;
+    memcpy(cpath, path, path_len);
+    cpath[path_len] = '\0';
+
+    FILE *f = fopen(cpath, "w");
+    free(cpath);
+    if (!f) return -1;
+
+    long nwritten = fwrite(data, 1, data_len, f);
+    fclose(f);
+    return (nwritten == data_len) ? 0 : -1;
+}
+
+/* Append content to file. Returns 0 on success, -1 on error. */
+int __argon_fs_append_file(const char *path, long path_len,
+                           const char *data, long data_len) {
+    char *cpath = (char *)malloc(path_len + 1);
+    if (!cpath) return -1;
+    memcpy(cpath, path, path_len);
+    cpath[path_len] = '\0';
+
+    FILE *f = fopen(cpath, "a");
+    free(cpath);
+    if (!f) return -1;
+
+    long nwritten = fwrite(data, 1, data_len, f);
+    fclose(f);
+    return (nwritten == data_len) ? 0 : -1;
+}
+
+/* Check if file exists. Returns 1 if exists, 0 if not. */
+int __argon_fs_exists(const char *path, long path_len) {
+    char *cpath = (char *)malloc(path_len + 1);
+    if (!cpath) return 0;
+    memcpy(cpath, path, path_len);
+    cpath[path_len] = '\0';
+
+    struct stat st;
+    int result = (stat(cpath, &st) == 0) ? 1 : 0;
+    free(cpath);
+    return result;
+}
+
+/* Get file size. Returns -1 on error. */
+long __argon_fs_file_size(const char *path, long path_len) {
+    char *cpath = (char *)malloc(path_len + 1);
+    if (!cpath) return -1;
+    memcpy(cpath, path, path_len);
+    cpath[path_len] = '\0';
+
+    struct stat st;
+    int rc = stat(cpath, &st);
+    free(cpath);
+    if (rc != 0) return -1;
+    return (long)st.st_size;
+}
+
+/* Check if path is a regular file. Returns 1 if file, 0 otherwise. */
+int __argon_fs_is_file(const char *path, long path_len) {
+    char *cpath = (char *)malloc(path_len + 1);
+    if (!cpath) return 0;
+    memcpy(cpath, path, path_len);
+    cpath[path_len] = '\0';
+
+    struct stat st;
+    int result = (stat(cpath, &st) == 0 && S_ISREG(st.st_mode)) ? 1 : 0;
+    free(cpath);
+    return result;
+}
+
+/* Check if path is a directory. Returns 1 if dir, 0 otherwise. */
+int __argon_fs_is_dir(const char *path, long path_len) {
+    char *cpath = (char *)malloc(path_len + 1);
+    if (!cpath) return 0;
+    memcpy(cpath, path, path_len);
+    cpath[path_len] = '\0';
+
+    struct stat st;
+    int result = (stat(cpath, &st) == 0 && S_ISDIR(st.st_mode)) ? 1 : 0;
+    free(cpath);
+    return result;
+}
+
+/* Remove a file. Returns 0 on success, -1 on error. */
+int __argon_fs_remove(const char *path, long path_len) {
+    char *cpath = (char *)malloc(path_len + 1);
+    if (!cpath) return -1;
+    memcpy(cpath, path, path_len);
+    cpath[path_len] = '\0';
+
+    int result = unlink(cpath);
+    free(cpath);
+    return result;
+}
+
+/* Create a directory. Returns 0 on success, -1 on error. */
+int __argon_fs_mkdir(const char *path, long path_len) {
+    char *cpath = (char *)malloc(path_len + 1);
+    if (!cpath) return -1;
+    memcpy(cpath, path, path_len);
+    cpath[path_len] = '\0';
+
+    int result = mkdir(cpath, 0755);
+    free(cpath);
+    return result;
+}
+
+/* Remove a directory. Returns 0 on success, -1 on error. */
+int __argon_fs_rmdir(const char *path, long path_len) {
+    char *cpath = (char *)malloc(path_len + 1);
+    if (!cpath) return -1;
+    memcpy(cpath, path, path_len);
+    cpath[path_len] = '\0';
+
+    int result = rmdir(cpath);
+    free(cpath);
+    return result;
+}
+
+/* Rename a file/directory. Returns 0 on success, -1 on error. */
+int __argon_fs_rename(const char *from, long from_len,
+                      const char *to, long to_len) {
+    char *cfrom = (char *)malloc(from_len + 1);
+    char *cto = (char *)malloc(to_len + 1);
+    if (!cfrom || !cto) { free(cfrom); free(cto); return -1; }
+    memcpy(cfrom, from, from_len); cfrom[from_len] = '\0';
+    memcpy(cto, to, to_len); cto[to_len] = '\0';
+
+    int result = rename(cfrom, cto);
+    free(cfrom);
+    free(cto);
+    return result;
 }
 "#;
 

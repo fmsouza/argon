@@ -104,6 +104,103 @@ pub fn declare_libc_functions<M: Module>(
     let print_bool_fn =
         module.declare_function("__argon_print_bool", Linkage::Import, &print_bool_sig)?;
 
+    // --- File system helpers from C runtime ---
+
+    // char *__argon_fs_read_file(const char *path, long path_len, long *out_len)
+    let mut fs_read_file_sig = module.make_signature();
+    fs_read_file_sig.params.push(AbiParam::new(pointer_type)); // path
+    fs_read_file_sig.params.push(AbiParam::new(pointer_type)); // path_len
+    fs_read_file_sig.params.push(AbiParam::new(pointer_type)); // out_len ptr
+    fs_read_file_sig.returns.push(AbiParam::new(pointer_type)); // buf ptr (NULL on error)
+    let fs_read_file_fn =
+        module.declare_function("__argon_fs_read_file", Linkage::Import, &fs_read_file_sig)?;
+
+    // int __argon_fs_write_file(path, path_len, data, data_len)
+    let mut fs_write_file_sig = module.make_signature();
+    fs_write_file_sig.params.push(AbiParam::new(pointer_type)); // path
+    fs_write_file_sig.params.push(AbiParam::new(pointer_type)); // path_len
+    fs_write_file_sig.params.push(AbiParam::new(pointer_type)); // data
+    fs_write_file_sig.params.push(AbiParam::new(pointer_type)); // data_len
+    fs_write_file_sig.returns.push(AbiParam::new(types::I32)); // 0=ok, -1=err
+    let fs_write_file_fn =
+        module.declare_function("__argon_fs_write_file", Linkage::Import, &fs_write_file_sig)?;
+
+    // int __argon_fs_append_file(path, path_len, data, data_len)
+    let mut fs_append_file_sig = module.make_signature();
+    fs_append_file_sig.params.push(AbiParam::new(pointer_type));
+    fs_append_file_sig.params.push(AbiParam::new(pointer_type));
+    fs_append_file_sig.params.push(AbiParam::new(pointer_type));
+    fs_append_file_sig.params.push(AbiParam::new(pointer_type));
+    fs_append_file_sig.returns.push(AbiParam::new(types::I32));
+    let fs_append_file_fn =
+        module.declare_function("__argon_fs_append_file", Linkage::Import, &fs_append_file_sig)?;
+
+    // int __argon_fs_exists(path, path_len)
+    let mut fs_exists_sig = module.make_signature();
+    fs_exists_sig.params.push(AbiParam::new(pointer_type));
+    fs_exists_sig.params.push(AbiParam::new(pointer_type));
+    fs_exists_sig.returns.push(AbiParam::new(types::I32));
+    let fs_exists_fn =
+        module.declare_function("__argon_fs_exists", Linkage::Import, &fs_exists_sig)?;
+
+    // long __argon_fs_file_size(path, path_len)
+    let mut fs_file_size_sig = module.make_signature();
+    fs_file_size_sig.params.push(AbiParam::new(pointer_type));
+    fs_file_size_sig.params.push(AbiParam::new(pointer_type));
+    fs_file_size_sig.returns.push(AbiParam::new(pointer_type));
+    let fs_file_size_fn =
+        module.declare_function("__argon_fs_file_size", Linkage::Import, &fs_file_size_sig)?;
+
+    // int __argon_fs_is_file(path, path_len)
+    let mut fs_is_file_sig = module.make_signature();
+    fs_is_file_sig.params.push(AbiParam::new(pointer_type));
+    fs_is_file_sig.params.push(AbiParam::new(pointer_type));
+    fs_is_file_sig.returns.push(AbiParam::new(types::I32));
+    let fs_is_file_fn =
+        module.declare_function("__argon_fs_is_file", Linkage::Import, &fs_is_file_sig)?;
+
+    // int __argon_fs_is_dir(path, path_len)
+    let mut fs_is_dir_sig = module.make_signature();
+    fs_is_dir_sig.params.push(AbiParam::new(pointer_type));
+    fs_is_dir_sig.params.push(AbiParam::new(pointer_type));
+    fs_is_dir_sig.returns.push(AbiParam::new(types::I32));
+    let fs_is_dir_fn =
+        module.declare_function("__argon_fs_is_dir", Linkage::Import, &fs_is_dir_sig)?;
+
+    // int __argon_fs_remove(path, path_len)
+    let mut fs_remove_sig = module.make_signature();
+    fs_remove_sig.params.push(AbiParam::new(pointer_type));
+    fs_remove_sig.params.push(AbiParam::new(pointer_type));
+    fs_remove_sig.returns.push(AbiParam::new(types::I32));
+    let fs_remove_fn =
+        module.declare_function("__argon_fs_remove", Linkage::Import, &fs_remove_sig)?;
+
+    // int __argon_fs_mkdir(path, path_len)
+    let mut fs_mkdir_sig = module.make_signature();
+    fs_mkdir_sig.params.push(AbiParam::new(pointer_type));
+    fs_mkdir_sig.params.push(AbiParam::new(pointer_type));
+    fs_mkdir_sig.returns.push(AbiParam::new(types::I32));
+    let fs_mkdir_fn =
+        module.declare_function("__argon_fs_mkdir", Linkage::Import, &fs_mkdir_sig)?;
+
+    // int __argon_fs_rmdir(path, path_len)
+    let mut fs_rmdir_sig = module.make_signature();
+    fs_rmdir_sig.params.push(AbiParam::new(pointer_type));
+    fs_rmdir_sig.params.push(AbiParam::new(pointer_type));
+    fs_rmdir_sig.returns.push(AbiParam::new(types::I32));
+    let fs_rmdir_fn =
+        module.declare_function("__argon_fs_rmdir", Linkage::Import, &fs_rmdir_sig)?;
+
+    // int __argon_fs_rename(from, from_len, to, to_len)
+    let mut fs_rename_sig = module.make_signature();
+    fs_rename_sig.params.push(AbiParam::new(pointer_type));
+    fs_rename_sig.params.push(AbiParam::new(pointer_type));
+    fs_rename_sig.params.push(AbiParam::new(pointer_type));
+    fs_rename_sig.params.push(AbiParam::new(pointer_type));
+    fs_rename_sig.returns.push(AbiParam::new(types::I32));
+    let fs_rename_fn =
+        module.declare_function("__argon_fs_rename", Linkage::Import, &fs_rename_sig)?;
+
     Ok(LibcFunctions {
         write: write_fn,
         malloc: malloc_fn,
@@ -119,6 +216,17 @@ pub fn declare_libc_functions<M: Module>(
         print_f64: print_f64_fn,
         print_str: print_str_fn,
         print_bool: print_bool_fn,
+        fs_read_file: fs_read_file_fn,
+        fs_write_file: fs_write_file_fn,
+        fs_append_file: fs_append_file_fn,
+        fs_exists: fs_exists_fn,
+        fs_file_size: fs_file_size_fn,
+        fs_is_file: fs_is_file_fn,
+        fs_is_dir: fs_is_dir_fn,
+        fs_remove: fs_remove_fn,
+        fs_mkdir: fs_mkdir_fn,
+        fs_rmdir: fs_rmdir_fn,
+        fs_rename: fs_rename_fn,
     })
 }
 
@@ -139,6 +247,18 @@ pub struct LibcFunctions {
     pub print_f64: cranelift_module::FuncId,
     pub print_str: cranelift_module::FuncId,
     pub print_bool: cranelift_module::FuncId,
+    // File system
+    pub fs_read_file: cranelift_module::FuncId,
+    pub fs_write_file: cranelift_module::FuncId,
+    pub fs_append_file: cranelift_module::FuncId,
+    pub fs_exists: cranelift_module::FuncId,
+    pub fs_file_size: cranelift_module::FuncId,
+    pub fs_is_file: cranelift_module::FuncId,
+    pub fs_is_dir: cranelift_module::FuncId,
+    pub fs_remove: cranelift_module::FuncId,
+    pub fs_mkdir: cranelift_module::FuncId,
+    pub fs_rmdir: cranelift_module::FuncId,
+    pub fs_rename: cranelift_module::FuncId,
 }
 
 /// Check if a function name is a known intrinsic.
@@ -172,5 +292,21 @@ pub fn is_intrinsic(name: &str) -> bool {
             | "min"
             | "max"
             | "clamp"
+            // std:fs
+            | "readFile"
+            | "writeFile"
+            | "appendFile"
+            | "exists"
+            | "stat"
+            | "rename"
+            | "remove"
+            | "mkdir"
+            | "mkdirRecursive"
+            | "rmdir"
+            | "removeRecursive"
+            | "copy"
+            | "readDir"
+            | "tempDir"
+            | "open"
     )
 }
