@@ -1,0 +1,8 @@
+// Test async sleep
+from "std:io" import { println };
+from "std:async" import { sleep };
+
+println("before sleep");
+const result = await sleep(100);
+println("after sleep");
+println("done");

@@ -1,0 +1,17 @@
+// Simple native fs test
+from "std:io" import { println };
+
+// Check if /tmp exists (it always does)
+const ex = exists("/tmp");
+println(ex);
+
+// Write a file
+const wr = writeFile("/tmp/argon_native_test.txt", "hello");
+println(wr);
+
+// Check it exists
+const ex2 = exists("/tmp/argon_native_test.txt");
+println(ex2);
+
+// Clean up
+remove("/tmp/argon_native_test.txt");

@@ -292,7 +292,7 @@ pub struct SkillDecl {
 }
 #[derive(Debug, Clone)]
 pub enum SkillItem {
-    ConcreteMethod(MethodDefinition),
+    ConcreteMethod(Box<MethodDefinition>),
     AbstractMethod(MethodSignature),
     RequiredField(PropertySignature),
 }
@@ -328,7 +328,7 @@ pub struct ImplBody {
 }
 #[derive(Debug, Clone)]
 pub enum ImplItem {
-    Method(MethodDefinition),
+    Method(Box<MethodDefinition>),
     Field(StructField),
 }
 

@@ -336,6 +336,20 @@ async function main(): string {
 }
 ```
 
+Async works with the standard library's I/O functions:
+
+```ts
+from "std:fs" import { readFileAsync, writeFileAsync };
+from "std:async" import { sleep };
+
+async function main(): void {
+    await writeFileAsync("/tmp/hello.txt", "async I/O!");
+    const content = await readFileAsync("/tmp/hello.txt");
+    println(content.value);    // "async I/O!"
+    await sleep(100);          // sleep 100ms
+}
+```
+
 ### Error handling
 
 ```ts
@@ -430,9 +444,102 @@ Available functions: `abs`, `floor`, `ceil`, `round`, `trunc`, `sign`, `min`, `m
 
 Constants: `PI`, `E`, `TAU`, `LN2`, `LN10`, `SQRT2`.
 
+### `std:error`
+
+```ts
+from "std:error" import { IoError };
+```
+
+Unified error type used across all I/O modules. `IoError` has `code` (e.g., `"ENOENT"`, `"ECONNREFUSED"`) and `message` fields.
+
+### `std:fs`
+
+```ts
+from "std:fs" import { readFile, writeFile, exists, stat, mkdir, readDir, open };
+
+const wr = writeFile("/tmp/hello.txt", "Hello!");
+const rd = readFile("/tmp/hello.txt");
+println(rd.value);  // Hello!
+
+const st = stat("/tmp/hello.txt");
+println(st.value.size);    // 6
+println(st.value.isFile);  // true
+
+// Streaming I/O
+const f = open("/tmp/data.txt", "Write");
+f.value.write("streaming");
+f.value.close();
+```
+
+All functions return `Result<T, IoError>`. Async variants are available: `readFileAsync`, `writeFileAsync`, etc.
+
+Available functions: `readFile`, `writeFile`, `readBytes`, `writeBytes`, `appendFile`, `readDir`, `mkdir`, `mkdirRecursive`, `rmdir`, `removeRecursive`, `exists`, `stat`, `rename`, `remove`, `copy`, `symlink`, `readlink`, `tempDir`, `open`.
+
+### `std:net`
+
+```ts
+from "std:net" import { bind, connect, resolve };
+
+// TCP server
+const server = bind("127.0.0.1", 8080);
+const stream = server.value.accept();
+
+// TCP client
+const client = connect("127.0.0.1", 8080);
+client.value.write("hello");
+
+// DNS
+const ips = resolve("localhost");
+println(ips.value);  // [::1, 127.0.0.1]
+```
+
+Includes `TcpListener`, `TcpStream`, `UdpSocket`, and DNS resolution. Not available on the WASM target.
+
+### `std:http`
+
+```ts
+from "std:http" import { get, post, createHeaders };
+
+const resp = get("https://api.example.com/data");
+println(resp.value.status);  // 200
+println(resp.value.body);
+
+const headers = createHeaders();
+headers.set("Content-Type", "application/json");
+const resp2 = post("https://api.example.com/data", "{}", headers);
+```
+
+HTTP client with `get`, `post`, `put`, `del`, `request`. Async variants available (`getAsync`, `postAsync`, etc.). Includes `Headers`, `Response`, `RequestOptions` types. Server support via `serve(port, handler)`.
+
+### `std:ws`
+
+```ts
+from "std:ws" import { wsConnect, wsListen };
+
+// Client
+const conn = wsConnect("ws://localhost:8080");
+conn.value.send("hello");
+const msg = conn.value.recv();
+println(msg.value.data);
+
+// Server
+const server = wsListen("127.0.0.1", 9090);
+const client = server.value.accept();
+```
+
+WebSocket client and server with text/binary message support, ping/pong, and close codes.
+
+### `std:async`
+
+```ts
+from "std:async" import { spawn, sleep };
+
+await sleep(1000);  // sleep 1 second
+```
+
 ### Prelude types
 
-These types are available without an import: `Vec<T>`, `Some<T>`, `None`, `Ok<T,E>`, `Err<T,E>`, `Shared<T>`, `Map<K,V>`, `Set<T>`.
+These types are available without an import: `Vec<T>`, `Some<T>`, `None`, `Ok<T,E>`, `Err<T,E>`, `Shared<T>`, `Map<K,V>`, `Set<T>`, `Future<T>`, `Task<T>`, `Waker`.
 
 ## Compilation Targets
 
@@ -460,7 +567,7 @@ This produces three files:
 - `math.mjs` — module loader that merges native exports with host companions
 - `math.host.mjs` — JS host implementations for features that need runtime support
 
-The WASM target supports numeric operations, control flow, function calls, branching, loops, array indexing, heap-backed object access, structured `try`/`catch`/`finally`, async/await (lowered synchronously), and direct function imports. Features outside this subset fail at compile time with a clear error.
+The WASM target supports numeric operations, control flow, function calls, branching, loops, array indexing, heap-backed object access, structured `try`/`catch`/`finally`, async/await (lowered synchronously), and direct function imports. `std:fs` works via WASI. `std:http` and `std:ws` clients work via host companion JS. `std:net` (raw sockets), HTTP servers, and WebSocket servers are not available on WASM and produce a compile-time error. Features outside the supported subset fail at compile time with a clear error.
 
 ### Native
 
@@ -485,6 +592,8 @@ When no `--triple` is specified, the compiler targets the host OS and architectu
 - Control flow: `if`/`else`, `while`, `for`, `loop`, `break`, `continue`, `switch`
 - `print`/`println` with numbers, booleans, and strings
 - Math intrinsics via libc (`sin`, `cos`, `sqrt`, `pow`, etc.)
+- File system operations (`readFile`, `writeFile`, `exists`, `stat`, `mkdir`, `remove`, etc.)
+- Networking operations (TCP bind/connect/accept, UDP, DNS)
 
 Supported platforms: macOS (aarch64, x86_64), Linux (aarch64, x86_64), Windows (x86_64). A C compiler (`cc` or `link.exe`) is required for linking.
 
@@ -511,6 +620,9 @@ Source (.arg)
  IR Builder ──── Lower to control-flow IR with optional optimization passes
     |
     v
+ Async Lowering ── Transform async functions into state machines (native/WASM only)
+    |
+    v
  Code Generator
     |── JS backend ────── ES2022 JavaScript + source maps + .d.ts
     |── WASM backend ──── .wasm + .mjs loader + .host.mjs companion
@@ -523,7 +635,7 @@ For `argon run`, the type-checked and borrow-checked AST is executed directly by
 
 ### Workspace layout
 
-The compiler is organized as a Rust workspace with 16 crates:
+The compiler is organized as a Rust workspace with 18 crates:
 
 ```
 crates/
@@ -543,6 +655,8 @@ crates/
   argon-interop          JS/WASM interop helpers
   argon-stdlib           Standard library (.arg source files)
   argon-diagnostics      Error reporting and rendering
+  argon-backend-traits   Backend trait abstractions for I/O operations
+  argon-async            Async runtime (work-stealing scheduler, mio reactor)
 ```
 
 ## Contributing
@@ -577,12 +691,17 @@ argon compile examples/arithmetic.arg --target native -o /tmp/arithmetic && /tmp
 
 Key examples by topic:
 - **Ownership/borrowing:** `ownership.arg`, `borrowing.arg`
-- **Structs:** `structs.arg`, `simple_method.arg`
+- **Structs:** `structs.arg`, `simple_method.arg`, `native_structs.arg`
 - **Generics:** `generic_simple.arg`, `generic_fn.arg`, `generic_struct.arg`
 - **Control flow:** `control-flow.arg`, `match.arg`, `try-catch.arg`, `recursion.arg`
 - **Type system:** `interface.arg`, `enum.arg`, `type_test.arg`
 - **Skills:** `skills.arg`
 - **Standard library:** `std_math.arg`, `arithmetic.arg`
+- **File system:** `fs_test.arg`, `fs_file_handle.arg`, `fs_native_test.arg`
+- **Networking:** `net_test.arg`
+- **HTTP:** `http_test.arg`
+- **WebSocket:** `ws_test.arg`
+- **Async:** `async.arg`, `async_sleep.arg`, `async_fs.arg`, `async_http.arg`
 - **Multi-file:** `modules/main.arg`
 - **Interop:** `interop.arg`
 - **WASM:** `wasm-subset.arg`

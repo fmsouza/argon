@@ -1,0 +1,9 @@
+[package]
+name = "argon-backend-traits"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Backend trait abstractions for Argon stdlib I/O operations"
+
+[dependencies]

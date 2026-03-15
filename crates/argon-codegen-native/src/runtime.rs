@@ -69,9 +69,16 @@ pub fn define_main_wrapper<M: Module>(
 /// are passed differently).
 const C_RUNTIME_SOURCE: &str = r#"
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <math.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+
+/* ===== Print helpers ===== */
 
 void __argon_print_f64(double value) {
     char buf[64];
@@ -94,6 +101,313 @@ void __argon_print_bool(double value) {
     } else {
         write(1, "false", 5);
     }
+}
+
+/* ===== File system helpers =====
+ *
+ * All fs functions return a result struct as a heap-allocated pair:
+ *   [ptr_to_data, status]
+ * where status: 0 = ok, non-zero = error code
+ * For readFile: data is a {ptr, len} pair with the file contents.
+ * For writeFile etc: data is unused (0).
+ *
+ * We use a simple convention:
+ *   - Return pointer to a heap-allocated buffer on success
+ *   - Return NULL with errno set on failure
+ *   - The caller checks the return value
+ */
+
+/* Read entire file into malloc'd buffer. Returns buffer ptr, sets *out_len.
+ * Returns NULL on error (check errno). */
+char *__argon_fs_read_file(const char *path, long path_len, long *out_len) {
+    /* Create null-terminated path */
+    char *cpath = (char *)malloc(path_len + 1);
+    if (!cpath) return NULL;
+    memcpy(cpath, path, path_len);
+    cpath[path_len] = '\0';
+
+    FILE *f = fopen(cpath, "r");
+    free(cpath);
+    if (!f) return NULL;
+
+    /* Get file size */
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    char *buf = (char *)malloc(size + 1);
+    if (!buf) { fclose(f); return NULL; }
+
+    long nread = fread(buf, 1, size, f);
+    fclose(f);
+    buf[nread] = '\0';
+    *out_len = nread;
+    return buf;
+}
+
+/* Write content to file. Returns 0 on success, -1 on error. */
+int __argon_fs_write_file(const char *path, long path_len,
+                          const char *data, long data_len) {
+    char *cpath = (char *)malloc(path_len + 1);
+    if (!cpath) return -1;
+    memcpy(cpath, path, path_len);
+    cpath[path_len] = '\0';
+
+    FILE *f = fopen(cpath, "w");
+    free(cpath);
+    if (!f) return -1;
+
+    long nwritten = fwrite(data, 1, data_len, f);
+    fclose(f);
+    return (nwritten == data_len) ? 0 : -1;
+}
+
+/* Append content to file. Returns 0 on success, -1 on error. */
+int __argon_fs_append_file(const char *path, long path_len,
+                           const char *data, long data_len) {
+    char *cpath = (char *)malloc(path_len + 1);
+    if (!cpath) return -1;
+    memcpy(cpath, path, path_len);
+    cpath[path_len] = '\0';
+
+    FILE *f = fopen(cpath, "a");
+    free(cpath);
+    if (!f) return -1;
+
+    long nwritten = fwrite(data, 1, data_len, f);
+    fclose(f);
+    return (nwritten == data_len) ? 0 : -1;
+}
+
+/* Check if file exists. Returns 1 if exists, 0 if not. */
+int __argon_fs_exists(const char *path, long path_len) {
+    char *cpath = (char *)malloc(path_len + 1);
+    if (!cpath) return 0;
+    memcpy(cpath, path, path_len);
+    cpath[path_len] = '\0';
+
+    struct stat st;
+    int result = (stat(cpath, &st) == 0) ? 1 : 0;
+    free(cpath);
+    return result;
+}
+
+/* Get file size. Returns -1 on error. */
+long __argon_fs_file_size(const char *path, long path_len) {
+    char *cpath = (char *)malloc(path_len + 1);
+    if (!cpath) return -1;
+    memcpy(cpath, path, path_len);
+    cpath[path_len] = '\0';
+
+    struct stat st;
+    int rc = stat(cpath, &st);
+    free(cpath);
+    if (rc != 0) return -1;
+    return (long)st.st_size;
+}
+
+/* Check if path is a regular file. Returns 1 if file, 0 otherwise. */
+int __argon_fs_is_file(const char *path, long path_len) {
+    char *cpath = (char *)malloc(path_len + 1);
+    if (!cpath) return 0;
+    memcpy(cpath, path, path_len);
+    cpath[path_len] = '\0';
+
+    struct stat st;
+    int result = (stat(cpath, &st) == 0 && S_ISREG(st.st_mode)) ? 1 : 0;
+    free(cpath);
+    return result;
+}
+
+/* Check if path is a directory. Returns 1 if dir, 0 otherwise. */
+int __argon_fs_is_dir(const char *path, long path_len) {
+    char *cpath = (char *)malloc(path_len + 1);
+    if (!cpath) return 0;
+    memcpy(cpath, path, path_len);
+    cpath[path_len] = '\0';
+
+    struct stat st;
+    int result = (stat(cpath, &st) == 0 && S_ISDIR(st.st_mode)) ? 1 : 0;
+    free(cpath);
+    return result;
+}
+
+/* Remove a file. Returns 0 on success, -1 on error. */
+int __argon_fs_remove(const char *path, long path_len) {
+    char *cpath = (char *)malloc(path_len + 1);
+    if (!cpath) return -1;
+    memcpy(cpath, path, path_len);
+    cpath[path_len] = '\0';
+
+    int result = unlink(cpath);
+    free(cpath);
+    return result;
+}
+
+/* Create a directory. Returns 0 on success, -1 on error. */
+int __argon_fs_mkdir(const char *path, long path_len) {
+    char *cpath = (char *)malloc(path_len + 1);
+    if (!cpath) return -1;
+    memcpy(cpath, path, path_len);
+    cpath[path_len] = '\0';
+
+    int result = mkdir(cpath, 0755);
+    free(cpath);
+    return result;
+}
+
+/* Remove a directory. Returns 0 on success, -1 on error. */
+int __argon_fs_rmdir(const char *path, long path_len) {
+    char *cpath = (char *)malloc(path_len + 1);
+    if (!cpath) return -1;
+    memcpy(cpath, path, path_len);
+    cpath[path_len] = '\0';
+
+    int result = rmdir(cpath);
+    free(cpath);
+    return result;
+}
+
+/* Rename a file/directory. Returns 0 on success, -1 on error. */
+int __argon_fs_rename(const char *from, long from_len,
+                      const char *to, long to_len) {
+    char *cfrom = (char *)malloc(from_len + 1);
+    char *cto = (char *)malloc(to_len + 1);
+    if (!cfrom || !cto) { free(cfrom); free(cto); return -1; }
+    memcpy(cfrom, from, from_len); cfrom[from_len] = '\0';
+    memcpy(cto, to, to_len); cto[to_len] = '\0';
+
+    int result = rename(cfrom, cto);
+    free(cfrom);
+    free(cto);
+    return result;
+}
+
+/* ===== Networking helpers ===== */
+
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+
+/* Create a TCP server socket, bind, and listen.
+ * Returns the socket fd, or -1 on error. */
+int __argon_net_tcp_bind(const char *addr, long addr_len, int port) {
+    char *caddr = (char *)malloc(addr_len + 1);
+    if (!caddr) return -1;
+    memcpy(caddr, addr, addr_len);
+    caddr[addr_len] = '\0';
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) { free(caddr); return -1; }
+
+    int opt = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons((unsigned short)port);
+    inet_pton(AF_INET, caddr, &sa.sin_addr);
+    free(caddr);
+
+    if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) { close(fd); return -1; }
+    if (listen(fd, 128) < 0) { close(fd); return -1; }
+    return fd;
+}
+
+/* Accept a connection on a listening socket.
+ * Returns the new socket fd, or -1 on error. */
+int __argon_net_tcp_accept(int listen_fd) {
+    struct sockaddr_in client;
+    socklen_t len = sizeof(client);
+    return accept(listen_fd, (struct sockaddr *)&client, &len);
+}
+
+/* Connect to a TCP server.
+ * Returns the socket fd, or -1 on error. */
+int __argon_net_tcp_connect(const char *addr, long addr_len, int port) {
+    char *caddr = (char *)malloc(addr_len + 1);
+    if (!caddr) return -1;
+    memcpy(caddr, addr, addr_len);
+    caddr[addr_len] = '\0';
+
+    struct addrinfo hints, *res;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    char port_str[16];
+    snprintf(port_str, sizeof(port_str), "%d", port);
+
+    if (getaddrinfo(caddr, port_str, &hints, &res) != 0) {
+        free(caddr);
+        return -1;
+    }
+    free(caddr);
+
+    int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (fd < 0) { freeaddrinfo(res); return -1; }
+
+    if (connect(fd, res->ai_addr, res->ai_addrlen) < 0) {
+        close(fd);
+        freeaddrinfo(res);
+        return -1;
+    }
+    freeaddrinfo(res);
+    return fd;
+}
+
+/* Read from a socket. Returns bytes read, or -1 on error. */
+long __argon_net_tcp_read(int fd, char *buf, long max_bytes) {
+    return recv(fd, buf, max_bytes, 0);
+}
+
+/* Write to a socket. Returns bytes written, or -1 on error. */
+long __argon_net_tcp_write(int fd, const char *data, long data_len) {
+    return send(fd, data, data_len, 0);
+}
+
+/* Shutdown write side of socket. Returns 0 on success. */
+int __argon_net_tcp_shutdown(int fd) {
+    return shutdown(fd, SHUT_WR);
+}
+
+/* Close a socket. */
+int __argon_net_tcp_close(int fd) {
+    return close(fd);
+}
+
+/* Get the local port of a bound socket. Returns port or -1. */
+int __argon_net_local_port(int fd) {
+    struct sockaddr_in sa;
+    socklen_t len = sizeof(sa);
+    if (getsockname(fd, (struct sockaddr *)&sa, &len) < 0) return -1;
+    return ntohs(sa.sin_port);
+}
+
+/* DNS resolve. Writes first resolved IP to out_buf (null-terminated).
+ * Returns 0 on success, -1 on error. */
+int __argon_net_resolve(const char *host, long host_len, char *out_buf, long out_buf_size) {
+    char *chost = (char *)malloc(host_len + 1);
+    if (!chost) return -1;
+    memcpy(chost, host, host_len);
+    chost[host_len] = '\0';
+
+    struct addrinfo hints, *res;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+
+    if (getaddrinfo(chost, NULL, &hints, &res) != 0) {
+        free(chost);
+        return -1;
+    }
+    free(chost);
+
+    struct sockaddr_in *sa = (struct sockaddr_in *)res->ai_addr;
+    inet_ntop(AF_INET, &sa->sin_addr, out_buf, out_buf_size);
+    freeaddrinfo(res);
+    return 0;
 }
 "#;
 

@@ -1,0 +1,29 @@
+// Test File handle operations (open, write, read, seek, close)
+from "std:io" import { println };
+
+// Open file for writing
+const f = open("/tmp/argon_handle_test.txt", "Write");
+println(f.isOk);
+
+// Write to file
+const fh = f.value;
+const wr = fh.write("Hello handle world!");
+println(wr.isOk);
+println(wr.value);
+
+// Close the file
+const cl = fh.close();
+println(cl.isOk);
+
+// Open for reading
+const f2 = open("/tmp/argon_handle_test.txt", "Read");
+const fh2 = f2.value;
+const rd = fh2.read(100);
+println(rd.isOk);
+println(rd.value);
+
+// Close
+fh2.close();
+
+// Cleanup
+remove("/tmp/argon_handle_test.txt");

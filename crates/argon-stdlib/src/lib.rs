@@ -14,13 +14,19 @@ pub fn resolve_std_module(name: &str) -> Option<&'static str> {
     match name {
         "io" => Some(include_str!("../stdlib/io.arg")),
         "math" => Some(include_str!("../stdlib/math.arg")),
+        "error" => Some(include_str!("../stdlib/error.arg")),
+        "fs" => Some(include_str!("../stdlib/fs.arg")),
+        "net" => Some(include_str!("../stdlib/net.arg")),
+        "http" => Some(include_str!("../stdlib/http.arg")),
+        "ws" => Some(include_str!("../stdlib/ws.arg")),
+        "async" => Some(include_str!("../stdlib/async.arg")),
         _ => None,
     }
 }
 
 /// List all available `std:*` module names.
 pub fn available_modules() -> &'static [&'static str] {
-    &["io", "math"]
+    &["io", "math", "error", "fs", "net", "http", "ws", "async"]
 }
 
 #[cfg(test)]
@@ -56,6 +62,50 @@ mod tests {
     }
 
     #[test]
+    fn resolves_error_module() {
+        let src = resolve_std_module("error").expect("error module should exist");
+        assert!(src.contains("struct IoError"));
+        assert!(src.contains("code: string"));
+        assert!(src.contains("message: string"));
+    }
+
+    #[test]
+    fn resolves_fs_module() {
+        let src = resolve_std_module("fs").expect("fs module should exist");
+        assert!(src.contains("function readFile("));
+        assert!(src.contains("function writeFile("));
+        assert!(src.contains("function mkdir("));
+        assert!(src.contains("struct File"));
+        assert!(src.contains("struct FileStat"));
+    }
+
+    #[test]
+    fn resolves_net_module() {
+        let src = resolve_std_module("net").expect("net module should exist");
+        assert!(src.contains("struct TcpListener"));
+        assert!(src.contains("struct TcpStream"));
+        assert!(src.contains("function bind("));
+        assert!(src.contains("function connect("));
+    }
+
+    #[test]
+    fn resolves_http_module() {
+        let src = resolve_std_module("http").expect("http module should exist");
+        assert!(src.contains("function get("));
+        assert!(src.contains("function post("));
+        assert!(src.contains("struct Headers"));
+        assert!(src.contains("struct HttpServer"));
+    }
+
+    #[test]
+    fn resolves_ws_module() {
+        let src = resolve_std_module("ws").expect("ws module should exist");
+        assert!(src.contains("struct WsConnection"));
+        assert!(src.contains("function wsConnect("));
+        assert!(src.contains("struct WsServer"));
+    }
+
+    #[test]
     fn unknown_module_returns_none() {
         assert!(resolve_std_module("nonexistent").is_none());
     }
@@ -65,5 +115,11 @@ mod tests {
         let mods = available_modules();
         assert!(mods.contains(&"io"));
         assert!(mods.contains(&"math"));
+        assert!(mods.contains(&"error"));
+        assert!(mods.contains(&"fs"));
+        assert!(mods.contains(&"net"));
+        assert!(mods.contains(&"http"));
+        assert!(mods.contains(&"ws"));
+        assert!(mods.contains(&"async"));
     }
 }

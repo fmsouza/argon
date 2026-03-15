@@ -370,6 +370,12 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                         .ins()
                         .trap(cranelift_codegen::ir::TrapCode::unwrap_user(0));
                 }
+                Terminator::EnumMatch { .. } => {
+                    // Async state machine enum match — not yet implemented in native codegen
+                    self.builder
+                        .ins()
+                        .trap(cranelift_codegen::ir::TrapCode::unwrap_user(0));
+                }
             }
         }
 
@@ -666,6 +672,17 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 ));
             }
 
+            // Async state machine instructions — stub for now
+            IrInstruction::EnumConstruct { dest, .. } => {
+                let zero = self.builder.ins().f64const(0.0);
+                self.values.insert(*dest, zero);
+            }
+            IrInstruction::EnumField { dest, .. } => {
+                let zero = self.builder.ins().f64const(0.0);
+                self.values.insert(*dest, zero);
+            }
+            IrInstruction::EnumMutate { .. } => {}
+
             IrInstruction::Load { dest, src } => {
                 let val = self.get_value(*src)?;
                 self.values.insert(*dest, val);
@@ -944,6 +961,57 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 return Ok(());
             }
 
+            // Check for fs intrinsics
+            if let Some(result) = self.try_lower_fs_intrinsic(&name, args, dest)? {
+                self.values.insert(dest, result);
+                return Ok(());
+            }
+
+            // Check for net/http/ws intrinsics — return 0 for now
+            // (full native net/http/ws requires struct return values
+            // which need further infrastructure work)
+            if matches!(
+                name.as_str(),
+                "bind"
+                    | "connect"
+                    | "bindUdp"
+                    | "resolve"
+                    | "get"
+                    | "post"
+                    | "put"
+                    | "del"
+                    | "request"
+                    | "createHeaders"
+                    | "serve"
+                    | "wsConnect"
+                    | "wsListen"
+                    | "sleep"
+                    | "spawn"
+                    | "readFileAsync"
+                    | "writeFileAsync"
+                    | "readBytesAsync"
+                    | "writeBytesAsync"
+                    | "appendFileAsync"
+                    | "readDirAsync"
+                    | "statAsync"
+                    | "copyAsync"
+                    | "connectAsync"
+                    | "getAsync"
+                    | "postAsync"
+                    | "putAsync"
+                    | "delAsync"
+                    | "requestAsync"
+                    | "wsConnectAsync"
+                    | "serveAsync"
+            ) {
+                // These intrinsics are recognized but produce a stub return value
+                // in native mode. Full implementation requires struct/object
+                // return values via heap allocation, which is a future enhancement.
+                let zero = self.builder.ins().f64const(0.0);
+                self.values.insert(dest, zero);
+                return Ok(());
+            }
+
             // Regular function call
             if let Some(&func_id) = self.func_ids.get(&name) {
                 let func_ref = self.module.declare_func_in_func(func_id, self.builder.func);
@@ -1092,6 +1160,215 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 let exp = self.get_value(args[1])?;
                 let call = self.builder.ins().call(func_ref, &[base, exp]);
                 Ok(Some(self.builder.inst_results(call)[0]))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Try to lower a std:fs intrinsic call.
+    /// Returns Some(result_value) if the name matches, None otherwise.
+    ///
+    /// For fs operations that return Result types, the native codegen uses a
+    /// simplified approach: functions that return data (readFile) print/store the
+    /// result directly. Functions that return status (writeFile, mkdir, etc.)
+    /// return 0.0 on success or a negative value on error.
+    ///
+    /// The full Result<T, IoError> struct semantics are handled by the runtime
+    /// and JS targets. Native target provides direct access to the underlying
+    /// operations for now.
+    fn try_lower_fs_intrinsic(
+        &mut self,
+        name: &str,
+        args: &[ValueId],
+        _dest: ValueId,
+    ) -> Result<Option<Value>, CodegenError> {
+        let libc = self.libc.as_ref().unwrap();
+
+        match name {
+            "readFile" => {
+                // readFile(path) -> calls __argon_fs_read_file, prints result
+                // In native mode, readFile returns the content ptr as a value
+                // that can be passed to println.
+                if let Some(&arg_id) = args.first() {
+                    let path_val = self.get_value(arg_id)?;
+                    if let Some(str_data) = self.string_constants.get(&arg_id) {
+                        let func_ref = self
+                            .module
+                            .declare_func_in_func(libc.fs_read_file, self.builder.func);
+                        let path_len = self
+                            .builder
+                            .ins()
+                            .iconst(self.ptr_type, str_data.len as i64);
+                        // Allocate stack slot for out_len
+                        let out_len_slot = self.builder.create_sized_stack_slot(
+                            cranelift_codegen::ir::StackSlotData::new(
+                                cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                                8,
+                                0,
+                            ),
+                        );
+                        let out_len_ptr =
+                            self.builder
+                                .ins()
+                                .stack_addr(self.ptr_type, out_len_slot, 0);
+                        let call = self
+                            .builder
+                            .ins()
+                            .call(func_ref, &[path_val, path_len, out_len_ptr]);
+                        let buf_ptr = self.builder.inst_results(call)[0];
+                        // Return the buffer pointer — native callers use this
+                        // as an opaque result. Full Result<> wrapping is a
+                        // future enhancement.
+                        return Ok(Some(buf_ptr));
+                    }
+                }
+                Ok(Some(self.builder.ins().iconst(self.ptr_type, 0)))
+            }
+            "writeFile" => {
+                if args.len() >= 2 {
+                    let path_val = self.get_value(args[0])?;
+                    let data_val = self.get_value(args[1])?;
+                    let path_info = self.string_constants.get(&args[0]).map(|s| s.len);
+                    let data_info = self.string_constants.get(&args[1]).map(|s| s.len);
+                    if let (Some(path_len), Some(data_len)) = (path_info, data_info) {
+                        let func_ref = self
+                            .module
+                            .declare_func_in_func(libc.fs_write_file, self.builder.func);
+                        let pl = self.builder.ins().iconst(self.ptr_type, path_len as i64);
+                        let dl = self.builder.ins().iconst(self.ptr_type, data_len as i64);
+                        let call = self
+                            .builder
+                            .ins()
+                            .call(func_ref, &[path_val, pl, data_val, dl]);
+                        let result = self.builder.inst_results(call)[0];
+                        // Convert i32 result to f64 (0.0 on success)
+                        let result_f64 = self.builder.ins().fcvt_from_sint(types::F64, result);
+                        return Ok(Some(result_f64));
+                    }
+                }
+                Ok(Some(self.builder.ins().f64const(0.0)))
+            }
+            "appendFile" => {
+                if args.len() >= 2 {
+                    let path_val = self.get_value(args[0])?;
+                    let data_val = self.get_value(args[1])?;
+                    let path_info = self.string_constants.get(&args[0]).map(|s| s.len);
+                    let data_info = self.string_constants.get(&args[1]).map(|s| s.len);
+                    if let (Some(path_len), Some(data_len)) = (path_info, data_info) {
+                        let func_ref = self
+                            .module
+                            .declare_func_in_func(libc.fs_append_file, self.builder.func);
+                        let pl = self.builder.ins().iconst(self.ptr_type, path_len as i64);
+                        let dl = self.builder.ins().iconst(self.ptr_type, data_len as i64);
+                        let call = self
+                            .builder
+                            .ins()
+                            .call(func_ref, &[path_val, pl, data_val, dl]);
+                        let result = self.builder.inst_results(call)[0];
+                        let result_f64 = self.builder.ins().fcvt_from_sint(types::F64, result);
+                        return Ok(Some(result_f64));
+                    }
+                }
+                Ok(Some(self.builder.ins().f64const(0.0)))
+            }
+            "exists" => {
+                if let Some(&arg_id) = args.first() {
+                    let path_val = self.get_value(arg_id)?;
+                    if let Some(str_data) = self.string_constants.get(&arg_id) {
+                        let func_ref = self
+                            .module
+                            .declare_func_in_func(libc.fs_exists, self.builder.func);
+                        let path_len = self
+                            .builder
+                            .ins()
+                            .iconst(self.ptr_type, str_data.len as i64);
+                        let call = self.builder.ins().call(func_ref, &[path_val, path_len]);
+                        let result = self.builder.inst_results(call)[0];
+                        let result_f64 = self.builder.ins().fcvt_from_sint(types::F64, result);
+                        return Ok(Some(result_f64));
+                    }
+                }
+                Ok(Some(self.builder.ins().f64const(0.0)))
+            }
+            "remove" => {
+                if let Some(&arg_id) = args.first() {
+                    let path_val = self.get_value(arg_id)?;
+                    if let Some(str_data) = self.string_constants.get(&arg_id) {
+                        let func_ref = self
+                            .module
+                            .declare_func_in_func(libc.fs_remove, self.builder.func);
+                        let path_len = self
+                            .builder
+                            .ins()
+                            .iconst(self.ptr_type, str_data.len as i64);
+                        let call = self.builder.ins().call(func_ref, &[path_val, path_len]);
+                        let result = self.builder.inst_results(call)[0];
+                        let result_f64 = self.builder.ins().fcvt_from_sint(types::F64, result);
+                        return Ok(Some(result_f64));
+                    }
+                }
+                Ok(Some(self.builder.ins().f64const(0.0)))
+            }
+            "mkdir" => {
+                if let Some(&arg_id) = args.first() {
+                    let path_val = self.get_value(arg_id)?;
+                    if let Some(str_data) = self.string_constants.get(&arg_id) {
+                        let func_ref = self
+                            .module
+                            .declare_func_in_func(libc.fs_mkdir, self.builder.func);
+                        let path_len = self
+                            .builder
+                            .ins()
+                            .iconst(self.ptr_type, str_data.len as i64);
+                        let call = self.builder.ins().call(func_ref, &[path_val, path_len]);
+                        let result = self.builder.inst_results(call)[0];
+                        let result_f64 = self.builder.ins().fcvt_from_sint(types::F64, result);
+                        return Ok(Some(result_f64));
+                    }
+                }
+                Ok(Some(self.builder.ins().f64const(0.0)))
+            }
+            "rmdir" => {
+                if let Some(&arg_id) = args.first() {
+                    let path_val = self.get_value(arg_id)?;
+                    if let Some(str_data) = self.string_constants.get(&arg_id) {
+                        let func_ref = self
+                            .module
+                            .declare_func_in_func(libc.fs_rmdir, self.builder.func);
+                        let path_len = self
+                            .builder
+                            .ins()
+                            .iconst(self.ptr_type, str_data.len as i64);
+                        let call = self.builder.ins().call(func_ref, &[path_val, path_len]);
+                        let result = self.builder.inst_results(call)[0];
+                        let result_f64 = self.builder.ins().fcvt_from_sint(types::F64, result);
+                        return Ok(Some(result_f64));
+                    }
+                }
+                Ok(Some(self.builder.ins().f64const(0.0)))
+            }
+            "rename" => {
+                if args.len() >= 2 {
+                    let from_val = self.get_value(args[0])?;
+                    let to_val = self.get_value(args[1])?;
+                    let from_info = self.string_constants.get(&args[0]).map(|s| s.len);
+                    let to_info = self.string_constants.get(&args[1]).map(|s| s.len);
+                    if let (Some(from_len), Some(to_len)) = (from_info, to_info) {
+                        let func_ref = self
+                            .module
+                            .declare_func_in_func(libc.fs_rename, self.builder.func);
+                        let fl = self.builder.ins().iconst(self.ptr_type, from_len as i64);
+                        let tl = self.builder.ins().iconst(self.ptr_type, to_len as i64);
+                        let call = self
+                            .builder
+                            .ins()
+                            .call(func_ref, &[from_val, fl, to_val, tl]);
+                        let result = self.builder.inst_results(call)[0];
+                        let result_f64 = self.builder.ins().fcvt_from_sint(types::F64, result);
+                        return Ok(Some(result_f64));
+                    }
+                }
+                Ok(Some(self.builder.ins().f64const(0.0)))
             }
             _ => Ok(None),
         }

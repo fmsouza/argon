@@ -1,0 +1,20 @@
+// Test std:net networking operations
+from "std:io" import { println };
+from "std:net" import { bind, connect, resolve };
+
+// DNS resolution
+const ips = resolve("localhost");
+println(ips.isOk);
+println(ips.value);
+
+// TCP server: bind to a port
+const server = bind("127.0.0.1", 0);
+println(server.isOk);
+
+// Get the assigned port
+const listener = server.value;
+const addr = listener.localAddr();
+println(addr);
+
+// Close the listener
+listener.close();

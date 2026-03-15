@@ -598,6 +598,10 @@ impl<'a> ModuleLowerer<'a> {
                 wasm_fn.instruction(&Instruction::I32Const(-1));
                 wasm_fn.instruction(&Instruction::LocalSet(ctx.bb_local));
             }
+            Terminator::EnumMatch { .. } => {
+                // Async state machine enum match — not yet supported in WASM codegen
+                wasm_fn.instruction(&Instruction::Unreachable);
+            }
         }
 
         Ok(())
@@ -1346,6 +1350,10 @@ impl<'a> ModuleLowerer<'a> {
                     ctx.try_depth -= 1;
                 }
             }
+            // Async state machine instructions — not used in WASM codegen (async lowering is skipped)
+            IrInstruction::EnumConstruct { .. }
+            | IrInstruction::EnumField { .. }
+            | IrInstruction::EnumMutate { .. } => {}
         }
         Ok(())
     }
@@ -1686,6 +1694,22 @@ impl<'a> ModuleLowerer<'a> {
                         touch_value(&mut max_value, *dest);
                     }
                     IrInstruction::Const { dest, .. } => touch_value(&mut max_value, *dest),
+                    IrInstruction::EnumConstruct { dest, fields, .. } => {
+                        touch_value(&mut max_value, *dest);
+                        for (_, v) in fields {
+                            touch_value(&mut max_value, *v);
+                        }
+                    }
+                    IrInstruction::EnumField { dest, value, .. } => {
+                        touch_value(&mut max_value, *dest);
+                        touch_value(&mut max_value, *value);
+                    }
+                    IrInstruction::EnumMutate { target, fields, .. } => {
+                        touch_value(&mut max_value, *target);
+                        for (_, v) in fields {
+                            touch_value(&mut max_value, *v);
+                        }
+                    }
                 }
             }
 
@@ -1694,6 +1718,9 @@ impl<'a> ModuleLowerer<'a> {
                     touch_value(&mut max_value, *v);
                 }
                 Terminator::Return(None) | Terminator::Jump(_) | Terminator::Unreachable => {}
+                Terminator::EnumMatch { value, .. } => {
+                    touch_value(&mut max_value, *value);
+                }
             }
         }
 
@@ -1943,6 +1970,25 @@ impl<'a> ModuleLowerer<'a> {
                 touch_value(max_value, *then_value);
                 touch_value(max_value, *else_value);
                 touch_value(max_value, *dest);
+                0
+            }
+            IrInstruction::EnumConstruct { dest, fields, .. } => {
+                touch_value(max_value, *dest);
+                for (_, v) in fields {
+                    touch_value(max_value, *v);
+                }
+                0
+            }
+            IrInstruction::EnumField { dest, value, .. } => {
+                touch_value(max_value, *dest);
+                touch_value(max_value, *value);
+                0
+            }
+            IrInstruction::EnumMutate { target, fields, .. } => {
+                touch_value(max_value, *target);
+                for (_, v) in fields {
+                    touch_value(max_value, *v);
+                }
                 0
             }
         }

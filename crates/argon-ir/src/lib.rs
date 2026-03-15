@@ -173,6 +173,25 @@ pub enum Instruction {
         dest: ValueId,
         value: ConstValue,
     },
+    /// Construct an enum variant value (for async state machines).
+    EnumConstruct {
+        dest: ValueId,
+        enum_name: String,
+        variant: String,
+        fields: Vec<(String, ValueId)>,
+    },
+    /// Read a field from the current enum variant.
+    EnumField {
+        dest: ValueId,
+        value: ValueId,
+        field: String,
+    },
+    /// Mutate the state enum in place (change variant + payload).
+    EnumMutate {
+        target: ValueId,
+        variant: String,
+        fields: Vec<(String, ValueId)>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -213,6 +232,14 @@ pub enum Terminator {
     },
     Jump(BlockId),
     Unreachable,
+    /// Match on an enum discriminant, jump to the arm's block.
+    /// Used by async state machine poll functions.
+    EnumMatch {
+        value: ValueId,
+        /// (variant_name, field_bindings, target_block)
+        arms: Vec<(String, Vec<String>, BlockId)>,
+        default: Option<BlockId>,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -244,9 +271,27 @@ pub enum UnOp {
 
 #[derive(Debug, Clone)]
 pub enum TypeDef {
-    Struct { name: String, fields: Vec<Field> },
-    Array { element_type: TypeId, length: usize },
+    Struct {
+        name: String,
+        fields: Vec<Field>,
+    },
+    Array {
+        element_type: TypeId,
+        length: usize,
+    },
     Pointer(TypeId),
+    /// Enum type for async state machines. Each variant carries named fields.
+    Enum {
+        name: String,
+        variants: Vec<EnumVariant>,
+    },
+}
+
+/// A variant of an enum type, carrying named fields.
+#[derive(Debug, Clone)]
+pub struct EnumVariant {
+    pub name: String,
+    pub fields: Vec<(String, Option<TypeId>)>,
 }
 
 #[derive(Debug, Clone)]

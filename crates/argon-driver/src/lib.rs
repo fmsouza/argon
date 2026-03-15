@@ -242,6 +242,71 @@ impl Compiler {
         deps
     }
 
+    /// Validate that WASM-unsupported std modules are not imported.
+    fn validate_wasm_imports(
+        &self,
+        source: &str,
+        source_name: &str,
+        ast: &SourceFile,
+    ) -> Result<(), DriverError> {
+        use argon_ast::Stmt;
+
+        for stmt in &ast.statements {
+            if let Stmt::Import(import) = stmt {
+                let raw = import.source.value.trim();
+                let spec = raw
+                    .trim_start_matches('"')
+                    .trim_end_matches('"')
+                    .trim_start_matches('\'')
+                    .trim_end_matches('\'');
+
+                let (unsupported, suggestion) = match spec {
+                    "std:net" => (true, "Raw sockets are not available on the WASM target. Use --target js or --target native instead."),
+                    _ => (false, ""),
+                };
+
+                // Check for server-only imports in std:http and std:ws
+                if spec == "std:http" || spec == "std:ws" {
+                    for specifier in &import.specifiers {
+                        if let argon_ast::ImportSpecifier::Named(named) = specifier {
+                            let name = &named.imported.sym;
+                            if matches!(name.as_str(), "serve" | "serveAsync" | "wsListen") {
+                                return Err(DriverError::WithDiagnostics {
+                                    message: format!(
+                                        "'{}' from '{}' is not available on the WASM target. \
+                                         Servers cannot listen on ports in WebAssembly. \
+                                         Use --target js or --target native instead.",
+                                        name, spec
+                                    ),
+                                    diagnostics: Diagnostics {
+                                        bag: DiagnosticBag::new(),
+                                        rendered: format!(
+                                            "error: '{}' from '{}' is not available on the WASM target",
+                                            name, spec
+                                        ),
+                                    },
+                                });
+                            }
+                        }
+                    }
+                }
+
+                if unsupported {
+                    return Err(self.simple_error_to_driver(
+                        source,
+                        source_name,
+                        "wasm target error",
+                        &format!(
+                            "'{}' is not available on the WASM target. {}",
+                            spec, suggestion
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Validate that all `std:*` imports reference known modules.
     pub fn validate_std_imports(&self, ast: &SourceFile) -> Result<(), DriverError> {
         use argon_ast::Stmt;
@@ -395,6 +460,9 @@ impl Compiler {
         ast: &SourceFile,
         options: &CompileOptions,
     ) -> Result<CompileArtifacts, DriverError> {
+        // Check for unsupported WASM imports
+        self.validate_wasm_imports(source, source_name, ast)?;
+
         let mut codegen = WasmCodegen::new();
         let mut builder = IrBuilder::new();
         let mut ir = builder

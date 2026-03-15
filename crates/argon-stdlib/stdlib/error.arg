@@ -1,0 +1,14 @@
+// Argon Standard Library - Error Types
+// Usage: from "std:error" import { IoError };
+
+// Unified error type for all I/O operations (fs, net, http, ws).
+// The `code` field discriminates the error domain:
+//   - File system: "ENOENT", "EACCES", "EISDIR", "EEXIST", "ENOTDIR"
+//   - Network: "ECONNREFUSED", "ECONNRESET", "EADDRINUSE", "ETIMEDOUT"
+//   - HTTP: "HTTP_TIMEOUT", "HTTP_PARSE_ERROR", "HTTP_TLS_ERROR"
+//   - WebSocket: "WS_CLOSED", "WS_PROTOCOL_ERROR"
+@intrinsic
+export struct IoError {
+    code: string;
+    message: string;
+}

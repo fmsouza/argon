@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+#[allow(dead_code)]
 pub(crate) fn get_primitives() -> Vec<(&'static str, &'static str)> {
     vec![
         ("i8", "number"),
@@ -507,6 +508,7 @@ pub(crate) fn get_runtime() -> &'static str {
 "#
 }
 
+#[allow(dead_code)]
 pub(crate) fn generate_stdlib_definitions() -> HashMap<String, String> {
     let mut defs = HashMap::new();
 

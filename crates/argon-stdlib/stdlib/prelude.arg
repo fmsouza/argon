@@ -93,3 +93,24 @@ export struct Set<T> {
     len(): usize with &this;
     values(): Vec<T> with &this;
 }
+
+// --- Async Types ---
+
+@intrinsic
+export struct Future<T> {
+    poll(waker: Waker): i32 with &mut this;
+    map<U>(fn: (value: T) => U): Future<U> with &mut this;
+    then<U>(fn: (value: T) => Future<U>): Future<U> with &mut this;
+}
+
+@intrinsic
+export struct Task<T> {
+    join(): T;
+    cancel(): void with &mut this;
+    isComplete(): bool with &this;
+}
+
+@intrinsic
+export struct Waker {
+    wake(): void with &this;
+}

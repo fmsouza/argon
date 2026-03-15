@@ -1,0 +1,130 @@
+// Argon Standard Library - File System
+// Usage: from "std:fs" import { readFile, writeFile, mkdir, open, File, FileStat };
+
+// --- Enums ---
+
+enum FileMode { Read, Write, Append, ReadWrite, WriteAppend }
+enum SeekFrom { Start, Current, End }
+
+// --- Metadata types ---
+
+export struct FileStat {
+    size: u64;
+    isFile: bool;
+    isDir: bool;
+    isSymlink: bool;
+    modified: u64;
+    created: u64;
+}
+
+export struct DirEntry {
+    name: string;
+    isFile: bool;
+    isDir: bool;
+    isSymlink: bool;
+}
+
+// --- File reading ---
+
+@intrinsic
+export function readFile(path: string): Result<string, IoError>;
+
+@intrinsic
+export async function readFileAsync(path: string): Result<string, IoError>;
+
+@intrinsic
+export function readBytes(path: string): Result<Vec<u8>, IoError>;
+
+@intrinsic
+export async function readBytesAsync(path: string): Result<Vec<u8>, IoError>;
+
+// --- File writing ---
+
+@intrinsic
+export function writeFile(path: string, content: string): Result<void, IoError>;
+
+@intrinsic
+export async function writeFileAsync(path: string, content: string): Result<void, IoError>;
+
+@intrinsic
+export function writeBytes(path: string, data: Vec<u8>): Result<void, IoError>;
+
+@intrinsic
+export async function writeBytesAsync(path: string, data: Vec<u8>): Result<void, IoError>;
+
+@intrinsic
+export function appendFile(path: string, content: string): Result<void, IoError>;
+
+@intrinsic
+export async function appendFileAsync(path: string, content: string): Result<void, IoError>;
+
+// --- Directory operations ---
+
+@intrinsic
+export function readDir(path: string): Result<Vec<DirEntry>, IoError>;
+
+@intrinsic
+export async function readDirAsync(path: string): Result<Vec<DirEntry>, IoError>;
+
+@intrinsic
+export function mkdir(path: string): Result<void, IoError>;
+
+@intrinsic
+export function mkdirRecursive(path: string): Result<void, IoError>;
+
+@intrinsic
+export function rmdir(path: string): Result<void, IoError>;
+
+@intrinsic
+export function removeRecursive(path: string): Result<void, IoError>;
+
+// --- Path operations ---
+
+@intrinsic
+export function exists(path: string): Result<bool, IoError>;
+
+@intrinsic
+export function stat(path: string): Result<FileStat, IoError>;
+
+@intrinsic
+export async function statAsync(path: string): Result<FileStat, IoError>;
+
+@intrinsic
+export function rename(from: string, to: string): Result<void, IoError>;
+
+@intrinsic
+export function remove(path: string): Result<void, IoError>;
+
+@intrinsic
+export function copy(from: string, to: string): Result<void, IoError>;
+
+@intrinsic
+export async function copyAsync(from: string, to: string): Result<void, IoError>;
+
+// --- Symlinks ---
+
+@intrinsic
+export function symlink(target: string, path: string): Result<void, IoError>;
+
+@intrinsic
+export function readlink(path: string): Result<string, IoError>;
+
+// --- Temp ---
+
+@intrinsic
+export function tempDir(): Result<string, IoError>;
+
+// --- File handle (streaming I/O) ---
+
+@intrinsic
+export struct File {
+    read(maxBytes: usize): Result<string, IoError> with &mut this;
+    readBytes(maxBytes: usize): Result<Vec<u8>, IoError> with &mut this;
+    write(data: string): Result<usize, IoError> with &mut this;
+    writeBytes(data: Vec<u8>): Result<usize, IoError> with &mut this;
+    seek(offset: i64, whence: SeekFrom): Result<void, IoError> with &mut this;
+    close(): Result<void, IoError> with &mut this;
+}
+
+@intrinsic
+export function open(path: string, mode: FileMode): Result<File, IoError>;

@@ -429,6 +429,17 @@ fn inst_values(inst: &Instruction) -> Vec<ValueId> {
             dest,
         } => vec![*cond, *then_value, *else_value, *dest],
         Instruction::Const { dest, .. } => vec![*dest],
+        Instruction::EnumConstruct { dest, fields, .. } => {
+            let mut out = vec![*dest];
+            out.extend(fields.iter().map(|(_, v)| *v));
+            out
+        }
+        Instruction::EnumField { dest, value, .. } => vec![*dest, *value],
+        Instruction::EnumMutate { target, fields, .. } => {
+            let mut out = vec![*target];
+            out.extend(fields.iter().map(|(_, v)| *v));
+            out
+        }
     }
 }
 
@@ -439,6 +450,7 @@ fn term_values(term: &Terminator) -> Vec<ValueId> {
         Terminator::Branch { cond, .. } => vec![*cond],
         Terminator::Jump(_) => Vec::new(),
         Terminator::Unreachable => Vec::new(),
+        Terminator::EnumMatch { value, .. } => vec![*value],
     }
 }
 

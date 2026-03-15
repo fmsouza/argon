@@ -10,6 +10,10 @@ argon-ast = { path = "../argon-ast" }
 argon-types = { path = "../argon-types" }
 argon-borrowck = { path = "../argon-borrowck" }
 anyhow = "1.0"
+ureq = "2.9"
+tungstenite = "0.21"
+tiny_http = "0.12"
+tokio = { version = "1.35", features = ["rt", "rt-multi-thread", "time", "fs", "net", "io-util"] }
 
 [dev-dependencies]
 argon-parser = { path = "../argon-parser" }

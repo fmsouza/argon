@@ -541,6 +541,11 @@ impl JsCodegen {
                     self.output
                         .push_str("            throw new Error(\"unreachable\");\n");
                 }
+                IrTerm::EnumMatch { .. } => {
+                    // Enum match is used by async state machines; JS skips the async lowering pass.
+                    self.output
+                        .push_str("            throw new Error(\"enum match not supported in JS codegen\");\n");
+                }
             }
 
             self.output.push_str("        }\n");

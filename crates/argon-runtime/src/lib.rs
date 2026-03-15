@@ -3,9 +3,14 @@
 use argon_ast::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::{Read as IoRead, Seek as IoSeek, Write as IoWrite};
+use std::pin::Pin;
 use std::rc::Rc;
 
-#[derive(Debug, Clone)]
+/// A boxed future that resolves to a Value. Stored inside Rc<RefCell<Option<...>>>
+/// so it can be taken once and awaited.
+type BoxFuture = Pin<Box<dyn std::future::Future<Output = Value>>>;
+
 pub enum Value {
     Number(f64),
     String(String),
@@ -16,6 +21,43 @@ pub enum Value {
     NativeFunction(NativeFunction),
     Object(Rc<RefCell<HashMap<String, Value>>>),
     Array(Vec<Value>),
+    /// An async future that resolves to a Value.
+    Future(Rc<RefCell<Option<BoxFuture>>>),
+}
+
+impl std::fmt::Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Number(n) => write!(f, "Number({})", n),
+            Value::String(s) => write!(f, "String({:?})", s),
+            Value::Boolean(b) => write!(f, "Boolean({})", b),
+            Value::Null => write!(f, "Null"),
+            Value::Undefined => write!(f, "Undefined"),
+            Value::Function(func) => write!(f, "Function({:?})", func.name),
+            Value::NativeFunction(nf) => write!(f, "NativeFunction({})", nf.name),
+            Value::Object(_) => write!(f, "Object(...)"),
+            Value::Array(arr) => write!(f, "Array(len={})", arr.len()),
+            Value::Future(_) => write!(f, "Future(...)"),
+        }
+    }
+}
+
+impl Clone for Value {
+    fn clone(&self) -> Self {
+        match self {
+            Value::Number(n) => Value::Number(*n),
+            Value::String(s) => Value::String(s.clone()),
+            Value::Boolean(b) => Value::Boolean(*b),
+            Value::Null => Value::Null,
+            Value::Undefined => Value::Undefined,
+            Value::Function(f) => Value::Function(f.clone()),
+            Value::NativeFunction(nf) => Value::NativeFunction(nf.clone()),
+            Value::Object(o) => Value::Object(o.clone()),
+            Value::Array(a) => Value::Array(a.clone()),
+            // Futures cannot be cloned — cloning produces Undefined
+            Value::Future(_) => Value::Undefined,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -83,11 +125,230 @@ enum ExecOutcome {
     Continue,
 }
 
+/// Shared resource table for OS handles (files, sockets, etc.)
+/// that need to persist across function call boundaries.
+#[derive(Debug, Default, Clone)]
+struct ResourceTable {
+    inner: Rc<RefCell<ResourceTableInner>>,
+}
+
+/// WebSocket connection variants (client uses MaybeTlsStream, server uses raw TcpStream).
+enum WsConn {
+    Client(tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>),
+    Server(tungstenite::WebSocket<std::net::TcpStream>),
+}
+
+impl std::fmt::Debug for WsConn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WsConn::Client(_) => write!(f, "WsConn::Client(...)"),
+            WsConn::Server(_) => write!(f, "WsConn::Server(...)"),
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+impl WsConn {
+    fn send(&mut self, msg: tungstenite::Message) -> Result<(), tungstenite::Error> {
+        match self {
+            WsConn::Client(ws) => ws.send(msg),
+            WsConn::Server(ws) => ws.send(msg),
+        }
+    }
+    fn read(&mut self) -> Result<tungstenite::Message, tungstenite::Error> {
+        match self {
+            WsConn::Client(ws) => ws.read(),
+            WsConn::Server(ws) => ws.read(),
+        }
+    }
+    fn close(
+        &mut self,
+        frame: Option<tungstenite::protocol::CloseFrame>,
+    ) -> Result<(), tungstenite::Error> {
+        match self {
+            WsConn::Client(ws) => ws.close(frame),
+            WsConn::Server(ws) => ws.close(frame),
+        }
+    }
+    fn can_write(&self) -> bool {
+        match self {
+            WsConn::Client(ws) => ws.can_write(),
+            WsConn::Server(ws) => ws.can_write(),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct ResourceTableInner {
+    file_handles: HashMap<u64, std::fs::File>,
+    tcp_listeners: HashMap<u64, std::net::TcpListener>,
+    tcp_streams: HashMap<u64, std::net::TcpStream>,
+    udp_sockets: HashMap<u64, std::net::UdpSocket>,
+    ws_connections: HashMap<u64, WsConn>,
+    next_id: u64,
+}
+
+impl ResourceTable {
+    fn new() -> Self {
+        Self {
+            inner: Rc::new(RefCell::new(ResourceTableInner {
+                file_handles: HashMap::new(),
+                tcp_listeners: HashMap::new(),
+                tcp_streams: HashMap::new(),
+                udp_sockets: HashMap::new(),
+                ws_connections: HashMap::new(),
+                next_id: 1,
+            })),
+        }
+    }
+
+    fn insert_file(&self, file: std::fs::File) -> u64 {
+        let mut inner = self.inner.borrow_mut();
+        let id = inner.next_id;
+        inner.next_id += 1;
+        inner.file_handles.insert(id, file);
+        id
+    }
+
+    fn with_file<F, R>(&self, id: u64, f: F) -> Result<R, RuntimeError>
+    where
+        F: FnOnce(&mut std::fs::File) -> Result<R, RuntimeError>,
+    {
+        let mut inner = self.inner.borrow_mut();
+        let file = inner
+            .file_handles
+            .get_mut(&id)
+            .ok_or_else(|| RuntimeError::TypeError("invalid file handle".to_string()))?;
+        f(file)
+    }
+
+    fn remove_file(&self, id: u64) -> Result<std::fs::File, RuntimeError> {
+        self.inner
+            .borrow_mut()
+            .file_handles
+            .remove(&id)
+            .ok_or_else(|| RuntimeError::TypeError("invalid file handle".to_string()))
+    }
+
+    fn insert_tcp_listener(&self, listener: std::net::TcpListener) -> u64 {
+        let mut inner = self.inner.borrow_mut();
+        let id = inner.next_id;
+        inner.next_id += 1;
+        inner.tcp_listeners.insert(id, listener);
+        id
+    }
+
+    fn with_tcp_listener<F, R>(&self, id: u64, f: F) -> Result<R, RuntimeError>
+    where
+        F: FnOnce(&mut std::net::TcpListener) -> Result<R, RuntimeError>,
+    {
+        let mut inner = self.inner.borrow_mut();
+        let listener = inner
+            .tcp_listeners
+            .get_mut(&id)
+            .ok_or_else(|| RuntimeError::TypeError("invalid tcp listener handle".to_string()))?;
+        f(listener)
+    }
+
+    fn remove_tcp_listener(&self, id: u64) -> Result<std::net::TcpListener, RuntimeError> {
+        self.inner
+            .borrow_mut()
+            .tcp_listeners
+            .remove(&id)
+            .ok_or_else(|| RuntimeError::TypeError("invalid tcp listener handle".to_string()))
+    }
+
+    fn insert_tcp_stream(&self, stream: std::net::TcpStream) -> u64 {
+        let mut inner = self.inner.borrow_mut();
+        let id = inner.next_id;
+        inner.next_id += 1;
+        inner.tcp_streams.insert(id, stream);
+        id
+    }
+
+    fn with_tcp_stream<F, R>(&self, id: u64, f: F) -> Result<R, RuntimeError>
+    where
+        F: FnOnce(&mut std::net::TcpStream) -> Result<R, RuntimeError>,
+    {
+        let mut inner = self.inner.borrow_mut();
+        let stream = inner
+            .tcp_streams
+            .get_mut(&id)
+            .ok_or_else(|| RuntimeError::TypeError("invalid tcp stream handle".to_string()))?;
+        f(stream)
+    }
+
+    fn remove_tcp_stream(&self, id: u64) -> Result<std::net::TcpStream, RuntimeError> {
+        self.inner
+            .borrow_mut()
+            .tcp_streams
+            .remove(&id)
+            .ok_or_else(|| RuntimeError::TypeError("invalid tcp stream handle".to_string()))
+    }
+
+    fn insert_udp_socket(&self, socket: std::net::UdpSocket) -> u64 {
+        let mut inner = self.inner.borrow_mut();
+        let id = inner.next_id;
+        inner.next_id += 1;
+        inner.udp_sockets.insert(id, socket);
+        id
+    }
+
+    fn with_udp_socket<F, R>(&self, id: u64, f: F) -> Result<R, RuntimeError>
+    where
+        F: FnOnce(&mut std::net::UdpSocket) -> Result<R, RuntimeError>,
+    {
+        let mut inner = self.inner.borrow_mut();
+        let socket = inner
+            .udp_sockets
+            .get_mut(&id)
+            .ok_or_else(|| RuntimeError::TypeError("invalid udp socket handle".to_string()))?;
+        f(socket)
+    }
+
+    fn remove_udp_socket(&self, id: u64) -> Result<std::net::UdpSocket, RuntimeError> {
+        self.inner
+            .borrow_mut()
+            .udp_sockets
+            .remove(&id)
+            .ok_or_else(|| RuntimeError::TypeError("invalid udp socket handle".to_string()))
+    }
+
+    fn insert_ws(&self, ws: WsConn) -> u64 {
+        let mut inner = self.inner.borrow_mut();
+        let id = inner.next_id;
+        inner.next_id += 1;
+        inner.ws_connections.insert(id, ws);
+        id
+    }
+
+    fn with_ws<F, R>(&self, id: u64, f: F) -> Result<R, RuntimeError>
+    where
+        F: FnOnce(&mut WsConn) -> Result<R, RuntimeError>,
+    {
+        let mut inner = self.inner.borrow_mut();
+        let ws = inner
+            .ws_connections
+            .get_mut(&id)
+            .ok_or_else(|| RuntimeError::TypeError("invalid websocket handle".to_string()))?;
+        f(ws)
+    }
+
+    fn remove_ws(&self, id: u64) -> Result<WsConn, RuntimeError> {
+        self.inner
+            .borrow_mut()
+            .ws_connections
+            .remove(&id)
+            .ok_or_else(|| RuntimeError::TypeError("invalid websocket handle".to_string()))
+    }
+}
+
 pub struct Runtime {
     scope: Scope,
     globals: HashMap<String, Value>,
     struct_defs: HashMap<String, RuntimeStructDef>,
     skill_defs: HashMap<String, RuntimeSkillDef>,
+    resources: ResourceTable,
 }
 
 impl Default for Runtime {
@@ -167,11 +428,139 @@ impl Runtime {
             Value::Object(Rc::new(RefCell::new(math_obj))),
         );
 
+        // Register std:fs native functions
+        for name in &[
+            "readFile",
+            "writeFile",
+            "readBytes",
+            "writeBytes",
+            "appendFile",
+            "readDir",
+            "mkdir",
+            "mkdirRecursive",
+            "rmdir",
+            "removeRecursive",
+            "exists",
+            "stat",
+            "rename",
+            "remove",
+            "copy",
+            "symlink",
+            "readlink",
+            "tempDir",
+            "open",
+        ] {
+            globals.insert(
+                name.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("fs.{}", name),
+                }),
+            );
+        }
+
+        // Register async variants of std:fs, std:net, std:http
+        for name in &[
+            "readFileAsync",
+            "writeFileAsync",
+            "readBytesAsync",
+            "writeBytesAsync",
+            "appendFileAsync",
+            "readDirAsync",
+            "statAsync",
+            "copyAsync",
+        ] {
+            globals.insert(
+                name.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("fs.{}", name),
+                }),
+            );
+        }
+        globals.insert(
+            "connectAsync".to_string(),
+            Value::NativeFunction(NativeFunction {
+                name: "net.connectAsync".to_string(),
+            }),
+        );
+        for name in &[
+            "getAsync",
+            "postAsync",
+            "putAsync",
+            "delAsync",
+            "requestAsync",
+        ] {
+            globals.insert(
+                name.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("http.{}", name),
+                }),
+            );
+        }
+        globals.insert(
+            "wsConnectAsync".to_string(),
+            Value::NativeFunction(NativeFunction {
+                name: "ws.wsConnectAsync".to_string(),
+            }),
+        );
+
+        // Register std:net native functions
+        for name in &["bind", "connect", "bindUdp", "resolve"] {
+            globals.insert(
+                name.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("net.{}", name),
+                }),
+            );
+        }
+
+        // Register std:http native functions
+        for name in &[
+            "get",
+            "post",
+            "put",
+            "del",
+            "request",
+            "createHeaders",
+            "serve",
+        ] {
+            globals.insert(
+                name.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("http.{}", name),
+                }),
+            );
+        }
+
+        // Register std:async native functions
+        globals.insert(
+            "sleep".to_string(),
+            Value::NativeFunction(NativeFunction {
+                name: "async.sleep".to_string(),
+            }),
+        );
+        globals.insert(
+            "spawn".to_string(),
+            Value::NativeFunction(NativeFunction {
+                name: "async.spawn".to_string(),
+            }),
+        );
+
+        // Register std:ws native functions
+        for name in &["wsConnect", "wsListen"] {
+            globals.insert(
+                name.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("ws.{}", name),
+                }),
+            );
+        }
+
         Self {
             scope: Scope::new(),
             globals,
             struct_defs: HashMap::new(),
             skill_defs: HashMap::new(),
+            resources: ResourceTable::new(),
         }
     }
 
@@ -596,8 +985,41 @@ impl Runtime {
                 }
             }
             Expr::Call(c) => {
-                let callee = self.evaluate_expression(&c.callee)?;
+                // For method calls on objects (e.g., file.read(1024)),
+                // pass the receiver object as the first arg to native functions.
+                let (callee, receiver) = if let Expr::Member(m) = &*c.callee {
+                    let obj = self.evaluate_expression(&m.object)?;
+                    let property = if m.computed {
+                        let key = self.evaluate_expression(&m.property)?;
+                        self.value_to_string(&key)
+                    } else {
+                        self.property_key(&m.property)?
+                    };
+                    let callee_val = match &obj {
+                        Value::Object(map) => map
+                            .borrow()
+                            .get(&property)
+                            .cloned()
+                            .unwrap_or(Value::Undefined),
+                        Value::Array(values) => {
+                            if let Ok(idx) = property.parse::<usize>() {
+                                values.get(idx).cloned().unwrap_or(Value::Undefined)
+                            } else {
+                                Value::Undefined
+                            }
+                        }
+                        _ => Value::Undefined,
+                    };
+                    (callee_val, Some(obj))
+                } else {
+                    (self.evaluate_expression(&c.callee)?, None)
+                };
+
                 let mut args = Vec::new();
+                // For native function method calls, prepend the receiver as first arg
+                if let (Value::NativeFunction(_), Some(recv)) = (&callee, receiver) {
+                    args.push(recv);
+                }
                 for arg in &c.arguments {
                     match arg {
                         ExprOrSpread::Expr(e) => args.push(self.evaluate_expression(e)?),
@@ -679,7 +1101,22 @@ impl Runtime {
                     ))
                 }
             }
-            Expr::Await(a) | Expr::AwaitPromised(a) => self.evaluate_expression(&a.argument),
+            Expr::Await(a) | Expr::AwaitPromised(a) => {
+                let val = self.evaluate_expression(&a.argument)?;
+                match val {
+                    Value::Future(future_cell) => {
+                        let future = future_cell.borrow_mut().take().ok_or_else(|| {
+                            RuntimeError::TypeError("future already consumed".to_string())
+                        })?;
+                        // Block on the future using tokio if available
+                        match tokio::runtime::Handle::try_current() {
+                            Ok(h) => Ok(h.block_on(future)),
+                            Err(_) => Ok(Value::Undefined), // no tokio runtime, fall back
+                        }
+                    }
+                    other => Ok(other), // sync value, pass through
+                }
+            }
             Expr::Ref(r) => self.evaluate_expression(&r.expr),
             Expr::MutRef(r) => self.evaluate_expression(&r.expr),
             _ => Err(RuntimeError::Unsupported(format!(
@@ -708,6 +1145,7 @@ impl Runtime {
                     globals: self.globals.clone(),
                     struct_defs: self.struct_defs.clone(),
                     skill_defs: self.skill_defs.clone(),
+                    resources: self.resources.clone(),
                 };
                 rt.execute_function_body(&func.body)
             }
@@ -842,6 +1280,7 @@ impl Runtime {
                 globals: self.globals.clone(),
                 struct_defs: self.struct_defs.clone(),
                 skill_defs: self.skill_defs.clone(),
+                resources: self.resources.clone(),
             };
             for stmt in &constructor.body.statements {
                 match ctor_rt.execute_statement(stmt)? {
@@ -955,7 +1394,11 @@ impl Runtime {
         Ok(Value::Undefined)
     }
 
-    fn execute_native_function(&self, name: &str, args: &[Value]) -> Result<Value, RuntimeError> {
+    fn execute_native_function(
+        &mut self,
+        name: &str,
+        args: &[Value],
+    ) -> Result<Value, RuntimeError> {
         match name {
             "print" => {
                 let output: Vec<String> = args.iter().map(|v| self.value_to_string(v)).collect();
@@ -975,8 +1418,1373 @@ impl Runtime {
             "Math.pow" => two_numbers(args, |a, b| Value::Number(a.powf(b))),
             "Math.max" => two_numbers(args, |a, b| Value::Number(a.max(b))),
             "Math.min" => two_numbers(args, |a, b| Value::Number(a.min(b))),
+
+            // --- std:fs ---
+            "fs.readFile" => {
+                let path = expect_string(args, 0, "readFile: path")?;
+                match std::fs::read_to_string(&path) {
+                    Ok(content) => Ok(make_ok(Value::String(content))),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.writeFile" => {
+                let path = expect_string(args, 0, "writeFile: path")?;
+                let content = expect_string(args, 1, "writeFile: content")?;
+                match std::fs::write(&path, &content) {
+                    Ok(()) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.readBytes" => {
+                let path = expect_string(args, 0, "readBytes: path")?;
+                match std::fs::read(&path) {
+                    Ok(bytes) => {
+                        let arr = bytes.into_iter().map(|b| Value::Number(b as f64)).collect();
+                        Ok(make_ok(Value::Array(arr)))
+                    }
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.writeBytes" => {
+                let path = expect_string(args, 0, "writeBytes: path")?;
+                let data = expect_byte_array(args, 1, "writeBytes: data")?;
+                match std::fs::write(&path, &data) {
+                    Ok(()) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.appendFile" => {
+                let path = expect_string(args, 0, "appendFile: path")?;
+                let content = expect_string(args, 1, "appendFile: content")?;
+                match std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(&path)
+                {
+                    Ok(mut file) => {
+                        match std::io::Write::write_all(&mut file, content.as_bytes()) {
+                            Ok(()) => Ok(make_ok(Value::Undefined)),
+                            Err(e) => Ok(make_err(io_error_from(&e))),
+                        }
+                    }
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.readDir" => {
+                let path = expect_string(args, 0, "readDir: path")?;
+                match std::fs::read_dir(&path) {
+                    Ok(entries) => {
+                        let mut result = Vec::new();
+                        for entry in entries {
+                            match entry {
+                                Ok(e) => {
+                                    let mut obj = HashMap::new();
+                                    obj.insert(
+                                        "name".to_string(),
+                                        Value::String(e.file_name().to_string_lossy().to_string()),
+                                    );
+                                    let ft = e.file_type().ok();
+                                    obj.insert(
+                                        "isFile".to_string(),
+                                        Value::Boolean(ft.as_ref().is_some_and(|t| t.is_file())),
+                                    );
+                                    obj.insert(
+                                        "isDir".to_string(),
+                                        Value::Boolean(ft.as_ref().is_some_and(|t| t.is_dir())),
+                                    );
+                                    obj.insert(
+                                        "isSymlink".to_string(),
+                                        Value::Boolean(ft.as_ref().is_some_and(|t| t.is_symlink())),
+                                    );
+                                    result.push(Value::Object(Rc::new(RefCell::new(obj))));
+                                }
+                                Err(e) => return Ok(make_err(io_error_from(&e))),
+                            }
+                        }
+                        Ok(make_ok(Value::Array(result)))
+                    }
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.mkdir" => {
+                let path = expect_string(args, 0, "mkdir: path")?;
+                match std::fs::create_dir(&path) {
+                    Ok(()) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.mkdirRecursive" => {
+                let path = expect_string(args, 0, "mkdirRecursive: path")?;
+                match std::fs::create_dir_all(&path) {
+                    Ok(()) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.rmdir" => {
+                let path = expect_string(args, 0, "rmdir: path")?;
+                match std::fs::remove_dir(&path) {
+                    Ok(()) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.removeRecursive" => {
+                let path = expect_string(args, 0, "removeRecursive: path")?;
+                match std::fs::remove_dir_all(&path) {
+                    Ok(()) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.exists" => {
+                let path = expect_string(args, 0, "exists: path")?;
+                Ok(make_ok(Value::Boolean(
+                    std::path::Path::new(&path).exists(),
+                )))
+            }
+            "fs.stat" => {
+                let path = expect_string(args, 0, "stat: path")?;
+                match std::fs::metadata(&path) {
+                    Ok(meta) => {
+                        let mut obj = HashMap::new();
+                        obj.insert("size".to_string(), Value::Number(meta.len() as f64));
+                        obj.insert("isFile".to_string(), Value::Boolean(meta.is_file()));
+                        obj.insert("isDir".to_string(), Value::Boolean(meta.is_dir()));
+                        obj.insert("isSymlink".to_string(), Value::Boolean(meta.is_symlink()));
+                        obj.insert(
+                            "modified".to_string(),
+                            Value::Number(
+                                meta.modified()
+                                    .ok()
+                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                    .map_or(0.0, |d| d.as_millis() as f64),
+                            ),
+                        );
+                        obj.insert(
+                            "created".to_string(),
+                            Value::Number(
+                                meta.created()
+                                    .ok()
+                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                    .map_or(0.0, |d| d.as_millis() as f64),
+                            ),
+                        );
+                        Ok(make_ok(Value::Object(Rc::new(RefCell::new(obj)))))
+                    }
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.rename" => {
+                let from = expect_string(args, 0, "rename: from")?;
+                let to = expect_string(args, 1, "rename: to")?;
+                match std::fs::rename(&from, &to) {
+                    Ok(()) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.remove" => {
+                let path = expect_string(args, 0, "remove: path")?;
+                match std::fs::remove_file(&path) {
+                    Ok(()) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.copy" => {
+                let from = expect_string(args, 0, "copy: from")?;
+                let to = expect_string(args, 1, "copy: to")?;
+                match std::fs::copy(&from, &to) {
+                    Ok(_) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.symlink" => {
+                let target = expect_string(args, 0, "symlink: target")?;
+                let path = expect_string(args, 1, "symlink: path")?;
+                #[cfg(unix)]
+                let result = std::os::unix::fs::symlink(&target, &path);
+                #[cfg(windows)]
+                let result = std::os::windows::fs::symlink_file(&target, &path);
+                match result {
+                    Ok(()) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.readlink" => {
+                let path = expect_string(args, 0, "readlink: path")?;
+                match std::fs::read_link(&path) {
+                    Ok(target) => Ok(make_ok(Value::String(target.to_string_lossy().to_string()))),
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "fs.tempDir" => Ok(make_ok(Value::String(
+                std::env::temp_dir().to_string_lossy().to_string(),
+            ))),
+            "fs.open" => {
+                let path = expect_string(args, 0, "open: path")?;
+                let mode =
+                    expect_string(args, 1, "open: mode").unwrap_or_else(|_| "Read".to_string());
+                let result = match mode.as_str() {
+                    "Read" => std::fs::File::open(&path),
+                    "Write" => std::fs::File::create(&path),
+                    "Append" => std::fs::OpenOptions::new()
+                        .append(true)
+                        .create(true)
+                        .open(&path),
+                    "ReadWrite" => std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .create(true)
+                        .truncate(false)
+                        .open(&path),
+                    "WriteAppend" => std::fs::OpenOptions::new()
+                        .append(true)
+                        .create(true)
+                        .open(&path),
+                    _ => {
+                        return Ok(make_err(make_io_error(
+                            "EINVAL",
+                            &format!("invalid file mode: {}", mode),
+                        )));
+                    }
+                };
+                match result {
+                    Ok(file) => {
+                        let handle_id = self.resources.insert_file(file);
+                        Ok(make_ok(self.make_file_object(handle_id)))
+                    }
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+
+            // --- File handle methods ---
+            "File.read" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let max_bytes = expect_usize(args, 1, "File.read: maxBytes")?;
+                self.resources.with_file(handle_id, |file| {
+                    let mut buf = vec![0u8; max_bytes];
+                    match file.read(&mut buf) {
+                        Ok(n) => {
+                            buf.truncate(n);
+                            match String::from_utf8(buf) {
+                                Ok(s) => Ok(make_ok(Value::String(s))),
+                                Err(e) => Ok(make_err(make_io_error("EILSEQ", &e.to_string()))),
+                            }
+                        }
+                        Err(e) => Ok(make_err(io_error_from(&e))),
+                    }
+                })
+            }
+            "File.readBytes" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let max_bytes = expect_usize(args, 1, "File.readBytes: maxBytes")?;
+                self.resources.with_file(handle_id, |file| {
+                    let mut buf = vec![0u8; max_bytes];
+                    match file.read(&mut buf) {
+                        Ok(n) => {
+                            buf.truncate(n);
+                            let arr = buf.into_iter().map(|b| Value::Number(b as f64)).collect();
+                            Ok(make_ok(Value::Array(arr)))
+                        }
+                        Err(e) => Ok(make_err(io_error_from(&e))),
+                    }
+                })
+            }
+            "File.write" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let data = expect_string(args, 1, "File.write: data")?;
+                self.resources
+                    .with_file(handle_id, |file| match file.write(data.as_bytes()) {
+                        Ok(n) => Ok(make_ok(Value::Number(n as f64))),
+                        Err(e) => Ok(make_err(io_error_from(&e))),
+                    })
+            }
+            "File.writeBytes" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let data = expect_byte_array(args, 1, "File.writeBytes: data")?;
+                self.resources
+                    .with_file(handle_id, |file| match file.write(&data) {
+                        Ok(n) => Ok(make_ok(Value::Number(n as f64))),
+                        Err(e) => Ok(make_err(io_error_from(&e))),
+                    })
+            }
+            "File.seek" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let offset = expect_number(args, 1, "File.seek: offset")? as i64;
+                let whence = expect_string(args, 2, "File.seek: whence")
+                    .unwrap_or_else(|_| "Start".to_string());
+                let seek_from = match whence.as_str() {
+                    "Start" => std::io::SeekFrom::Start(offset as u64),
+                    "Current" => std::io::SeekFrom::Current(offset),
+                    "End" => std::io::SeekFrom::End(offset),
+                    _ => {
+                        return Ok(make_err(make_io_error(
+                            "EINVAL",
+                            &format!("invalid seek whence: {}", whence),
+                        )));
+                    }
+                };
+                self.resources
+                    .with_file(handle_id, |file| match file.seek(seek_from) {
+                        Ok(_) => Ok(make_ok(Value::Undefined)),
+                        Err(e) => Ok(make_err(io_error_from(&e))),
+                    })
+            }
+            "File.close" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                match self.resources.remove_file(handle_id) {
+                    Ok(_file) => Ok(make_ok(Value::Undefined)), // file dropped, closes fd
+                    Err(e) => Err(e),
+                }
+            }
+
+            // --- std:net ---
+            "net.bind" => {
+                let addr = expect_string(args, 0, "bind: addr")?;
+                let port = expect_number(args, 1, "bind: port")? as u16;
+                match std::net::TcpListener::bind(format!("{}:{}", addr, port)) {
+                    Ok(listener) => {
+                        let handle_id = self.resources.insert_tcp_listener(listener);
+                        Ok(make_ok(self.make_tcp_listener_object(handle_id)))
+                    }
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "net.connect" => {
+                let addr = expect_string(args, 0, "connect: addr")?;
+                let port = expect_number(args, 1, "connect: port")? as u16;
+                match std::net::TcpStream::connect(format!("{}:{}", addr, port)) {
+                    Ok(stream) => {
+                        let handle_id = self.resources.insert_tcp_stream(stream);
+                        Ok(make_ok(self.make_tcp_stream_object(handle_id)))
+                    }
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "net.bindUdp" => {
+                let addr = expect_string(args, 0, "bindUdp: addr")?;
+                let port = expect_number(args, 1, "bindUdp: port")? as u16;
+                match std::net::UdpSocket::bind(format!("{}:{}", addr, port)) {
+                    Ok(socket) => {
+                        let handle_id = self.resources.insert_udp_socket(socket);
+                        Ok(make_ok(self.make_udp_socket_object(handle_id)))
+                    }
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+            "net.resolve" => {
+                let hostname = expect_string(args, 0, "resolve: hostname")?;
+                match std::net::ToSocketAddrs::to_socket_addrs(&format!("{}:0", hostname)) {
+                    Ok(addrs) => {
+                        let ips: Vec<Value> =
+                            addrs.map(|a| Value::String(a.ip().to_string())).collect();
+                        Ok(make_ok(Value::Array(ips)))
+                    }
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+
+            // --- TcpListener methods ---
+            "TcpListener.accept" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                // Accept outside the borrow so we can insert the stream
+                let accept_result = {
+                    let mut inner = self.resources.inner.borrow_mut();
+                    let listener = inner.tcp_listeners.get_mut(&handle_id).ok_or_else(|| {
+                        RuntimeError::TypeError("invalid tcp listener handle".to_string())
+                    })?;
+                    listener
+                        .accept()
+                        .map_err(|e| RuntimeError::TypeError(e.to_string()))
+                };
+                match accept_result {
+                    Ok((stream, _addr)) => {
+                        let stream_id = self.resources.insert_tcp_stream(stream);
+                        Ok(make_ok(self.make_tcp_stream_object(stream_id)))
+                    }
+                    Err(e) => Ok(make_err(make_io_error("EIO", &e.to_string()))),
+                }
+            }
+            "TcpListener.close" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                match self.resources.remove_tcp_listener(handle_id) {
+                    Ok(_) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Err(e),
+                }
+            }
+            "TcpListener.localAddr" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                self.resources.with_tcp_listener(handle_id, |listener| {
+                    match listener.local_addr() {
+                        Ok(addr) => Ok(Value::String(addr.to_string())),
+                        Err(e) => Err(RuntimeError::TypeError(e.to_string())),
+                    }
+                })
+            }
+
+            // --- TcpStream methods ---
+            "TcpStream.read" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let max_bytes = expect_usize(args, 1, "TcpStream.read: maxBytes")?;
+                self.resources.with_tcp_stream(handle_id, |stream| {
+                    let mut buf = vec![0u8; max_bytes];
+                    match stream.read(&mut buf) {
+                        Ok(n) => {
+                            buf.truncate(n);
+                            match String::from_utf8(buf) {
+                                Ok(s) => Ok(make_ok(Value::String(s))),
+                                Err(e) => Ok(make_err(make_io_error("EILSEQ", &e.to_string()))),
+                            }
+                        }
+                        Err(e) => Ok(make_err(io_error_from(&e))),
+                    }
+                })
+            }
+            "TcpStream.write" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let data = expect_string(args, 1, "TcpStream.write: data")?;
+                self.resources.with_tcp_stream(handle_id, |stream| {
+                    match stream.write(data.as_bytes()) {
+                        Ok(n) => Ok(make_ok(Value::Number(n as f64))),
+                        Err(e) => Ok(make_err(io_error_from(&e))),
+                    }
+                })
+            }
+            "TcpStream.shutdown" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                self.resources.with_tcp_stream(handle_id, |stream| {
+                    match stream.shutdown(std::net::Shutdown::Write) {
+                        Ok(()) => Ok(make_ok(Value::Undefined)),
+                        Err(e) => Ok(make_err(io_error_from(&e))),
+                    }
+                })
+            }
+            "TcpStream.close" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                match self.resources.remove_tcp_stream(handle_id) {
+                    Ok(_) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Err(e),
+                }
+            }
+            "TcpStream.peerAddr" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                self.resources
+                    .with_tcp_stream(handle_id, |stream| match stream.peer_addr() {
+                        Ok(addr) => Ok(Value::String(addr.to_string())),
+                        Err(e) => Err(RuntimeError::TypeError(e.to_string())),
+                    })
+            }
+
+            // --- UdpSocket methods ---
+            "UdpSocket.sendTo" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let data = expect_string(args, 1, "UdpSocket.sendTo: data")?;
+                let addr = expect_string(args, 2, "UdpSocket.sendTo: addr")?;
+                let port = expect_number(args, 3, "UdpSocket.sendTo: port")? as u16;
+                self.resources.with_udp_socket(handle_id, |socket| {
+                    match socket.send_to(data.as_bytes(), format!("{}:{}", addr, port)) {
+                        Ok(n) => Ok(make_ok(Value::Number(n as f64))),
+                        Err(e) => Ok(make_err(io_error_from(&e))),
+                    }
+                })
+            }
+            "UdpSocket.recvFrom" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let max_bytes = expect_usize(args, 1, "UdpSocket.recvFrom: maxBytes")?;
+                self.resources.with_udp_socket(handle_id, |socket| {
+                    let mut buf = vec![0u8; max_bytes];
+                    match socket.recv_from(&mut buf) {
+                        Ok((n, addr)) => {
+                            buf.truncate(n);
+                            let mut msg = HashMap::new();
+                            msg.insert(
+                                "data".to_string(),
+                                Value::String(String::from_utf8_lossy(&buf).to_string()),
+                            );
+                            msg.insert("addr".to_string(), Value::String(addr.ip().to_string()));
+                            msg.insert("port".to_string(), Value::Number(addr.port() as f64));
+                            Ok(make_ok(Value::Object(Rc::new(RefCell::new(msg)))))
+                        }
+                        Err(e) => Ok(make_err(io_error_from(&e))),
+                    }
+                })
+            }
+            "UdpSocket.close" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                match self.resources.remove_udp_socket(handle_id) {
+                    Ok(_) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Err(e),
+                }
+            }
+
+            // --- std:http ---
+            "http.get" => {
+                let url = expect_string(args, 0, "get: url")?;
+                match ureq::get(&url).call() {
+                    Ok(resp) => Ok(make_ok(self.ureq_response_to_value(resp))),
+                    Err(e) => Ok(make_err(http_error_from(&e))),
+                }
+            }
+            "http.post" => {
+                let url = expect_string(args, 0, "post: url")?;
+                let body = expect_string(args, 1, "post: body")?;
+                let req = ureq::post(&url);
+                let req = self.apply_headers_arg(req, args, 2);
+                match req.send_string(&body) {
+                    Ok(resp) => Ok(make_ok(self.ureq_response_to_value(resp))),
+                    Err(e) => Ok(make_err(http_error_from(&e))),
+                }
+            }
+            "http.put" => {
+                let url = expect_string(args, 0, "put: url")?;
+                let body = expect_string(args, 1, "put: body")?;
+                let req = ureq::put(&url);
+                let req = self.apply_headers_arg(req, args, 2);
+                match req.send_string(&body) {
+                    Ok(resp) => Ok(make_ok(self.ureq_response_to_value(resp))),
+                    Err(e) => Ok(make_err(http_error_from(&e))),
+                }
+            }
+            "http.del" => {
+                let url = expect_string(args, 0, "del: url")?;
+                match ureq::delete(&url).call() {
+                    Ok(resp) => Ok(make_ok(self.ureq_response_to_value(resp))),
+                    Err(e) => Ok(make_err(http_error_from(&e))),
+                }
+            }
+            "http.request" => {
+                // args[0] is a RequestOptions object
+                if let Some(Value::Object(opts)) = args.first() {
+                    let opts = opts.borrow();
+                    let method = opts
+                        .get("method")
+                        .and_then(|v| {
+                            if let Value::String(s) = v {
+                                Some(strip_quotes(s))
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_else(|| "GET".to_string());
+                    let url = opts
+                        .get("url")
+                        .and_then(|v| {
+                            if let Value::String(s) = v {
+                                Some(strip_quotes(s))
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_default();
+                    let body = opts
+                        .get("body")
+                        .and_then(|v| {
+                            if let Value::String(s) = v {
+                                Some(strip_quotes(s))
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_default();
+
+                    let req = ureq::request(&method, &url);
+                    let result = if body.is_empty() {
+                        req.call()
+                    } else {
+                        req.send_string(&body)
+                    };
+                    match result {
+                        Ok(resp) => Ok(make_ok(self.ureq_response_to_value(resp))),
+                        Err(e) => Ok(make_err(http_error_from(&e))),
+                    }
+                } else {
+                    Ok(make_err(make_io_error(
+                        "EINVAL",
+                        "request expects RequestOptions object",
+                    )))
+                }
+            }
+            "http.createHeaders" => {
+                let obj = HashMap::new();
+                Ok(self.make_headers_object(obj))
+            }
+            "http.serve" => {
+                let port = expect_number(args, 0, "serve: port")? as u16;
+                let handler = args.get(1).cloned().unwrap_or(Value::Undefined);
+
+                let addr = format!("0.0.0.0:{}", port);
+                match tiny_http::Server::http(&addr) {
+                    Ok(server) => {
+                        let bound_addr = server
+                            .server_addr()
+                            .to_ip()
+                            .map(|a| a.to_string())
+                            .unwrap_or_else(|| addr.clone());
+
+                        // Process requests in a loop until close is called.
+                        // For now, process one request then return (blocking server
+                        // needs threading which is out of scope for the interpreter).
+                        // We'll handle a batch of requests then return the server handle.
+                        // Store the server so it can be closed.
+                        let server_rc = Rc::new(RefCell::new(Some(server)));
+                        // Spawn a blocking request-handling loop
+                        // For the runtime interpreter, we process requests synchronously
+                        if let Value::Function(ref _func) = handler {
+                            let srv = server_rc.clone();
+                            // Process a single request (blocking server model)
+                            let maybe_req = {
+                                let guard = srv.borrow();
+                                if let Some(ref server) = *guard {
+                                    server
+                                        .recv_timeout(std::time::Duration::from_millis(100))
+                                        .ok()
+                                        .flatten()
+                                } else {
+                                    None
+                                }
+                            };
+                            {
+                                if let Some(request) = maybe_req {
+                                    // Build HttpRequest value
+                                    let mut req_obj = HashMap::new();
+                                    req_obj.insert(
+                                        "method".to_string(),
+                                        Value::String(request.method().to_string()),
+                                    );
+                                    req_obj.insert(
+                                        "url".to_string(),
+                                        Value::String(request.url().to_string()),
+                                    );
+                                    req_obj
+                                        .insert("body".to_string(), Value::String(String::new()));
+
+                                    let mut req_headers = HashMap::new();
+                                    for header in request.headers() {
+                                        req_headers.insert(
+                                            header.field.as_str().as_str().to_lowercase(),
+                                            Value::String(header.value.as_str().to_string()),
+                                        );
+                                    }
+                                    req_obj.insert(
+                                        "headers".to_string(),
+                                        self.make_headers_object(req_headers),
+                                    );
+
+                                    // Build HttpResponse value
+                                    let response_data = Rc::new(RefCell::new((
+                                        200u16,
+                                        HashMap::<String, String>::new(),
+                                        String::new(),
+                                    )));
+                                    let rd = response_data.clone();
+
+                                    let mut res_obj = HashMap::new();
+                                    res_obj
+                                        .insert("__response_data".to_string(), Value::Number(0.0)); // placeholder
+                                    res_obj.insert(
+                                        "setStatus".to_string(),
+                                        Value::NativeFunction(NativeFunction {
+                                            name: "HttpResponse.setStatus".to_string(),
+                                        }),
+                                    );
+                                    res_obj.insert(
+                                        "setHeader".to_string(),
+                                        Value::NativeFunction(NativeFunction {
+                                            name: "HttpResponse.setHeader".to_string(),
+                                        }),
+                                    );
+                                    res_obj.insert(
+                                        "send".to_string(),
+                                        Value::NativeFunction(NativeFunction {
+                                            name: "HttpResponse.send".to_string(),
+                                        }),
+                                    );
+
+                                    let req_val = Value::Object(Rc::new(RefCell::new(req_obj)));
+                                    let res_val = Value::Object(Rc::new(RefCell::new(res_obj)));
+
+                                    // Call the handler
+                                    let _ = self.call_value(handler.clone(), &[req_val, res_val]);
+
+                                    // Send the response
+                                    let (status, ref hdrs, ref body) = *rd.borrow();
+                                    let mut response =
+                                        tiny_http::Response::from_string(body.clone())
+                                            .with_status_code(tiny_http::StatusCode(status));
+                                    for (k, v) in hdrs {
+                                        if let Ok(header) = tiny_http::Header::from_bytes(
+                                            k.as_bytes(),
+                                            v.as_bytes(),
+                                        ) {
+                                            response = response.with_header(header);
+                                        }
+                                    }
+                                    let _ = request.respond(response);
+                                }
+                            }
+                        }
+
+                        // Return server handle
+                        let mut obj = HashMap::new();
+                        obj.insert("__addr".to_string(), Value::String(bound_addr));
+                        obj.insert(
+                            "close".to_string(),
+                            Value::NativeFunction(NativeFunction {
+                                name: "HttpServer.close".to_string(),
+                            }),
+                        );
+                        obj.insert(
+                            "addr".to_string(),
+                            Value::NativeFunction(NativeFunction {
+                                name: "HttpServer.addr".to_string(),
+                            }),
+                        );
+                        let server_val = Value::Object(Rc::new(RefCell::new(obj)));
+                        Ok(make_ok(server_val))
+                    }
+                    Err(e) => Ok(make_err(make_io_error("EADDRINUSE", &e.to_string()))),
+                }
+            }
+            "HttpServer.close" => {
+                // Server close is a no-op in the simple runtime model
+                // (the server goes out of scope when the handle is dropped)
+                Ok(make_ok(Value::Undefined))
+            }
+            "HttpServer.addr" => {
+                if let Some(Value::Object(obj)) = args.first() {
+                    let map = obj.borrow();
+                    match map.get("__addr") {
+                        Some(Value::String(a)) => Ok(Value::String(a.clone())),
+                        _ => Ok(Value::String(String::new())),
+                    }
+                } else {
+                    Ok(Value::String(String::new()))
+                }
+            }
+
+            // --- Headers methods ---
+            "Headers.get" => {
+                if let Some(Value::Object(obj)) = args.first() {
+                    let name = expect_string(args, 1, "Headers.get: name")?;
+                    let map = obj.borrow();
+                    match map.get(&name.to_lowercase()) {
+                        Some(Value::String(v)) => Ok(make_ok(Value::String(v.clone()))),
+                        _ => Ok(make_err(make_io_error("ENOENT", "header not found"))),
+                    }
+                } else {
+                    Ok(make_err(make_io_error("EINVAL", "invalid headers object")))
+                }
+            }
+            "Headers.set" => {
+                if let Some(Value::Object(obj)) = args.first() {
+                    let name = expect_string(args, 1, "Headers.set: name")?;
+                    let value = expect_string(args, 2, "Headers.set: value")?;
+                    obj.borrow_mut()
+                        .insert(name.to_lowercase(), Value::String(value));
+                }
+                Ok(Value::Undefined)
+            }
+            "Headers.has" => {
+                if let Some(Value::Object(obj)) = args.first() {
+                    let name = expect_string(args, 1, "Headers.has: name")?;
+                    Ok(Value::Boolean(
+                        obj.borrow().contains_key(&name.to_lowercase()),
+                    ))
+                } else {
+                    Ok(Value::Boolean(false))
+                }
+            }
+            "Headers.delete" => {
+                if let Some(Value::Object(obj)) = args.first() {
+                    let name = expect_string(args, 1, "Headers.delete: name")?;
+                    obj.borrow_mut().remove(&name.to_lowercase());
+                }
+                Ok(Value::Undefined)
+            }
+            "Headers.entries" => {
+                if let Some(Value::Object(obj)) = args.first() {
+                    let entries: Vec<Value> = obj
+                        .borrow()
+                        .iter()
+                        .filter(|(k, _)| {
+                            !k.starts_with("__")
+                                && !k.starts_with("get")
+                                && !k.starts_with("set")
+                                && !k.starts_with("has")
+                                && !k.starts_with("delete")
+                                && !k.starts_with("entries")
+                        })
+                        .map(|(k, v)| {
+                            let mut entry = HashMap::new();
+                            entry.insert("name".to_string(), Value::String(k.clone()));
+                            entry.insert("value".to_string(), v.clone());
+                            Value::Object(Rc::new(RefCell::new(entry)))
+                        })
+                        .collect();
+                    Ok(Value::Array(entries))
+                } else {
+                    Ok(Value::Array(Vec::new()))
+                }
+            }
+
+            // --- std:ws ---
+            "ws.wsConnect" => {
+                let url = expect_string(args, 0, "wsConnect: url")?;
+                match tungstenite::connect(&url) {
+                    Ok((ws, _response)) => {
+                        let handle_id = self.resources.insert_ws(WsConn::Client(ws));
+                        Ok(make_ok(self.make_ws_connection_object(handle_id)))
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        Ok(make_err(make_io_error("WS_ERROR", &msg)))
+                    }
+                }
+            }
+            "ws.wsListen" => {
+                let addr = expect_string(args, 0, "wsListen: addr")?;
+                let port = expect_number(args, 1, "wsListen: port")? as u16;
+                match std::net::TcpListener::bind(format!("{}:{}", addr, port)) {
+                    Ok(listener) => {
+                        let handle_id = self.resources.insert_tcp_listener(listener);
+                        Ok(make_ok(self.make_ws_server_object(handle_id)))
+                    }
+                    Err(e) => Ok(make_err(io_error_from(&e))),
+                }
+            }
+
+            // --- WsConnection methods ---
+            "WsConnection.send" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let data = expect_string(args, 1, "WsConnection.send: data")?;
+                self.resources.with_ws(handle_id, |ws| {
+                    match ws.send(tungstenite::Message::Text(data.clone())) {
+                        Ok(()) => Ok(make_ok(Value::Undefined)),
+                        Err(e) => Ok(make_err(ws_error_from(&e))),
+                    }
+                })
+            }
+            "WsConnection.sendBytes" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let data = expect_byte_array(args, 1, "WsConnection.sendBytes: data")?;
+                self.resources.with_ws(handle_id, |ws| {
+                    match ws.send(tungstenite::Message::Binary(data.clone())) {
+                        Ok(()) => Ok(make_ok(Value::Undefined)),
+                        Err(e) => Ok(make_err(ws_error_from(&e))),
+                    }
+                })
+            }
+            "WsConnection.recv" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                self.resources.with_ws(handle_id, |ws| match ws.read() {
+                    Ok(msg) => {
+                        let mut obj = HashMap::new();
+                        match msg {
+                            tungstenite::Message::Text(text) => {
+                                obj.insert("data".to_string(), Value::String(text.to_string()));
+                                obj.insert("bytes".to_string(), Value::Array(Vec::new()));
+                                obj.insert("isText".to_string(), Value::Boolean(true));
+                                obj.insert("isBinary".to_string(), Value::Boolean(false));
+                            }
+                            tungstenite::Message::Binary(bytes) => {
+                                obj.insert("data".to_string(), Value::String(String::new()));
+                                let arr = bytes.iter().map(|b| Value::Number(*b as f64)).collect();
+                                obj.insert("bytes".to_string(), Value::Array(arr));
+                                obj.insert("isText".to_string(), Value::Boolean(false));
+                                obj.insert("isBinary".to_string(), Value::Boolean(true));
+                            }
+                            tungstenite::Message::Ping(_) | tungstenite::Message::Pong(_) => {
+                                obj.insert("data".to_string(), Value::String(String::new()));
+                                obj.insert("bytes".to_string(), Value::Array(Vec::new()));
+                                obj.insert("isText".to_string(), Value::Boolean(false));
+                                obj.insert("isBinary".to_string(), Value::Boolean(false));
+                            }
+                            tungstenite::Message::Close(_) => {
+                                return Ok(make_err(make_io_error(
+                                    "WS_CLOSED",
+                                    "connection closed",
+                                )));
+                            }
+                            _ => {
+                                obj.insert("data".to_string(), Value::String(String::new()));
+                                obj.insert("bytes".to_string(), Value::Array(Vec::new()));
+                                obj.insert("isText".to_string(), Value::Boolean(false));
+                                obj.insert("isBinary".to_string(), Value::Boolean(false));
+                            }
+                        }
+                        Ok(make_ok(Value::Object(Rc::new(RefCell::new(obj)))))
+                    }
+                    Err(e) => Ok(make_err(ws_error_from(&e))),
+                })
+            }
+            "WsConnection.ping" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                self.resources.with_ws(handle_id, |ws| {
+                    match ws.send(tungstenite::Message::Ping(Vec::new())) {
+                        Ok(()) => Ok(make_ok(Value::Undefined)),
+                        Err(e) => Ok(make_err(ws_error_from(&e))),
+                    }
+                })
+            }
+            "WsConnection.close" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                let code = args
+                    .get(1)
+                    .and_then(|v| {
+                        if let Value::Number(n) = v {
+                            Some(*n as u16)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(1000);
+                let reason = args
+                    .get(2)
+                    .and_then(|v| {
+                        if let Value::String(s) = v {
+                            Some(strip_quotes(s))
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
+                let close_frame = tungstenite::protocol::CloseFrame {
+                    code: tungstenite::protocol::frame::coding::CloseCode::from(code),
+                    reason: reason.into(),
+                };
+                self.resources.with_ws(handle_id, |ws| {
+                    match ws.close(Some(close_frame.clone())) {
+                        Ok(()) => Ok(make_ok(Value::Undefined)),
+                        Err(e) => Ok(make_err(ws_error_from(&e))),
+                    }
+                })?;
+                // Remove from resource table
+                let _ = self.resources.remove_ws(handle_id);
+                Ok(make_ok(Value::Undefined))
+            }
+            "WsConnection.isOpen" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                self.resources
+                    .with_ws(handle_id, |ws| Ok(Value::Boolean(ws.can_write())))
+            }
+
+            // --- WsServer methods ---
+            "WsServer.accept" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                // Accept TCP connection, then upgrade to WebSocket
+                let accept_result = {
+                    let mut inner = self.resources.inner.borrow_mut();
+                    let listener = inner.tcp_listeners.get_mut(&handle_id).ok_or_else(|| {
+                        RuntimeError::TypeError("invalid ws server handle".to_string())
+                    })?;
+                    listener
+                        .accept()
+                        .map_err(|e| RuntimeError::TypeError(e.to_string()))
+                };
+                match accept_result {
+                    Ok((stream, _addr)) => match tungstenite::accept(stream) {
+                        Ok(ws) => {
+                            let ws_id = self.resources.insert_ws(WsConn::Server(ws));
+                            Ok(make_ok(self.make_ws_connection_object(ws_id)))
+                        }
+                        Err(e) => {
+                            let msg = e.to_string();
+                            Ok(make_err(make_io_error("WS_HANDSHAKE_ERROR", &msg)))
+                        }
+                    },
+                    Err(e) => Ok(make_err(make_io_error("EIO", &e.to_string()))),
+                }
+            }
+            "WsServer.close" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                match self.resources.remove_tcp_listener(handle_id) {
+                    Ok(_) => Ok(make_ok(Value::Undefined)),
+                    Err(e) => Err(e),
+                }
+            }
+            // --- std:async ---
+            "async.sleep" => {
+                let ms = expect_number(args, 0, "sleep: ms")? as u64;
+                let future: BoxFuture = Box::pin(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                    Value::Undefined
+                });
+                Ok(Value::Future(Rc::new(RefCell::new(Some(future)))))
+            }
+            "async.spawn" => {
+                // In the single-threaded interpreter, spawn just runs the future immediately
+                // (no true concurrency). Returns a Task-like value.
+                Ok(Value::Undefined)
+            }
+
+            // --- Async fs ---
+            "fs.readFileAsync" => {
+                let path = expect_string(args, 0, "readFileAsync: path")?;
+                let future: BoxFuture = Box::pin(async move {
+                    match tokio::fs::read_to_string(&path).await {
+                        Ok(content) => make_ok(Value::String(content)),
+                        Err(e) => make_err(io_error_from(&e)),
+                    }
+                });
+                Ok(Value::Future(Rc::new(RefCell::new(Some(future)))))
+            }
+            "fs.writeFileAsync" => {
+                let path = expect_string(args, 0, "writeFileAsync: path")?;
+                let content = expect_string(args, 1, "writeFileAsync: content")?;
+                let future: BoxFuture = Box::pin(async move {
+                    match tokio::fs::write(&path, &content).await {
+                        Ok(()) => make_ok(Value::Undefined),
+                        Err(e) => make_err(io_error_from(&e)),
+                    }
+                });
+                Ok(Value::Future(Rc::new(RefCell::new(Some(future)))))
+            }
+            "fs.readBytesAsync" => {
+                let path = expect_string(args, 0, "readBytesAsync: path")?;
+                let future: BoxFuture = Box::pin(async move {
+                    match tokio::fs::read(&path).await {
+                        Ok(bytes) => {
+                            let arr = bytes.into_iter().map(|b| Value::Number(b as f64)).collect();
+                            make_ok(Value::Array(arr))
+                        }
+                        Err(e) => make_err(io_error_from(&e)),
+                    }
+                });
+                Ok(Value::Future(Rc::new(RefCell::new(Some(future)))))
+            }
+            "fs.writeBytesAsync" => {
+                let path = expect_string(args, 0, "writeBytesAsync: path")?;
+                let data = expect_byte_array(args, 1, "writeBytesAsync: data")?;
+                let future: BoxFuture = Box::pin(async move {
+                    match tokio::fs::write(&path, &data).await {
+                        Ok(()) => make_ok(Value::Undefined),
+                        Err(e) => make_err(io_error_from(&e)),
+                    }
+                });
+                Ok(Value::Future(Rc::new(RefCell::new(Some(future)))))
+            }
+            "fs.appendFileAsync" => {
+                let path = expect_string(args, 0, "appendFileAsync: path")?;
+                let content = expect_string(args, 1, "appendFileAsync: content")?;
+                let future: BoxFuture = Box::pin(async move {
+                    match tokio::fs::OpenOptions::new()
+                        .append(true)
+                        .create(true)
+                        .open(&path)
+                        .await
+                    {
+                        Ok(mut file) => {
+                            use tokio::io::AsyncWriteExt;
+                            match file.write_all(content.as_bytes()).await {
+                                Ok(()) => make_ok(Value::Undefined),
+                                Err(e) => make_err(io_error_from(&e)),
+                            }
+                        }
+                        Err(e) => make_err(io_error_from(&e)),
+                    }
+                });
+                Ok(Value::Future(Rc::new(RefCell::new(Some(future)))))
+            }
+            "fs.readDirAsync" | "fs.statAsync" | "fs.copyAsync" => {
+                // These async variants fall back to sync for now
+                // (tokio::fs covers read/write but readdir/stat/copy are less common)
+                let sync_name = name.trim_end_matches("Async");
+                self.execute_native_function(sync_name, args)
+            }
+
+            // --- Async net ---
+            "net.connectAsync" => {
+                let addr = expect_string(args, 0, "connectAsync: addr")?;
+                let port = expect_number(args, 1, "connectAsync: port")? as u16;
+                let resources = self.resources.clone();
+                let future: BoxFuture = Box::pin(async move {
+                    let addr_str = format!("{}:{}", addr, port);
+                    match tokio::net::TcpStream::connect(&addr_str).await {
+                        Ok(stream) => {
+                            // Convert tokio stream to std stream for our resource table
+                            match stream.into_std() {
+                                Ok(std_stream) => {
+                                    let handle_id = resources.insert_tcp_stream(std_stream);
+                                    let mut obj = HashMap::new();
+                                    obj.insert(
+                                        "__handle".to_string(),
+                                        Value::Number(handle_id as f64),
+                                    );
+                                    for method in
+                                        &["read", "write", "shutdown", "close", "peerAddr"]
+                                    {
+                                        obj.insert(
+                                            method.to_string(),
+                                            Value::NativeFunction(NativeFunction {
+                                                name: format!("TcpStream.{}", method),
+                                            }),
+                                        );
+                                    }
+                                    make_ok(Value::Object(Rc::new(RefCell::new(obj))))
+                                }
+                                Err(e) => make_err(io_error_from(&e)),
+                            }
+                        }
+                        Err(e) => make_err(io_error_from(&e)),
+                    }
+                });
+                Ok(Value::Future(Rc::new(RefCell::new(Some(future)))))
+            }
+
+            // --- Async http ---
+            "http.getAsync" => {
+                let url = expect_string(args, 0, "getAsync: url")?;
+                let future: BoxFuture = Box::pin(async move {
+                    // Use blocking ureq in a spawn_blocking context
+                    match tokio::task::spawn_blocking(move || {
+                        ureq::get(&url).call().map_err(|e| ureq_error_to_pair(&e))
+                    })
+                    .await
+                    {
+                        Ok(Ok(resp)) => {
+                            let status = resp.status() as f64;
+                            let body = resp.into_string().unwrap_or_default();
+                            let mut obj = HashMap::new();
+                            obj.insert("status".to_string(), Value::Number(status));
+                            obj.insert("body".to_string(), Value::String(body));
+                            obj.insert(
+                                "headers".to_string(),
+                                Value::Object(Rc::new(RefCell::new(HashMap::new()))),
+                            );
+                            make_ok(Value::Object(Rc::new(RefCell::new(obj))))
+                        }
+                        Ok(Err((code, msg))) => make_err(make_io_error(&code, &msg)),
+                        Err(e) => make_err(make_io_error("EIO", &e.to_string())),
+                    }
+                });
+                Ok(Value::Future(Rc::new(RefCell::new(Some(future)))))
+            }
+            "http.postAsync" => {
+                let url = expect_string(args, 0, "postAsync: url")?;
+                let body = expect_string(args, 1, "postAsync: body")?;
+                let future: BoxFuture = Box::pin(async move {
+                    match tokio::task::spawn_blocking(move || {
+                        ureq::post(&url)
+                            .send_string(&body)
+                            .map_err(|e| ureq_error_to_pair(&e))
+                    })
+                    .await
+                    {
+                        Ok(Ok(resp)) => {
+                            let status = resp.status() as f64;
+                            let rbody = resp.into_string().unwrap_or_default();
+                            let mut obj = HashMap::new();
+                            obj.insert("status".to_string(), Value::Number(status));
+                            obj.insert("body".to_string(), Value::String(rbody));
+                            obj.insert(
+                                "headers".to_string(),
+                                Value::Object(Rc::new(RefCell::new(HashMap::new()))),
+                            );
+                            make_ok(Value::Object(Rc::new(RefCell::new(obj))))
+                        }
+                        Ok(Err((code, msg))) => make_err(make_io_error(&code, &msg)),
+                        Err(e) => make_err(make_io_error("EIO", &e.to_string())),
+                    }
+                });
+                Ok(Value::Future(Rc::new(RefCell::new(Some(future)))))
+            }
+            "http.putAsync" | "http.delAsync" | "http.requestAsync" => {
+                // Fall back to sync for less common methods
+                let sync_name = name.trim_end_matches("Async");
+                self.execute_native_function(sync_name, args)
+            }
+
+            // --- Async ws ---
+            "ws.wsConnectAsync" => {
+                let url = expect_string(args, 0, "wsConnectAsync: url")?;
+                let resources = self.resources.clone();
+                let future: BoxFuture = Box::pin(async move {
+                    match tokio::task::spawn_blocking(move || {
+                        tungstenite::connect(&url).map_err(|e| e.to_string())
+                    })
+                    .await
+                    {
+                        Ok(Ok((ws, _response))) => {
+                            let handle_id = resources.insert_ws(WsConn::Client(ws));
+                            let mut obj = HashMap::new();
+                            obj.insert("__handle".to_string(), Value::Number(handle_id as f64));
+                            for method in &["send", "sendBytes", "recv", "ping", "close", "isOpen"]
+                            {
+                                obj.insert(
+                                    method.to_string(),
+                                    Value::NativeFunction(NativeFunction {
+                                        name: format!("WsConnection.{}", method),
+                                    }),
+                                );
+                            }
+                            make_ok(Value::Object(Rc::new(RefCell::new(obj))))
+                        }
+                        Ok(Err(e)) => make_err(make_io_error("WS_ERROR", &e)),
+                        Err(e) => make_err(make_io_error("EIO", &e.to_string())),
+                    }
+                });
+                Ok(Value::Future(Rc::new(RefCell::new(Some(future)))))
+            }
+
+            "WsServer.addr" => {
+                let handle_id = expect_handle_id(args, 0)?;
+                self.resources.with_tcp_listener(handle_id, |listener| {
+                    match listener.local_addr() {
+                        Ok(addr) => Ok(Value::String(addr.to_string())),
+                        Err(e) => Err(RuntimeError::TypeError(e.to_string())),
+                    }
+                })
+            }
+
             _ => Ok(Value::Undefined),
         }
+    }
+
+    /// Convert a ureq Response to an Argon Value.
+    fn ureq_response_to_value(&self, resp: ureq::Response) -> Value {
+        let status = resp.status() as f64;
+        // Collect headers
+        let mut headers_map = HashMap::new();
+        for name in resp.headers_names() {
+            if let Some(value) = resp.header(&name) {
+                headers_map.insert(name.to_lowercase(), Value::String(value.to_string()));
+            }
+        }
+        let headers = self.make_headers_object(headers_map);
+        // Read body
+        let body = resp.into_string().unwrap_or_default();
+
+        let mut obj = HashMap::new();
+        obj.insert("status".to_string(), Value::Number(status));
+        obj.insert("headers".to_string(), headers);
+        obj.insert("body".to_string(), Value::String(body));
+        Value::Object(Rc::new(RefCell::new(obj)))
+    }
+
+    /// Apply headers from an argument (if present) to a ureq request.
+    fn apply_headers_arg(
+        &self,
+        mut req: ureq::Request,
+        args: &[Value],
+        idx: usize,
+    ) -> ureq::Request {
+        if let Some(Value::Object(headers_obj)) = args.get(idx) {
+            let map = headers_obj.borrow();
+            for (key, val) in map.iter() {
+                if !key.starts_with("__")
+                    && !matches!(key.as_str(), "get" | "set" | "has" | "delete" | "entries")
+                {
+                    if let Value::String(v) = val {
+                        req = req.set(key, &strip_quotes(v));
+                    }
+                }
+            }
+        }
+        req
+    }
+
+    /// Create WsConnection intrinsic struct object.
+    fn make_ws_connection_object(&self, handle_id: u64) -> Value {
+        let mut obj = HashMap::new();
+        obj.insert("__handle".to_string(), Value::Number(handle_id as f64));
+        for method in &["send", "sendBytes", "recv", "ping", "close", "isOpen"] {
+            obj.insert(
+                method.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("WsConnection.{}", method),
+                }),
+            );
+        }
+        Value::Object(Rc::new(RefCell::new(obj)))
+    }
+
+    /// Create WsServer intrinsic struct object.
+    fn make_ws_server_object(&self, handle_id: u64) -> Value {
+        let mut obj = HashMap::new();
+        obj.insert("__handle".to_string(), Value::Number(handle_id as f64));
+        for method in &["accept", "close", "addr"] {
+            obj.insert(
+                method.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("WsServer.{}", method),
+                }),
+            );
+        }
+        Value::Object(Rc::new(RefCell::new(obj)))
+    }
+
+    /// Create a Headers intrinsic struct object.
+    fn make_headers_object(&self, initial: HashMap<String, Value>) -> Value {
+        let mut obj = initial;
+        for method in &["get", "set", "has", "delete", "entries"] {
+            obj.insert(
+                method.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("Headers.{}", method),
+                }),
+            );
+        }
+        Value::Object(Rc::new(RefCell::new(obj)))
+    }
+
+    /// Create TcpListener intrinsic struct object.
+    fn make_tcp_listener_object(&self, handle_id: u64) -> Value {
+        let mut obj = HashMap::new();
+        obj.insert("__handle".to_string(), Value::Number(handle_id as f64));
+        for method in &["accept", "close", "localAddr"] {
+            obj.insert(
+                method.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("TcpListener.{}", method),
+                }),
+            );
+        }
+        Value::Object(Rc::new(RefCell::new(obj)))
+    }
+
+    /// Create TcpStream intrinsic struct object.
+    fn make_tcp_stream_object(&self, handle_id: u64) -> Value {
+        let mut obj = HashMap::new();
+        obj.insert("__handle".to_string(), Value::Number(handle_id as f64));
+        for method in &["read", "write", "shutdown", "close", "peerAddr"] {
+            obj.insert(
+                method.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("TcpStream.{}", method),
+                }),
+            );
+        }
+        Value::Object(Rc::new(RefCell::new(obj)))
+    }
+
+    /// Create UdpSocket intrinsic struct object.
+    fn make_udp_socket_object(&self, handle_id: u64) -> Value {
+        let mut obj = HashMap::new();
+        obj.insert("__handle".to_string(), Value::Number(handle_id as f64));
+        for method in &["sendTo", "recvFrom", "close"] {
+            obj.insert(
+                method.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("UdpSocket.{}", method),
+                }),
+            );
+        }
+        Value::Object(Rc::new(RefCell::new(obj)))
+    }
+
+    /// Create a File intrinsic struct object with native method functions.
+    /// The object carries a `__handle` field for resource lookup.
+    fn make_file_object(&self, handle_id: u64) -> Value {
+        let mut obj = HashMap::new();
+        obj.insert("__handle".to_string(), Value::Number(handle_id as f64));
+
+        for method in &["read", "readBytes", "write", "writeBytes", "seek", "close"] {
+            obj.insert(
+                method.to_string(),
+                Value::NativeFunction(NativeFunction {
+                    name: format!("File.{}", method),
+                }),
+            );
+        }
+
+        Value::Object(Rc::new(RefCell::new(obj)))
     }
 
     fn eval_binary(
@@ -1053,9 +2861,11 @@ impl Runtime {
             Value::Number(n) => *n != 0.0,
             Value::String(s) => !s.is_empty(),
             Value::Null | Value::Undefined => false,
-            Value::Object(_) | Value::Array(_) | Value::Function(_) | Value::NativeFunction(_) => {
-                true
-            }
+            Value::Object(_)
+            | Value::Array(_)
+            | Value::Function(_)
+            | Value::NativeFunction(_)
+            | Value::Future(_) => true,
         }
     }
 
@@ -1073,6 +2883,7 @@ impl Runtime {
             }
             Value::Function(_) => "[function]".to_string(),
             Value::NativeFunction(nf) => format!("[function: {}]", nf.name),
+            Value::Future(_) => "[future]".to_string(),
         }
     }
 }
@@ -1142,6 +2953,180 @@ where
     }
 }
 
+// --- fs helper functions ---
+
+fn expect_string(args: &[Value], idx: usize, context: &str) -> Result<String, RuntimeError> {
+    match args.get(idx) {
+        Some(Value::String(s)) => Ok(strip_quotes(s)),
+        Some(v) => Err(RuntimeError::TypeError(format!(
+            "{} expects a string, got {:?}",
+            context, v
+        ))),
+        None => Err(RuntimeError::TypeError(format!(
+            "{} missing argument at index {}",
+            context, idx
+        ))),
+    }
+}
+
+/// Strip surrounding quotes from a string value.
+/// The Argon parser preserves quotes in StringLiteral values.
+fn strip_quotes(s: &str) -> String {
+    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+        s[1..s.len() - 1].to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+fn expect_number(args: &[Value], idx: usize, context: &str) -> Result<f64, RuntimeError> {
+    match args.get(idx) {
+        Some(Value::Number(n)) => Ok(*n),
+        Some(v) => Err(RuntimeError::TypeError(format!(
+            "{} expects a number, got {:?}",
+            context, v
+        ))),
+        None => Err(RuntimeError::TypeError(format!(
+            "{} missing argument at index {}",
+            context, idx
+        ))),
+    }
+}
+
+fn expect_usize(args: &[Value], idx: usize, context: &str) -> Result<usize, RuntimeError> {
+    expect_number(args, idx, context).map(|n| n as usize)
+}
+
+fn expect_byte_array(args: &[Value], idx: usize, context: &str) -> Result<Vec<u8>, RuntimeError> {
+    match args.get(idx) {
+        Some(Value::Array(arr)) => {
+            let mut bytes = Vec::with_capacity(arr.len());
+            for v in arr {
+                match v {
+                    Value::Number(n) => bytes.push(*n as u8),
+                    _ => {
+                        return Err(RuntimeError::TypeError(format!(
+                            "{} expects an array of numbers",
+                            context
+                        )))
+                    }
+                }
+            }
+            Ok(bytes)
+        }
+        _ => Err(RuntimeError::TypeError(format!(
+            "{} expects a byte array",
+            context
+        ))),
+    }
+}
+
+/// Extract the __handle ID from a File-method call's first arg (the `this` object).
+fn expect_handle_id(args: &[Value], idx: usize) -> Result<u64, RuntimeError> {
+    match args.get(idx) {
+        Some(Value::Number(n)) => Ok(*n as u64),
+        Some(Value::Object(obj)) => {
+            let map = obj.borrow();
+            match map.get("__handle") {
+                Some(Value::Number(n)) => Ok(*n as u64),
+                _ => Err(RuntimeError::TypeError(
+                    "expected object with __handle".to_string(),
+                )),
+            }
+        }
+        _ => Err(RuntimeError::TypeError(
+            "expected handle ID or object with __handle".to_string(),
+        )),
+    }
+}
+
+/// Create an Ok result value (wraps value in an object with `value` and `isOk` fields).
+fn make_ok(value: Value) -> Value {
+    let mut obj = HashMap::new();
+    obj.insert("value".to_string(), value);
+    obj.insert("isOk".to_string(), Value::Boolean(true));
+    obj.insert("isErr".to_string(), Value::Boolean(false));
+    Value::Object(Rc::new(RefCell::new(obj)))
+}
+
+/// Create an Err result value (wraps error in an object with `error` and `isErr` fields).
+fn make_err(error: Value) -> Value {
+    let mut obj = HashMap::new();
+    obj.insert("error".to_string(), error);
+    obj.insert("isOk".to_string(), Value::Boolean(false));
+    obj.insert("isErr".to_string(), Value::Boolean(true));
+    Value::Object(Rc::new(RefCell::new(obj)))
+}
+
+/// Create an IoError value object from a Rust std::io::Error.
+fn io_error_from(e: &std::io::Error) -> Value {
+    let code = match e.kind() {
+        std::io::ErrorKind::NotFound => "ENOENT",
+        std::io::ErrorKind::PermissionDenied => "EACCES",
+        std::io::ErrorKind::AlreadyExists => "EEXIST",
+        std::io::ErrorKind::ConnectionRefused => "ECONNREFUSED",
+        std::io::ErrorKind::ConnectionReset => "ECONNRESET",
+        std::io::ErrorKind::AddrInUse => "EADDRINUSE",
+        std::io::ErrorKind::TimedOut => "ETIMEDOUT",
+        std::io::ErrorKind::BrokenPipe => "EPIPE",
+        _ => "EIO",
+    };
+    make_io_error(code, &e.to_string())
+}
+
+/// Create an IoError from a tungstenite error.
+fn ws_error_from(e: &tungstenite::Error) -> Value {
+    let (code, message) = match e {
+        tungstenite::Error::ConnectionClosed => ("WS_CLOSED", "connection closed".to_string()),
+        tungstenite::Error::AlreadyClosed => ("WS_CLOSED", "already closed".to_string()),
+        tungstenite::Error::Io(io_err) => {
+            let code = match io_err.kind() {
+                std::io::ErrorKind::ConnectionRefused => "ECONNREFUSED",
+                std::io::ErrorKind::ConnectionReset => "ECONNRESET",
+                _ => "EIO",
+            };
+            (code, io_err.to_string())
+        }
+        tungstenite::Error::Protocol(p) => ("WS_PROTOCOL_ERROR", p.to_string()),
+        _ => ("WS_ERROR", e.to_string()),
+    };
+    make_io_error(code, &message)
+}
+
+/// Create an IoError from a ureq error.
+fn http_error_from(e: &ureq::Error) -> Value {
+    let (code, message) = ureq_error_to_pair(e);
+    make_io_error(&code, &message)
+}
+
+/// Convert a ureq error to a Send-safe (String, String) pair.
+/// Used inside spawn_blocking closures where Value (containing Rc) can't be sent.
+fn ureq_error_to_pair(e: &ureq::Error) -> (String, String) {
+    match e {
+        ureq::Error::Status(status, resp) => {
+            let msg = format!("HTTP {}: {}", status, resp.status_text());
+            (format!("HTTP_{}", status), msg)
+        }
+        ureq::Error::Transport(t) => {
+            let code = match t.kind() {
+                ureq::ErrorKind::Dns => "ENOTFOUND",
+                ureq::ErrorKind::ConnectionFailed => "ECONNREFUSED",
+                ureq::ErrorKind::Io => "EIO",
+                _ => "HTTP_ERROR",
+            };
+            (code.to_string(), t.to_string())
+        }
+    }
+}
+
+/// Create an IoError value object with given code and message.
+fn make_io_error(code: &str, message: &str) -> Value {
+    let mut obj = HashMap::new();
+    obj.insert("code".to_string(), Value::String(code.to_string()));
+    obj.insert("message".to_string(), Value::String(message.to_string()));
+    Value::Object(Rc::new(RefCell::new(obj)))
+}
+
 #[derive(Debug)]
 pub enum RuntimeError {
     UndefinedVariable(String),
@@ -1168,8 +3153,26 @@ impl std::fmt::Display for RuntimeError {
 impl std::error::Error for RuntimeError {}
 
 pub fn execute_ast(ast: &SourceFile) -> Result<Value, RuntimeError> {
+    // Create a multi-threaded tokio runtime with 1 worker thread.
+    // This allows us to call Handle::block_on from the main thread
+    // to await futures without the "nested block_on" panic that
+    // current_thread triggers.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .map_err(|e| RuntimeError::Unsupported(format!("failed to create async runtime: {}", e)))?;
+
+    // Enter the runtime context so Handle::try_current() works
+    let _guard = rt.enter();
+
     let mut runtime = Runtime::new();
-    runtime.execute(ast)
+    let result = runtime.execute(ast);
+
+    drop(_guard);
+    drop(rt);
+
+    result
 }
 
 fn detect_compile_only_feature_in_source(source: &SourceFile) -> Option<&'static str> {

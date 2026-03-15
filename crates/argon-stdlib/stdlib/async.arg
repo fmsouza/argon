@@ -1,0 +1,8 @@
+// Argon Standard Library - Async
+// Usage: from "std:async" import { spawn, sleep };
+
+@intrinsic
+export function spawn<T>(future: Future<T>): Task<T>;
+
+@intrinsic
+export function sleep(ms: u64): Future<void>;
