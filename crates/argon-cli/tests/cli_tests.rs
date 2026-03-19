@@ -133,7 +133,10 @@ function unwrapResult(res: Result<i32, string>): i32 {
 
     let output = fs::read_to_string(temp_dir.path().join("output.js")).unwrap();
     assert!(output.contains("if (res.isOk)") || output.contains("__tag === \"Ok\""));
-    assert!(output.contains("var value = res.value;") || output.contains("const value = __argon_match_"));
+    assert!(
+        output.contains("var value = res.value;")
+            || output.contains("const value = __argon_match_")
+    );
 }
 
 #[test]

@@ -321,7 +321,10 @@ function unwrapResult(res: Result<i32, string>): i32 {
 
         let output = codegen.generate(&ir).unwrap();
         assert!(output.contains("if (res.isOk)") || output.contains("__tag === \"Ok\""));
-        assert!(output.contains("var value = res.value;") || output.contains("const value = __argon_match_"));
+        assert!(
+            output.contains("var value = res.value;")
+                || output.contains("const value = __argon_match_")
+        );
     }
 
     #[test]

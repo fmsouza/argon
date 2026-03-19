@@ -2910,11 +2910,7 @@ impl Runtime {
         }
     }
 
-    fn result_pattern_payload(
-        &self,
-        value: &Value,
-        kind: ResultPatternKind,
-    ) -> Option<Value> {
+    fn result_pattern_payload(&self, value: &Value, kind: ResultPatternKind) -> Option<Value> {
         let Value::Object(map) = value else {
             return None;
         };
@@ -2926,18 +2922,14 @@ impl Runtime {
 
         match kind {
             ResultPatternKind::Ok => {
-                if tag == Some("Ok")
-                    || matches!(map.get("isOk"), Some(Value::Boolean(true)))
-                {
+                if tag == Some("Ok") || matches!(map.get("isOk"), Some(Value::Boolean(true))) {
                     map.get("value").cloned()
                 } else {
                     None
                 }
             }
             ResultPatternKind::Err => {
-                if tag == Some("Err")
-                    || matches!(map.get("isErr"), Some(Value::Boolean(true)))
-                {
+                if tag == Some("Err") || matches!(map.get("isErr"), Some(Value::Boolean(true))) {
                     map.get("error").cloned()
                 } else {
                     None

@@ -1851,7 +1851,7 @@ impl Parser {
             }
         }
 
-        Ok(MatchPattern::Expr(self.parse_expression()?))
+        Ok(MatchPattern::Expr(Box::new(self.parse_expression()?)))
     }
 
     /// Parse argon-style import: `from "path" import { a, b }` or `from "path" import Name`

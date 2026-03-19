@@ -2268,7 +2268,10 @@ impl BorrowChecker {
     }
 
     fn is_wildcard_match_pattern(pattern: &MatchPattern) -> bool {
-        matches!(pattern, MatchPattern::Expr(Expr::Identifier(id)) if id.sym == "_")
+        matches!(
+            pattern,
+            MatchPattern::Expr(expr) if matches!(expr.as_ref(), Expr::Identifier(id) if id.sym == "_")
+        )
     }
 
     #[allow(clippy::too_many_arguments)]

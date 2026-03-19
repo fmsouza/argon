@@ -83,7 +83,7 @@ pub struct MatchCase {
 }
 #[derive(Debug, Clone)]
 pub enum MatchPattern {
-    Expr(Expr),
+    Expr(Box<Expr>),
     Result(ResultPattern),
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
