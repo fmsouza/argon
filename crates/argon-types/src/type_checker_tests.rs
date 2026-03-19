@@ -545,6 +545,27 @@ mod match_expression_checking {
         // Assert
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn checks_result_match_bindings() {
+        let source = r#"
+function readResult(res: Result<i32, string>): i32 {
+    match (res) {
+        Ok(value) => return value,
+        Err(error) => {
+            const label: string = error;
+            return 0;
+        },
+    }
+
+    return 0;
+}
+"#;
+        let ast = parse(source).unwrap();
+        let mut checker = TypeChecker::new();
+        let result = checker.check(&ast);
+        assert!(result.is_ok());
+    }
 }
 
 mod interface_and_object_shape_checking {

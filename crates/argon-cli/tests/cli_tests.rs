@@ -82,7 +82,7 @@ fn test_compile_writes_source_map_when_enabled() {
 }
 
 #[test]
-fn test_compile_try_catch_finally() {
+fn test_compile_rejects_exception_syntax() {
     let temp_dir = tempfile::tempdir().unwrap();
     let source_file = temp_dir.path().join("try.arg");
     fs::write(
@@ -99,13 +99,41 @@ fn test_compile_try_catch_finally() {
         .arg("--pipeline")
         .arg("ir")
         .assert()
+        .failure();
+}
+
+#[test]
+fn test_compile_result_match_to_js() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("result_match.arg");
+    fs::write(
+        &source_file,
+        r#"
+function unwrapResult(res: Result<i32, string>): i32 {
+    match (res) {
+        Ok(value) => return value,
+        Err(error) => return 0,
+    }
+
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(temp_dir.path().join("output.js"))
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
         .success();
 
     let output = fs::read_to_string(temp_dir.path().join("output.js")).unwrap();
-    assert!(output.contains("try {"));
-    assert!(output.contains("catch (e)"));
-    assert!(output.contains("finally {"));
-    assert!(output.contains("throw x"));
+    assert!(output.contains("if (res.isOk)") || output.contains("__tag === \"Ok\""));
+    assert!(output.contains("var value = res.value;") || output.contains("const value = __argon_match_"));
 }
 
 #[test]
@@ -738,378 +766,6 @@ WebAssembly.instantiate(bytes, {}).then(({ instance }) => {
     assert!(node_output.status.success(), "{:?}", node_output);
     let stdout = String::from_utf8_lossy(&node_output.stdout);
     assert!(stdout.contains("hello"));
-}
-
-#[test]
-fn test_compile_wasm_try_catch_executes_via_host_sidecar() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let source_file = temp_dir.path().join("try_loader.arg");
-    let output_file = temp_dir.path().join("try_loader.wasm");
-    fs::write(
-        &source_file,
-        r#"
-function recover(flag: bool): i32 {
-    try {
-        if (flag) {
-            throw 7;
-        }
-        return 1;
-    } catch (err) {
-        return 0;
-    }
-
-    return 0;
-}
-"#,
-    )
-    .unwrap();
-
-    let mut cmd = cargo_bin_cmd!("argon");
-    cmd.arg("compile")
-        .arg(&source_file)
-        .arg("-o")
-        .arg(&output_file)
-        .arg("--target")
-        .arg("wasm")
-        .arg("--pipeline")
-        .arg("ir")
-        .assert()
-        .success();
-
-    let script_file = temp_dir.path().join("run_try_loader.mjs");
-    fs::write(
-        &script_file,
-        r#"
-import { instantiateArgon } from "./try_loader.mjs";
-
-const runtime = await instantiateArgon();
-console.log(`${runtime.exports.recover(false)},${runtime.exports.recover(true)}`);
-"#,
-    )
-    .unwrap();
-
-    let node_output = Command::new("node").arg(&script_file).output().unwrap();
-    assert!(node_output.status.success(), "{:?}", node_output);
-    let stdout = String::from_utf8_lossy(&node_output.stdout);
-    assert!(stdout.contains("1,0"));
-}
-
-#[test]
-fn test_compile_wasm_try_catch_executes_standalone() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let source_file = temp_dir.path().join("try_native.arg");
-    let output_file = temp_dir.path().join("try_native.wasm");
-    fs::write(
-        &source_file,
-        r#"
-function recover(): i32 {
-    let value = 1;
-    try {
-        throw 7;
-    } catch (err) {
-        value = err;
-    }
-    return value;
-}
-"#,
-    )
-    .unwrap();
-
-    let mut cmd = cargo_bin_cmd!("argon");
-    cmd.arg("compile")
-        .arg(&source_file)
-        .arg("-o")
-        .arg(&output_file)
-        .arg("--target")
-        .arg("wasm")
-        .arg("--pipeline")
-        .arg("ir")
-        .assert()
-        .success();
-
-    let script = r#"
-const fs = require('fs');
-const wasmPath = process.argv[1];
-const bytes = fs.readFileSync(wasmPath);
-WebAssembly.instantiate(bytes, {}).then(({ instance }) => {
-  console.log(String(instance.exports.recover()));
-}).catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
-"#;
-    let node_output = Command::new("node")
-        .arg("-e")
-        .arg(script)
-        .arg(&output_file)
-        .output()
-        .unwrap();
-    assert!(node_output.status.success(), "{:?}", node_output);
-    let stdout = String::from_utf8_lossy(&node_output.stdout);
-    assert!(stdout.contains("7"));
-}
-
-#[test]
-fn test_compile_wasm_structured_try_catch_executes_standalone() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let source_file = temp_dir.path().join("try_structured_native.arg");
-    let output_file = temp_dir.path().join("try_structured_native.wasm");
-    fs::write(
-        &source_file,
-        r#"
-function recover(flag: bool): i32 {
-    try {
-        if (flag) {
-            throw 7;
-        }
-        return 1;
-    } catch (err) {
-        return 0;
-    }
-
-    return 0;
-}
-"#,
-    )
-    .unwrap();
-
-    let mut cmd = cargo_bin_cmd!("argon");
-    cmd.arg("compile")
-        .arg(&source_file)
-        .arg("-o")
-        .arg(&output_file)
-        .arg("--target")
-        .arg("wasm")
-        .arg("--pipeline")
-        .arg("ir")
-        .assert()
-        .success();
-
-    let script = r#"
-const fs = require('fs');
-const wasmPath = process.argv[1];
-const bytes = fs.readFileSync(wasmPath);
-WebAssembly.instantiate(bytes, {}).then(({ instance }) => {
-  console.log(`${instance.exports.recover(0)},${instance.exports.recover(1)}`);
-}).catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
-"#;
-    let node_output = Command::new("node")
-        .arg("-e")
-        .arg(script)
-        .arg(&output_file)
-        .output()
-        .unwrap();
-    assert!(node_output.status.success(), "{:?}", node_output);
-    let stdout = String::from_utf8_lossy(&node_output.stdout);
-    assert!(stdout.contains("1,0"));
-}
-
-#[test]
-fn test_compile_wasm_loop_control_inside_try_executes_standalone() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let source_file = temp_dir.path().join("try_loop_native.arg");
-    let output_file = temp_dir.path().join("try_loop_native.wasm");
-    fs::write(
-        &source_file,
-        r#"
-function countUntil(limit: i32): i32 {
-    let i = 0;
-    try {
-        while (i < limit) {
-            i = i + 1;
-            if (i == 2) {
-                continue;
-            }
-            if (i == 4) {
-                break;
-            }
-        }
-    } finally {
-        const done = true;
-    }
-
-    return i;
-}
-"#,
-    )
-    .unwrap();
-
-    let mut cmd = cargo_bin_cmd!("argon");
-    cmd.arg("compile")
-        .arg(&source_file)
-        .arg("-o")
-        .arg(&output_file)
-        .arg("--target")
-        .arg("wasm")
-        .arg("--pipeline")
-        .arg("ir")
-        .assert()
-        .success();
-
-    let script = r#"
-const fs = require('fs');
-const wasmPath = process.argv[1];
-const bytes = fs.readFileSync(wasmPath);
-WebAssembly.instantiate(bytes, {}).then(({ instance }) => {
-  console.log(`${instance.exports.countUntil(3)},${instance.exports.countUntil(10)}`);
-}).catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
-"#;
-    let node_output = Command::new("node")
-        .arg("-e")
-        .arg(script)
-        .arg(&output_file)
-        .output()
-        .unwrap();
-    assert!(node_output.status.success(), "{:?}", node_output);
-    let stdout = String::from_utf8_lossy(&node_output.stdout);
-    assert!(stdout.contains("3,4"));
-}
-
-#[test]
-fn test_compile_wasm_for_of_inside_try_executes_standalone() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let source_file = temp_dir.path().join("try_for_of_native.arg");
-    let output_file = temp_dir.path().join("try_for_of_native.wasm");
-    fs::write(
-        &source_file,
-        r#"
-function sumUntil(): i32 {
-    let sum = 0;
-    try {
-        const items = [2, 3, 4, 5];
-        for (const item of items) {
-            sum = sum + item;
-            if (sum > 6) {
-                break;
-            }
-        }
-    } finally {
-        const done = true;
-    }
-
-    return sum;
-}
-"#,
-    )
-    .unwrap();
-
-    let mut cmd = cargo_bin_cmd!("argon");
-    cmd.arg("compile")
-        .arg(&source_file)
-        .arg("-o")
-        .arg(&output_file)
-        .arg("--target")
-        .arg("wasm")
-        .arg("--pipeline")
-        .arg("ir")
-        .assert()
-        .success();
-
-    let script = r#"
-const fs = require('fs');
-const wasmPath = process.argv[1];
-const bytes = fs.readFileSync(wasmPath);
-WebAssembly.instantiate(bytes, {}).then(({ instance }) => {
-  console.log(String(instance.exports.sumUntil()));
-}).catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
-"#;
-    let node_output = Command::new("node")
-        .arg("-e")
-        .arg(script)
-        .arg(&output_file)
-        .output()
-        .unwrap();
-    assert!(node_output.status.success(), "{:?}", node_output);
-    let stdout = String::from_utf8_lossy(&node_output.stdout);
-    assert!(stdout.contains("9"));
-}
-
-#[test]
-fn test_compile_wasm_switch_and_match_inside_try_executes_standalone() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let source_file = temp_dir.path().join("try_switch_match_native.arg");
-    let output_file = temp_dir.path().join("try_switch_match_native.wasm");
-    fs::write(
-        &source_file,
-        r#"
-function choose(x: i32): i32 {
-    let value = 0;
-    try {
-        switch (x) {
-            case 1:
-                value = 10;
-                break;
-            case 2:
-                value = 20;
-                break;
-            default:
-                value = 30;
-        }
-    } finally {
-        const done = true;
-    }
-
-    return value;
-}
-
-function classify(x: i32): i32 {
-    let value = 0;
-    try {
-        match (x) {
-            1 => value = 100,
-            2 => value = 200,
-        }
-    } finally {
-        const done = true;
-    }
-
-    return value;
-}
-"#,
-    )
-    .unwrap();
-
-    let mut cmd = cargo_bin_cmd!("argon");
-    cmd.arg("compile")
-        .arg(&source_file)
-        .arg("-o")
-        .arg(&output_file)
-        .arg("--target")
-        .arg("wasm")
-        .arg("--pipeline")
-        .arg("ir")
-        .assert()
-        .success();
-
-    let script = r#"
-const fs = require('fs');
-const wasmPath = process.argv[1];
-const bytes = fs.readFileSync(wasmPath);
-WebAssembly.instantiate(bytes, {}).then(({ instance }) => {
-  console.log(`${instance.exports.choose(1)},${instance.exports.choose(5)},${instance.exports.classify(2)},${instance.exports.classify(9)}`);
-}).catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
-"#;
-    let node_output = Command::new("node")
-        .arg("-e")
-        .arg(script)
-        .arg(&output_file)
-        .output()
-        .unwrap();
-    assert!(node_output.status.success(), "{:?}", node_output);
-    let stdout = String::from_utf8_lossy(&node_output.stdout);
-    assert!(stdout.contains("10,30,200,0"));
 }
 
 #[test]

@@ -311,9 +311,6 @@ impl BorrowChecker {
                     self.collect_called_functions_from_expr(arg, functions, called);
                 }
             }
-            Stmt::Throw(t) => {
-                self.collect_called_functions_from_expr(&t.argument, functions, called)
-            }
             Stmt::Block(b) => {
                 for nested in &b.statements {
                     self.collect_called_functions_from_stmt(nested, functions, called);
@@ -383,26 +380,13 @@ impl BorrowChecker {
             Stmt::Match(m) => {
                 self.collect_called_functions_from_expr(&m.discriminant, functions, called);
                 for case in &m.cases {
-                    self.collect_called_functions_from_expr(&case.pattern, functions, called);
+                    if let MatchPattern::Expr(pattern) = &case.pattern {
+                        self.collect_called_functions_from_expr(pattern, functions, called);
+                    }
                     if let Some(guard) = &case.guard {
                         self.collect_called_functions_from_expr(guard, functions, called);
                     }
                     self.collect_called_functions_from_stmt(&case.consequent, functions, called);
-                }
-            }
-            Stmt::Try(t) => {
-                for nested in &t.block.statements {
-                    self.collect_called_functions_from_stmt(nested, functions, called);
-                }
-                if let Some(handler) = &t.handler {
-                    for nested in &handler.body.statements {
-                        self.collect_called_functions_from_stmt(nested, functions, called);
-                    }
-                }
-                if let Some(finalizer) = &t.finalizer {
-                    for nested in &finalizer.statements {
-                        self.collect_called_functions_from_stmt(nested, functions, called);
-                    }
                 }
             }
             Stmt::With(w) => {
@@ -1165,13 +1149,15 @@ impl BorrowChecker {
                 let mut branch_states = Vec::new();
                 for case in &m.cases {
                     let mut case_state = state.clone();
-                    self.collect_thread_captures_from_expr(
-                        &case.pattern,
-                        param_indices,
-                        known_summaries,
-                        &case_state.bindings,
-                        &mut case_state.thread_captured_params,
-                    );
+                    if let MatchPattern::Expr(pattern) = &case.pattern {
+                        self.collect_thread_captures_from_expr(
+                            pattern,
+                            param_indices,
+                            known_summaries,
+                            &case_state.bindings,
+                            &mut case_state.thread_captured_params,
+                        );
+                    }
                     self.collect_summary_from_stmt(
                         &case.consequent,
                         param_indices,
@@ -1182,50 +1168,6 @@ impl BorrowChecker {
                     branch_states.push(case_state);
                 }
                 self.merge_summary_branch_states(state, &branch_states);
-            }
-            Stmt::Try(t) => {
-                let mut branch_states = Vec::new();
-                let mut block_state = state.clone();
-                self.collect_summary_from_stmt(
-                    &Stmt::Block(t.block.clone()),
-                    param_indices,
-                    expected_return_borrow,
-                    known_summaries,
-                    &mut block_state,
-                );
-                branch_states.push(block_state);
-                if let Some(handler) = &t.handler {
-                    let mut handler_state = state.clone();
-                    self.collect_summary_from_statements(
-                        &handler.body.statements,
-                        param_indices,
-                        expected_return_borrow,
-                        known_summaries,
-                        &mut handler_state,
-                    );
-                    branch_states.push(handler_state);
-                }
-                if let Some(finalizer) = &t.finalizer {
-                    let mut finalizer_state = state.clone();
-                    self.collect_summary_from_statements(
-                        &finalizer.statements,
-                        param_indices,
-                        expected_return_borrow,
-                        known_summaries,
-                        &mut finalizer_state,
-                    );
-                    branch_states.push(finalizer_state);
-                }
-                self.merge_summary_branch_states(state, &branch_states);
-            }
-            Stmt::Throw(t) => {
-                self.collect_thread_captures_from_expr(
-                    &t.argument,
-                    param_indices,
-                    known_summaries,
-                    &state.bindings,
-                    &mut state.thread_captured_params,
-                );
             }
             _ => {}
         }
@@ -2325,8 +2267,8 @@ impl BorrowChecker {
         merged
     }
 
-    fn is_wildcard_match_pattern(pattern: &Expr) -> bool {
-        matches!(pattern, Expr::Identifier(id) if id.sym == "_")
+    fn is_wildcard_match_pattern(pattern: &MatchPattern) -> bool {
+        matches!(pattern, MatchPattern::Expr(Expr::Identifier(id)) if id.sym == "_")
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2410,7 +2352,22 @@ impl BorrowChecker {
             *remaining = base_remaining_uses.clone();
         }
 
-        self.check_expression(&case.pattern)?;
+        if let MatchPattern::Expr(pattern) = &case.pattern {
+            self.check_expression(pattern)?;
+        } else if let MatchPattern::Result(pattern) = &case.pattern {
+            let lifetime = self.generate_lifetime();
+            self.locals.insert(
+                pattern.binding.sym.clone(),
+                VariableState {
+                    name: pattern.binding.sym.clone(),
+                    ownership: Ownership::Owned,
+                    borrows: Vec::new(),
+                    lifetime: Some(lifetime),
+                    is_copyable: false,
+                    drop_scope: self.scope_depth,
+                },
+            );
+        }
         if let Some(guard) = &case.guard {
             self.check_expression(guard)?;
         }
@@ -2509,7 +2466,6 @@ impl BorrowChecker {
                     self.count_identifier_uses_in_expr(arg, uses);
                 }
             }
-            Stmt::Throw(t) => self.count_identifier_uses_in_expr(&t.argument, uses),
             Stmt::If(i) => {
                 self.count_identifier_uses_in_expr(&i.condition, uses);
                 self.count_identifier_uses_in_statement(&i.consequent, uses);
@@ -2567,19 +2523,12 @@ impl BorrowChecker {
                     }
                 }
             }
-            Stmt::Try(t) => {
-                self.count_identifier_uses_in_block(&t.block, uses);
-                if let Some(handler) = &t.handler {
-                    self.count_identifier_uses_in_block(&handler.body, uses);
-                }
-                if let Some(finalizer) = &t.finalizer {
-                    self.count_identifier_uses_in_block(finalizer, uses);
-                }
-            }
             Stmt::Match(m) => {
                 self.count_identifier_uses_in_expr(&m.discriminant, uses);
                 for case in &m.cases {
-                    self.count_identifier_uses_in_expr(&case.pattern, uses);
+                    if let MatchPattern::Expr(pattern) = &case.pattern {
+                        self.count_identifier_uses_in_expr(pattern, uses);
+                    }
                     if let Some(guard) = &case.guard {
                         self.count_identifier_uses_in_expr(guard, uses);
                     }
@@ -2901,14 +2850,8 @@ impl BorrowChecker {
                     }
                 }
             }
-            Stmt::Try(t) => {
-                self.check_try(t)?;
-            }
             Stmt::DoWhile(d) => {
                 self.check_do_while(d)?;
-            }
-            Stmt::Throw(t) => {
-                self.check_expression(&t.argument)?;
             }
             Stmt::Switch(s) => {
                 self.check_switch(s)?;
@@ -3493,17 +3436,6 @@ impl BorrowChecker {
             &branch_bindings,
             &branch_remaining_uses,
         )
-    }
-
-    fn check_try(&mut self, t: &TryStmt) -> Result<(), BorrowError> {
-        self.check_block(&t.block)?;
-        if let Some(ref handler) = t.handler {
-            self.check_block(&handler.body)?;
-        }
-        if let Some(ref fin) = t.finalizer {
-            self.check_block(fin)?;
-        }
-        Ok(())
     }
 
     fn check_do_while(&mut self, d: &DoWhileStmt) -> Result<(), BorrowError> {

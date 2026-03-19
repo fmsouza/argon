@@ -1,0 +1,23 @@
+// Result-based error handling with match
+
+from "std:io" import { println };
+
+function guardedDivide(a: i32, b: i32): Result<i32, string> {
+    if (b == 0) {
+        return Err { error: "division by zero" };
+    }
+
+    return Ok { value: a / b };
+}
+
+const success = guardedDivide(10, 2);
+match (success) {
+    Ok(value) => println(value),
+    Err(error) => println(error),
+}
+
+const failure = guardedDivide(10, 0);
+match (failure) {
+    Ok(value) => println(value),
+    Err(error) => println(error),
+}

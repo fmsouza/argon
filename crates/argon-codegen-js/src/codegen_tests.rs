@@ -303,18 +303,25 @@ mod ir_codegen {
     }
 
     #[test]
-    fn generates_try_catch_finally_via_ir() {
-        let source = "function f(): void { try { const x = 1; throw x; } catch (e) { const y = e; } finally { const z = 3; } }\n";
+    fn generates_result_match_via_ir() {
+        let source = r#"
+function unwrapResult(res: Result<i32, string>): i32 {
+    match (res) {
+        Ok(value) => return value,
+        Err(error) => return 0,
+    }
+
+    return 0;
+}
+"#;
         let ast = parse(source).unwrap();
         let mut builder = IrBuilder::new();
         let ir = builder.build(&ast).unwrap();
         let mut codegen = JsCodegen::new();
 
         let output = codegen.generate(&ir).unwrap();
-        assert!(output.contains("try {"));
-        assert!(output.contains("catch (e)"));
-        assert!(output.contains("finally {"));
-        assert!(output.contains("throw x"));
+        assert!(output.contains("if (res.isOk)") || output.contains("__tag === \"Ok\""));
+        assert!(output.contains("var value = res.value;") || output.contains("const value = __argon_match_"));
     }
 
     #[test]

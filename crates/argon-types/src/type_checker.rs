@@ -622,11 +622,6 @@ impl TypeChecker {
             }
             Stmt::Break(_) | Stmt::Continue(_) | Stmt::Empty(_) => Ok(()),
             Stmt::Switch(s) => self.check_switch(s),
-            Stmt::Try(t) => self.check_try(t),
-            Stmt::Throw(t) => {
-                self.infer_expression(&t.argument);
-                Ok(())
-            }
             Stmt::DoWhile(d) => self.check_do_while(d),
             Stmt::Match(m) => self.check_match(m),
             Stmt::Import(_) | Stmt::Export(_) => Ok(()),
@@ -1098,17 +1093,6 @@ impl TypeChecker {
         Ok(())
     }
 
-    fn check_try(&mut self, t: &TryStmt) -> Result<(), TypeError> {
-        self.check_block(&t.block)?;
-        if let Some(ref handler) = t.handler {
-            self.check_block(&handler.body)?;
-        }
-        if let Some(ref fin) = t.finalizer {
-            self.check_block(fin)?;
-        }
-        Ok(())
-    }
-
     fn check_do_while(&mut self, d: &DoWhileStmt) -> Result<(), TypeError> {
         self.check_statement(&d.body)?;
         let cond_ty = self.infer_expression(&d.condition);
@@ -1118,10 +1102,44 @@ impl TypeChecker {
     }
 
     fn check_match(&mut self, m: &MatchStmt) -> Result<(), TypeError> {
-        self.infer_expression(&m.discriminant);
+        let discriminant_ty = self.infer_expression(&m.discriminant);
         for case in &m.cases {
-            self.infer_expression(&case.pattern);
-            self.check_statement(&case.consequent)?;
+            match &case.pattern {
+                MatchPattern::Expr(pattern) => {
+                    self.infer_expression(pattern);
+                    self.check_statement(&case.consequent)?;
+                }
+                MatchPattern::Result(pattern) => {
+                    let Some(CompType::Result(ok_ty, err_ty)) =
+                        self.type_table.get(discriminant_ty).cloned()
+                    else {
+                        self.errors.push(TypeError::Invalid {
+                            message: "Result pattern matching requires a Result<T, E> discriminant"
+                                .to_string(),
+                        });
+                        continue;
+                    };
+
+                    let binding_ty = match pattern.kind {
+                        ResultPatternKind::Ok => ok_ty,
+                        ResultPatternKind::Err => err_ty,
+                    };
+
+                    let child_env = self.env.child();
+                    let previous_env = std::mem::replace(&mut self.env, child_env);
+                    self.env.add_var(pattern.binding.sym.clone(), binding_ty);
+
+                    if let Some(guard) = &case.guard {
+                        let guard_ty = self.infer_expression(guard);
+                        let bool_ty = self.type_table.boolean();
+                        self.unify(guard_ty, bool_ty);
+                    }
+
+                    let check_result = self.check_statement(&case.consequent);
+                    self.env = previous_env;
+                    check_result?;
+                }
+            }
         }
         Ok(())
     }

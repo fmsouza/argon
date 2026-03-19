@@ -465,115 +465,17 @@ mod export_translation {
     }
 }
 
-mod try_catch_translation {
+mod result_match_translation {
     use super::*;
     use crate::Instruction;
 
-    fn nested_contains(instructions: &[Instruction], predicate: fn(&Instruction) -> bool) -> bool {
-        for inst in instructions {
-            if predicate(inst) {
-                return true;
-            }
-
-            let found = match inst {
-                Instruction::If {
-                    then_body,
-                    else_body,
-                    ..
-                } => nested_contains(then_body, predicate) || nested_contains(else_body, predicate),
-                Instruction::While {
-                    cond_instructions,
-                    body,
-                    ..
-                } => {
-                    nested_contains(cond_instructions, predicate)
-                        || nested_contains(body, predicate)
-                }
-                Instruction::For {
-                    init,
-                    cond_instructions,
-                    update,
-                    body,
-                    ..
-                } => {
-                    nested_contains(init, predicate)
-                        || nested_contains(cond_instructions, predicate)
-                        || nested_contains(update, predicate)
-                        || nested_contains(body, predicate)
-                }
-                Instruction::DoWhile {
-                    body,
-                    cond_instructions,
-                    ..
-                } => {
-                    nested_contains(body, predicate)
-                        || nested_contains(cond_instructions, predicate)
-                }
-                Instruction::Loop { body } => nested_contains(body, predicate),
-                Instruction::Try {
-                    try_body,
-                    catch,
-                    finally_body,
-                } => {
-                    nested_contains(try_body, predicate)
-                        || catch
-                            .as_ref()
-                            .is_some_and(|catch| nested_contains(&catch.body, predicate))
-                        || finally_body
-                            .as_ref()
-                            .is_some_and(|body| nested_contains(body, predicate))
-                }
-                _ => false,
-            };
-
-            if found {
-                return true;
-            }
-        }
-
-        false
-    }
-
     #[test]
-    fn translates_try_catch_finally() {
-        let source = "function f(): void { try { const x = 1; throw x; } catch (e) { const y = e; } finally { const z = 3; } }";
-        let ast = parse(source).unwrap();
-        let mut builder = IrBuilder::new();
-
-        let module = builder.build(&ast).unwrap();
-        let f = module.functions.iter().find(|f| f.id == "f").unwrap();
-
-        let mut saw_try = false;
-        let mut saw_throw = false;
-        for block in &f.body {
-            for inst in &block.instructions {
-                if let Instruction::Try { try_body, .. } = inst {
-                    saw_try = true;
-                    if try_body
-                        .iter()
-                        .any(|i| matches!(i, Instruction::ThrowStmt { .. }))
-                    {
-                        saw_throw = true;
-                    }
-                }
-            }
-        }
-
-        assert!(saw_try);
-        assert!(saw_throw);
-    }
-
-    #[test]
-    fn translates_structured_control_flow_inside_try() {
+    fn translates_result_match() {
         let source = r#"
-function recover(flag: bool): i32 {
-    try {
-        if (flag) {
-            throw 7;
-        }
-        return 1;
-    } catch (err) {
-        return err;
+function unwrapResult(res: Result<i32, string>): i32 {
+    match (res) {
+        Ok(value) => return value,
+        Err(error) => return 0,
     }
 
     return 0;
@@ -583,211 +485,65 @@ function recover(flag: bool): i32 {
         let mut builder = IrBuilder::new();
 
         let module = builder.build(&ast).unwrap();
-        let recover = module.functions.iter().find(|f| f.id == "recover").unwrap();
-
-        let mut saw_nested_if = false;
-        let mut saw_nested_return = false;
-        for block in &recover.body {
-            for inst in &block.instructions {
-                if let Instruction::Try {
-                    try_body, catch, ..
-                } = inst
-                {
-                    if try_body
-                        .iter()
-                        .any(|inst| matches!(inst, Instruction::If { .. }))
-                    {
-                        saw_nested_if = true;
-                    }
-                    if try_body
-                        .iter()
-                        .any(|inst| matches!(inst, Instruction::Return { .. }))
-                    {
-                        saw_nested_return = true;
-                    }
-                    if catch.as_ref().is_some_and(|catch| {
-                        catch
-                            .body
-                            .iter()
-                            .any(|inst| matches!(inst, Instruction::Return { .. }))
-                    }) {
-                        saw_nested_return = true;
-                    }
-                }
-            }
-        }
-
-        assert!(saw_nested_if);
-        assert!(saw_nested_return);
-    }
-
-    #[test]
-    fn translates_loop_control_inside_try() {
-        let source = r#"
-function countUntil(limit: i32): i32 {
-    let i = 0;
-    try {
-        while (i < limit) {
-            i = i + 1;
-            if (i == 2) {
-                continue;
-            }
-            if (i == 4) {
-                break;
-            }
-        }
-    } finally {
-        const done = true;
-    }
-
-    return i;
-}
-"#;
-        let ast = parse(source).unwrap();
-        let mut builder = IrBuilder::new();
-
-        let module = builder.build(&ast).unwrap();
-        let count_until = module
+        let f = module
             .functions
             .iter()
-            .find(|f| f.id == "countUntil")
+            .find(|f| f.id == "unwrapResult")
             .unwrap();
 
-        let mut saw_nested_while = false;
-        let mut saw_nested_break = false;
-        let mut saw_nested_continue = false;
-        for block in &count_until.body {
+        let mut saw_result_check = false;
+        let mut saw_value_binding = false;
+        for block in &f.body {
             for inst in &block.instructions {
-                if let Instruction::Try { try_body, .. } = inst {
-                    if nested_contains(try_body, |inst| matches!(inst, Instruction::While { .. })) {
-                        saw_nested_while = true;
+                match inst {
+                    Instruction::Member { property, .. } if property == "isOk" => {
+                        saw_result_check = true;
                     }
-                    if nested_contains(try_body, |inst| matches!(inst, Instruction::Break)) {
-                        saw_nested_break = true;
+                    Instruction::VarDecl { name, .. } if name == "value" => {
+                        saw_value_binding = true;
                     }
-                    if nested_contains(try_body, |inst| matches!(inst, Instruction::Continue)) {
-                        saw_nested_continue = true;
-                    }
+                    _ => {}
                 }
             }
         }
 
-        assert!(saw_nested_while);
-        assert!(saw_nested_break);
-        assert!(saw_nested_continue);
+        assert!(saw_result_check);
+        assert!(saw_value_binding);
     }
 
     #[test]
-    fn translates_for_of_inside_try() {
-        let source = r#"
-function sumItems(items: i32[]): i32 {
-    let sum = 0;
-    try {
-        for (const item of items) {
-            sum = sum + item;
-            if (sum > 10) {
-                break;
-            }
-        }
-    } finally {
-        const done = true;
-    }
-
-    return sum;
-}
-"#;
-        let ast = parse(source).unwrap();
-        let mut builder = IrBuilder::new();
-
-        let module = builder.build(&ast).unwrap();
-        let sum_items = module
-            .functions
-            .iter()
-            .find(|f| f.id == "sumItems")
-            .unwrap();
-
-        let mut saw_nested_for = false;
-        let mut saw_nested_break = false;
-        for block in &sum_items.body {
-            for inst in &block.instructions {
-                if let Instruction::Try { try_body, .. } = inst {
-                    if nested_contains(try_body, |inst| matches!(inst, Instruction::For { .. })) {
-                        saw_nested_for = true;
-                    }
-                    if nested_contains(try_body, |inst| matches!(inst, Instruction::Break)) {
-                        saw_nested_break = true;
-                    }
-                }
-            }
-        }
-
-        assert!(saw_nested_for);
-        assert!(saw_nested_break);
-    }
-
-    #[test]
-    fn translates_switch_inside_try() {
-        let source = r#"
-function choose(x: i32): i32 {
-    let value = 0;
-    try {
-        switch (x) {
-            case 1:
-                value = 10;
-                break;
-            case 2:
-                value = 20;
-                break;
-            default:
-                value = 30;
-        }
-    } finally {
-        const done = true;
-    }
-
-    return value;
-}
-"#;
-        let ast = parse(source).unwrap();
-        let mut builder = IrBuilder::new();
-
-        let module = builder.build(&ast).unwrap();
-        let choose = module.functions.iter().find(|f| f.id == "choose").unwrap();
-
-        let mut saw_nested_if = false;
-        for block in &choose.body {
-            for inst in &block.instructions {
-                if let Instruction::Try { try_body, .. } = inst {
-                    if nested_contains(try_body, |inst| matches!(inst, Instruction::If { .. })) {
-                        saw_nested_if = true;
-                    }
-                }
-            }
-        }
-
-        assert!(saw_nested_if);
-    }
-
-    #[test]
-    fn translates_match_inside_try() {
+    fn rejects_removed_exception_syntax() {
         let source = r#"
 function classify(x: i32): i32 {
-    let value = 0;
     try {
-        match (x) {
-            1 => value = 10,
-            2 => value = 20,
-        }
-    } finally {
-        const done = true;
+        throw x;
+    } catch (err) {
+        return 0;
     }
 
-    return value;
+    return 1;
+}
+"#;
+        assert!(parse(source).is_err());
+    }
+
+    #[test]
+    fn translates_result_match_expression_patterns_alongside_result_arms() {
+        let source = r#"
+function classify(res: Result<i32, string>, n: i32): i32 {
+    match (res) {
+        Ok(value) => return value,
+        Err(error) => match (n) {
+            1 => return 1,
+            2 => return 2,
+        },
+    }
+
+    return 0;
 }
 "#;
         let ast = parse(source).unwrap();
         let mut builder = IrBuilder::new();
-
         let module = builder.build(&ast).unwrap();
         let classify = module
             .functions
@@ -795,17 +551,17 @@ function classify(x: i32): i32 {
             .find(|f| f.id == "classify")
             .unwrap();
 
-        let mut saw_nested_if = false;
+        let mut saw_error_binding = false;
         for block in &classify.body {
             for inst in &block.instructions {
-                if let Instruction::Try { try_body, .. } = inst {
-                    if nested_contains(try_body, |inst| matches!(inst, Instruction::If { .. })) {
-                        saw_nested_if = true;
+                if let Instruction::VarDecl { name, .. } = inst {
+                    if name == "error" {
+                        saw_error_binding = true;
                     }
                 }
             }
         }
 
-        assert!(saw_nested_if);
+        assert!(saw_error_binding);
     }
 }

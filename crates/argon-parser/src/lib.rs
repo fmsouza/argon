@@ -210,8 +210,8 @@ impl Parser {
         if self.match_one(&[TokenKind::Switch]) {
             return self.parse_switch();
         }
-        if self.match_one(&[TokenKind::Try]) {
-            return self.parse_try();
+        if self.check(&TokenKind::Try) {
+            return Err(self.exception_syntax_removed_error("`try`"));
         }
         if self.match_one(&[TokenKind::Break]) {
             return self.parse_break();
@@ -219,8 +219,14 @@ impl Parser {
         if self.match_one(&[TokenKind::Continue]) {
             return self.parse_continue();
         }
-        if self.match_one(&[TokenKind::Throw]) {
-            return self.parse_throw();
+        if self.check(&TokenKind::Throw) {
+            return Err(self.exception_syntax_removed_error("`throw`"));
+        }
+        if self.check(&TokenKind::Catch) {
+            return Err(self.exception_syntax_removed_error("`catch`"));
+        }
+        if self.check(&TokenKind::Finally) {
+            return Err(self.exception_syntax_removed_error("`finally`"));
         }
         if self.match_one(&[TokenKind::Struct]) {
             return self.parse_struct();
@@ -1147,58 +1153,6 @@ impl Parser {
         }))
     }
 
-    fn parse_try(&mut self) -> Result<argon_ast::Stmt, ParseError> {
-        use argon_ast::*;
-
-        let start = self.previous().span.start;
-        let block = match self.parse_statement()? {
-            Stmt::Block(b) => b,
-            _ => return Err(self.parser_error_prev("try block must be a block")),
-        };
-
-        let handler = if self.match_one(&[TokenKind::Catch]) {
-            let catch_start = self.previous().span.start;
-            self.expect(TokenKind::OpenParen)?;
-            let param = if self.check(&TokenKind::Identifier) {
-                Some(self.parse_pattern()?)
-            } else {
-                None
-            };
-            self.expect(TokenKind::CloseParen)?;
-
-            let body = match self.parse_statement()? {
-                Stmt::Block(b) => b,
-                _ => return Err(self.parser_error_prev("catch block must be a block")),
-            };
-
-            let catch_end = self.previous().span.end;
-            Some(CatchClause {
-                param,
-                body,
-                span: catch_start..catch_end,
-            })
-        } else {
-            None
-        };
-
-        let finalizer = if self.match_one(&[TokenKind::Finally]) {
-            match self.parse_statement()? {
-                Stmt::Block(b) => Some(b),
-                _ => return Err(self.parser_error_prev("finally block must be a block")),
-            }
-        } else {
-            None
-        };
-
-        let end = self.previous().span.end;
-        Ok(Stmt::Try(TryStmt {
-            block,
-            handler,
-            finalizer,
-            span: start..end,
-        }))
-    }
-
     fn parse_break(&mut self) -> Result<argon_ast::Stmt, ParseError> {
         use argon_ast::*;
 
@@ -1231,20 +1185,6 @@ impl Parser {
 
         Ok(Stmt::Continue(ContinueStmt {
             label,
-            span: start..end,
-        }))
-    }
-
-    fn parse_throw(&mut self) -> Result<argon_ast::Stmt, ParseError> {
-        use argon_ast::*;
-
-        let start = self.previous().span.start;
-        let argument = self.parse_expression()?;
-        self.match_one(&[TokenKind::Semi]);
-        let end = self.previous().span.end;
-
-        Ok(Stmt::Throw(ThrowStmt {
-            argument,
             span: start..end,
         }))
     }
@@ -1854,7 +1794,7 @@ impl Parser {
 
         let mut cases = Vec::new();
         while !self.check(&TokenKind::CloseBrace) && !self.is_at_end() {
-            let pattern = self.parse_expression()?;
+            let pattern = self.parse_match_pattern()?;
             let case_start = pattern.span().start;
             self.expect(TokenKind::FatArrow)?;
             let consequent = Box::new(self.parse_statement()?);
@@ -1878,6 +1818,40 @@ impl Parser {
             cases,
             span: start..end,
         }))
+    }
+
+    fn parse_match_pattern(&mut self) -> Result<argon_ast::MatchPattern, ParseError> {
+        use argon_ast::*;
+
+        if self.check(&TokenKind::Identifier) {
+            let token = self.peek();
+            let ident_text = self.source[token.span.clone()].to_string();
+            let next_kind = self
+                .tokens
+                .get(self.current + 1)
+                .map(|token| token.kind)
+                .unwrap_or(TokenKind::Eof);
+
+            if (ident_text == "Ok" || ident_text == "Err") && next_kind == TokenKind::OpenParen {
+                self.advance();
+                let kind = if ident_text == "Ok" {
+                    ResultPatternKind::Ok
+                } else {
+                    ResultPatternKind::Err
+                };
+                let start = token.span.start;
+                self.expect(TokenKind::OpenParen)?;
+                let binding = self.expect_identifier()?;
+                self.expect(TokenKind::CloseParen)?;
+                return Ok(MatchPattern::Result(ResultPattern {
+                    kind,
+                    binding,
+                    span: start..self.previous().span.end,
+                }));
+            }
+        }
+
+        Ok(MatchPattern::Expr(self.parse_expression()?))
     }
 
     /// Parse argon-style import: `from "path" import { a, b }` or `from "path" import Name`
@@ -3596,6 +3570,16 @@ impl Parser {
     fn unexpected_here(&self, msg: impl Into<String>) -> ParseError {
         ParseError::UnexpectedToken {
             msg: msg.into(),
+            span: self.peek().span.clone(),
+        }
+    }
+
+    fn exception_syntax_removed_error(&self, keyword: &str) -> ParseError {
+        ParseError::UnexpectedToken {
+            msg: format!(
+                "{} is no longer supported; return Result<T, E> and use `match` with `Ok(value)` / `Err(error)`",
+                keyword
+            ),
             span: self.peek().span.clone(),
         }
     }

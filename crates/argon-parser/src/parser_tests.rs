@@ -464,43 +464,30 @@ mod control_flow_parsing {
     }
 }
 
-mod try_catch_parsing {
+mod result_match_parsing {
     use super::*;
 
     #[test]
-    fn parses_try_catch_statement() {
-        // Assign
+    fn parses_result_match_statement() {
+        let source = "match (res) { Ok(value) => return value, Err(error) => return 0, }";
+        let result = parse(source);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rejects_try_statement_with_migration_diagnostic() {
         let source = "try { const x = 1; } catch (e) { const y = 2; }";
-
-        // Act
         let result = parse(source);
-
-        // Assert
-        assert!(result.is_ok());
+        let err = result.expect_err("exception syntax should be rejected");
+        assert!(err.to_string().contains("Result<T, E>"));
     }
 
     #[test]
-    fn parses_try_catch_finally_statement() {
-        // Assign
-        let source = "try { const x = 1; } catch (e) { const y = 2; } finally { const z = 3; }";
-
-        // Act
+    fn rejects_throw_statement_with_migration_diagnostic() {
+        let source = "throw 1;";
         let result = parse(source);
-
-        // Assert
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn parses_try_finally_statement() {
-        // Assign
-        let source = "try { const x = 1; } finally { const y = 2; }";
-
-        // Act
-        let result = parse(source);
-
-        // Assert
-        assert!(result.is_ok());
+        let err = result.expect_err("throw should be rejected");
+        assert!(err.to_string().contains("Ok(value)"));
     }
 }
 

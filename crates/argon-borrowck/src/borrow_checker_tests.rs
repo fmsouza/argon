@@ -673,49 +673,31 @@ mod return_statement_checking {
     }
 }
 
-mod try_catch_checking {
+mod result_match_checking {
     use super::*;
 
     #[test]
-    fn checks_try_catch_statement() {
-        // Assign
-        let source = "try { const x = 1; } catch (e) { const y = 2; }";
+    fn checks_result_match_statement() {
+        let source = r#"
+function unwrapResult(res: Result<i32, i32>): i32 {
+    match (res) {
+        Ok(value) => return value,
+        Err(error) => return error,
+    }
+
+    return 0;
+}
+"#;
         let ast = parse(source).unwrap();
         let mut checker = BorrowChecker::new();
-
-        // Act
         let result = checker.check(&ast);
-
-        // Assert
         assert!(result.is_ok());
     }
 
     #[test]
-    fn checks_try_finally_statement() {
-        // Assign
+    fn rejects_removed_exception_syntax_during_parse() {
         let source = "try { const x = 1; } finally { const y = 2; }";
-        let ast = parse(source).unwrap();
-        let mut checker = BorrowChecker::new();
-
-        // Act
-        let result = checker.check(&ast);
-
-        // Assert
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn checks_try_catch_finally_statement() {
-        // Assign
-        let source = "try { const x = 1; } catch (e) { const y = 2; } finally { const z = 3; }";
-        let ast = parse(source).unwrap();
-        let mut checker = BorrowChecker::new();
-
-        // Act
-        let result = checker.check(&ast);
-
-        // Assert
-        assert!(result.is_ok());
+        assert!(parse(source).is_err());
     }
 }
 
