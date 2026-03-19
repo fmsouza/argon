@@ -145,6 +145,7 @@ pub(crate) fn get_runtime() -> &'static str {
 
     // Result<T, E> - Result type for error handling
     function Ok(value) {
+        this.__tag = 'Ok';
         this.value = value;
     }
 
@@ -156,6 +157,7 @@ pub(crate) fn get_runtime() -> &'static str {
     Ok.prototype.mapErr = function() { return this; };
 
     function Err(error) {
+        this.__tag = 'Err';
         this.error = error;
     }
 

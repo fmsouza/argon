@@ -2353,15 +2353,14 @@ mod tests {
     }
 
     #[test]
-    fn executes_flat_try_catch_throw_standalone() {
+    fn executes_result_style_branching_standalone() {
         // Assign
         let source = r#"
             function recover(): i32 {
                 let value = 1;
-                try {
-                    throw 7;
-                } catch (err) {
-                    value = err;
+                const failed = true;
+                if (failed) {
+                    value = 7;
                 }
                 return value;
             }
@@ -2379,20 +2378,14 @@ mod tests {
     }
 
     #[test]
-    fn executes_structured_try_catch_with_returns_standalone() {
+    fn executes_structured_returns_standalone() {
         // Assign
         let source = r#"
             function recover(flag: bool): i32 {
-                try {
-                    if (flag) {
-                        throw 7;
-                    }
-                    return 1;
-                } catch (err) {
-                    return err;
+                if (flag) {
+                    return 7;
                 }
-
-                return 0;
+                return 1;
             }
         "#;
         let wasm = compile_source(source);
@@ -2408,23 +2401,19 @@ mod tests {
     }
 
     #[test]
-    fn executes_loop_control_inside_try_standalone() {
+    fn executes_loop_control_standalone() {
         // Assign
         let source = r#"
             function countUntil(limit: i32): i32 {
                 let i = 0;
-                try {
-                    while (i < limit) {
-                        i = i + 1;
-                        if (i == 2) {
-                            continue;
-                        }
-                        if (i == 4) {
-                            break;
-                        }
+                while (i < limit) {
+                    i = i + 1;
+                    if (i == 2) {
+                        continue;
                     }
-                } finally {
-                    const done = true;
+                    if (i == 4) {
+                        break;
+                    }
                 }
 
                 return i;
@@ -2443,21 +2432,17 @@ mod tests {
     }
 
     #[test]
-    fn executes_for_of_inside_try_standalone() {
+    fn executes_for_of_standalone() {
         // Assign
         let source = r#"
             function sumUntil(): i32 {
                 let sum = 0;
-                try {
-                    const items = [2, 3, 4, 5];
-                    for (const item of items) {
-                        sum = sum + item;
-                        if (sum > 6) {
-                            break;
-                        }
+                const items = [2, 3, 4, 5];
+                for (const item of items) {
+                    sum = sum + item;
+                    if (sum > 6) {
+                        break;
                     }
-                } finally {
-                    const done = true;
                 }
 
                 return sum;
@@ -2473,24 +2458,20 @@ mod tests {
     }
 
     #[test]
-    fn executes_switch_and_match_inside_try_standalone() {
+    fn executes_switch_and_match_standalone() {
         // Assign
         let source = r#"
             function choose(x: i32): i32 {
                 let value = 0;
-                try {
-                    switch (x) {
-                        case 1:
-                            value = 10;
-                            break;
-                        case 2:
-                            value = 20;
-                            break;
-                        default:
-                            value = 30;
-                    }
-                } finally {
-                    const done = true;
+                switch (x) {
+                    case 1:
+                        value = 10;
+                        break;
+                    case 2:
+                        value = 20;
+                        break;
+                    default:
+                        value = 30;
                 }
 
                 return value;
@@ -2498,13 +2479,9 @@ mod tests {
 
             function classify(x: i32): i32 {
                 let value = 0;
-                try {
-                    match (x) {
-                        1 => value = 100,
-                        2 => value = 200,
-                    }
-                } finally {
-                    const done = true;
+                match (x) {
+                    1 => value = 100,
+                    2 => value = 200,
                 }
 
                 return value;

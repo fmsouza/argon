@@ -16,8 +16,6 @@ pub enum Stmt {
     Break(BreakStmt),
     Continue(ContinueStmt),
     Return(ReturnStmt),
-    Throw(ThrowStmt),
-    Try(TryStmt),
     With(WithStmt),
     Labeled(LabeledStmt),
     Debugger(DebuggerStmt),
@@ -78,9 +76,25 @@ pub struct MatchStmt {
 }
 #[derive(Debug, Clone)]
 pub struct MatchCase {
-    pub pattern: Expr,
+    pub pattern: MatchPattern,
     pub consequent: Box<Stmt>,
     pub guard: Option<Expr>,
+    pub span: Span,
+}
+#[derive(Debug, Clone)]
+pub enum MatchPattern {
+    Expr(Box<Expr>),
+    Result(ResultPattern),
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultPatternKind {
+    Ok,
+    Err,
+}
+#[derive(Debug, Clone)]
+pub struct ResultPattern {
+    pub kind: ResultPatternKind,
+    pub binding: Ident,
     pub span: Span,
 }
 #[derive(Debug, Clone)]
@@ -140,24 +154,6 @@ pub struct LoopStmt {
 #[derive(Debug, Clone)]
 pub struct ReturnStmt {
     pub argument: Option<Expr>,
-    pub span: Span,
-}
-#[derive(Debug, Clone)]
-pub struct ThrowStmt {
-    pub argument: Expr,
-    pub span: Span,
-}
-#[derive(Debug, Clone)]
-pub struct TryStmt {
-    pub block: BlockStmt,
-    pub handler: Option<CatchClause>,
-    pub finalizer: Option<BlockStmt>,
-    pub span: Span,
-}
-#[derive(Debug, Clone)]
-pub struct CatchClause {
-    pub param: Option<Pattern>,
-    pub body: BlockStmt,
     pub span: Span,
 }
 #[derive(Debug, Clone)]
@@ -1415,6 +1411,9 @@ impl_spanned!(
     ExpressionStmt,
     BlockStmt,
     IfStmt,
+    MatchStmt,
+    MatchCase,
+    ResultPattern,
     SwitchStmt,
     SwitchCase,
     ForStmt,
@@ -1424,9 +1423,6 @@ impl_spanned!(
     BreakStmt,
     ContinueStmt,
     ReturnStmt,
-    ThrowStmt,
-    TryStmt,
-    CatchClause,
     WithStmt,
     LabeledStmt,
     DebuggerStmt,
@@ -1549,6 +1545,15 @@ impl Spanned for Pattern {
         match self {
             Pattern::Identifier(i) => &i.name.span,
             _ => &EMPTY_SPAN,
+        }
+    }
+}
+
+impl Spanned for MatchPattern {
+    fn span(&self) -> &Span {
+        match self {
+            MatchPattern::Expr(expr) => expr.span(),
+            MatchPattern::Result(pattern) => &pattern.span,
         }
     }
 }

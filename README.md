@@ -353,16 +353,17 @@ async function main(): void {
 ### Error handling
 
 ```ts
-try {
-    if (flag) {
-        throw 7;
+function divide(a: i32, b: i32): Result<i32, string> {
+    if (b == 0) {
+        return Err { error: "division by zero" };
     }
-    return 1;
-} catch (err) {
-    println(err);
-    return 0;
-} finally {
-    println("cleanup");
+    return Ok { value: a / b };
+}
+
+const result = divide(10, 2);
+match (result) {
+    Ok(value) => println(value),
+    Err(error) => println(error),
 }
 ```
 
@@ -567,7 +568,7 @@ This produces three files:
 - `math.mjs` — module loader that merges native exports with host companions
 - `math.host.mjs` — JS host implementations for features that need runtime support
 
-The WASM target supports numeric operations, control flow, function calls, branching, loops, array indexing, heap-backed object access, structured `try`/`catch`/`finally`, async/await (lowered synchronously), and direct function imports. `std:fs` works via WASI. `std:http` and `std:ws` clients work via host companion JS. `std:net` (raw sockets), HTTP servers, and WebSocket servers are not available on WASM and produce a compile-time error. Features outside the supported subset fail at compile time with a clear error.
+The WASM target supports numeric operations, control flow, function calls, branching, loops, array indexing, heap-backed object access, `Result`-based error handling, async/await (lowered synchronously), and direct function imports. `std:fs` works via WASI. `std:http` and `std:ws` clients work via host companion JS. `std:net` (raw sockets), HTTP servers, and WebSocket servers are not available on WASM and produce a compile-time error. Features outside the supported subset fail at compile time with a clear error.
 
 ### Native
 
@@ -693,7 +694,7 @@ Key examples by topic:
 - **Ownership/borrowing:** `ownership.arg`, `borrowing.arg`
 - **Structs:** `structs.arg`, `simple_method.arg`, `native_structs.arg`
 - **Generics:** `generic_simple.arg`, `generic_fn.arg`, `generic_struct.arg`
-- **Control flow:** `control-flow.arg`, `match.arg`, `try-catch.arg`, `recursion.arg`
+- **Control flow:** `control-flow.arg`, `match.arg`, `result-match.arg`, `recursion.arg`
 - **Type system:** `interface.arg`, `enum.arg`, `type_test.arg`
 - **Skills:** `skills.arg`
 - **Standard library:** `std_math.arg`, `arithmetic.arg`

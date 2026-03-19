@@ -2007,8 +2007,6 @@ impl JsCodegen {
                 Ok(())
             }
             Stmt::Match(m) => self.generate_match(m),
-            Stmt::Try(t) => self.generate_try(t),
-            Stmt::Throw(t) => self.generate_throw(t),
             Stmt::Switch(s) => self.generate_switch(s),
             Stmt::DoWhile(d) => self.generate_do_while(d),
             Stmt::Import(i) => self.generate_import(i),
@@ -3013,103 +3011,89 @@ impl JsCodegen {
     }
 
     fn generate_match(&mut self, m: &MatchStmt) -> Result<(), CodegenError> {
-        // Check if this is an Option or Result match pattern
-        let type_name = self.detect_option_result_type(&m.discriminant);
+        let has_result_patterns = m
+            .cases
+            .iter()
+            .any(|case| matches!(case.pattern, MatchPattern::Result(_)));
 
-        if let Some(type_name) = type_name {
-            let patterns: Vec<(String, &MatchCase)> = m
-                .cases
-                .iter()
-                .filter_map(|case| {
-                    if let Expr::Member(m) = &case.pattern {
-                        if let Expr::Identifier(method_id) = m.property.as_ref() {
-                            return Some((method_id.sym.clone(), case));
-                        }
-                    }
-                    None
-                })
-                .collect();
+        if !has_result_patterns {
+            self.output.push_str("switch (");
+            self.generate_expression(&m.discriminant)?;
+            self.output.push_str(") {\n");
 
-            if !patterns.is_empty() {
-                return self.generate_option_result_match(&type_name, &m.discriminant, &patterns);
-            }
-        }
-
-        // Default switch-based match for other types
-        self.output.push_str("switch (");
-        self.generate_expression(&m.discriminant)?;
-        self.output.push_str(") {\n");
-
-        for case in &m.cases {
-            self.output.push_str("case ");
-            self.generate_expression(&case.pattern)?;
-            self.output.push_str(":\n");
-
-            self.indent += 1;
-            self.generate_statement(case.consequent.as_ref())?;
-            self.indent -= 1;
-        }
-
-        self.output.push_str("}\n");
-        Ok(())
-    }
-
-    fn detect_option_result_type(&self, discriminant: &Expr) -> Option<String> {
-        // Check if discriminant is accessing isSome/isNone or isOk/isErr
-        let type_name = match discriminant {
-            Expr::Member(m) => {
-                let obj = &m.object;
-                if let Expr::Identifier(_) = obj.as_ref() {
-                    if let Expr::Identifier(method_id) = m.property.as_ref() {
-                        match method_id.sym.as_str() {
-                            "isSome" | "isNone" => Some("Option".to_string()),
-                            "isOk" | "isErr" => Some("Result".to_string()),
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
+            for case in &m.cases {
+                self.output.push_str("case ");
+                match &case.pattern {
+                    MatchPattern::Expr(pattern) => self.generate_expression(pattern)?,
+                    MatchPattern::Result(_) => unreachable!("result patterns handled above"),
                 }
-            }
-            _ => None,
-        };
-        type_name
-    }
+                self.output.push_str(":\n");
 
-    fn generate_option_result_match(
-        &mut self,
-        type_name: &str,
-        discriminant: &Expr,
-        patterns: &[(String, &MatchCase)],
-    ) -> Result<(), CodegenError> {
-        // Generate if-else chain for Option/Result pattern matching
-        // discriminant.isSome() ? discriminant.unwrap() : default
-
-        let method_true = if type_name == "Option" {
-            "isSome"
-        } else {
-            "isOk"
-        };
-
-        for (i, (method, case)) in patterns.iter().enumerate() {
-            if i == 0 {
-                self.output.push_str("if (");
-                self.generate_expression(discriminant)?;
-                self.output.push_str(&format!(".{}()) {{\n", method_true));
-            } else {
-                self.output.push_str("} else if (");
-                self.generate_expression(discriminant)?;
-                self.output.push_str(&format!(".{}()) {{\n", method));
+                self.indent += 1;
+                self.generate_statement(case.consequent.as_ref())?;
+                self.indent -= 1;
             }
 
-            self.indent += 1;
-            self.generate_statement(case.consequent.as_ref())?;
-            self.indent -= 1;
+            self.output.push_str("}\n");
+            return Ok(());
         }
 
-        self.output.push_str("}\n");
+        self.loop_label_counter += 1;
+        let discr_name = format!("__argon_match_{}", self.loop_label_counter);
+        self.output.push_str("const ");
+        self.output.push_str(&discr_name);
+        self.output.push_str(" = ");
+        self.generate_expression(&m.discriminant)?;
+        self.output.push_str(";\n");
+
+        for (index, case) in m.cases.iter().enumerate() {
+            if index == 0 {
+                self.output.push_str("if (");
+            } else {
+                self.output.push_str("else if (");
+            }
+
+            match &case.pattern {
+                MatchPattern::Expr(pattern) => {
+                    self.output.push_str(&discr_name);
+                    self.output.push_str(" === ");
+                    self.generate_expression(pattern)?;
+                }
+                MatchPattern::Result(pattern) => match pattern.kind {
+                    ResultPatternKind::Ok => {
+                        self.output.push_str(&format!(
+                            "{} && ({}.__tag === \"Ok\" || {}.isOk === true)",
+                            discr_name, discr_name, discr_name
+                        ));
+                    }
+                    ResultPatternKind::Err => {
+                        self.output.push_str(&format!(
+                            "{} && ({}.__tag === \"Err\" || {}.isErr === true)",
+                            discr_name, discr_name, discr_name
+                        ));
+                    }
+                },
+            }
+
+            self.output.push_str(") {\n");
+            self.indent += 1;
+
+            if let MatchPattern::Result(pattern) = &case.pattern {
+                self.output.push_str("const ");
+                self.output.push_str(&pattern.binding.sym);
+                self.output.push_str(" = ");
+                self.output.push_str(&discr_name);
+                self.output.push_str(match pattern.kind {
+                    ResultPatternKind::Ok => ".value;\n",
+                    ResultPatternKind::Err => ".error;\n",
+                });
+            }
+
+            self.generate_statement(case.consequent.as_ref())?;
+            self.indent -= 1;
+            self.output.push_str("}\n");
+        }
+
         Ok(())
     }
 
@@ -3179,51 +3163,6 @@ impl JsCodegen {
 
         self.output.push_str(" };\n");
         self.add_line();
-        Ok(())
-    }
-
-    fn generate_try(&mut self, t: &TryStmt) -> Result<(), CodegenError> {
-        self.output.push_str("try {\n");
-        self.indent += 1;
-        for stmt in &t.block.statements {
-            self.generate_statement(stmt)?;
-        }
-        self.indent -= 1;
-
-        if let Some(ref handler) = t.handler {
-            self.output.push_str("} catch ");
-            if let Some(ref param) = handler.param {
-                self.output.push('(');
-                if let Pattern::Identifier(id) = param {
-                    self.output.push_str(&id.name.sym);
-                }
-                self.output.push_str(") ");
-            }
-            self.output.push_str("{\n");
-            self.indent += 1;
-            for stmt in &handler.body.statements {
-                self.generate_statement(stmt)?;
-            }
-            self.indent -= 1;
-        }
-
-        if let Some(ref finalizer) = t.finalizer {
-            self.output.push_str("} finally {\n");
-            self.indent += 1;
-            for stmt in &finalizer.statements {
-                self.generate_statement(stmt)?;
-            }
-            self.indent -= 1;
-        }
-
-        self.output.push_str("}\n");
-        Ok(())
-    }
-
-    fn generate_throw(&mut self, t: &ThrowStmt) -> Result<(), CodegenError> {
-        self.output.push_str("throw ");
-        self.generate_expression(&t.argument)?;
-        self.output.push_str(";\n");
         Ok(())
     }
 
@@ -3311,10 +3250,8 @@ fn append_declaration_stmt(output: &mut String, stmt: &Stmt, exported: bool) {
             output.push('(');
             append_params(output, &f.params);
             output.push(')');
-            if let Some(ref ret_ty) = f.return_type {
-                output.push_str(": ");
-                output.push_str(&type_to_ts_string(ret_ty));
-            }
+            output.push_str(": ");
+            output.push_str(&function_return_type_to_ts_string(f));
             output.push_str(";\n\n");
         }
         Stmt::Struct(s) => {
@@ -3506,6 +3443,20 @@ fn append_enum_initializer(output: &mut String, expr: &Expr) {
         }
         Expr::Identifier(id) => output.push_str(&id.sym),
         _ => output.push('0'),
+    }
+}
+
+fn function_return_type_to_ts_string(f: &FunctionDecl) -> String {
+    let base = f
+        .return_type
+        .as_ref()
+        .map(|ret_ty| type_to_ts_string(ret_ty))
+        .unwrap_or_else(|| "void".to_string());
+
+    if f.is_async {
+        format!("Promise<{}>", base)
+    } else {
+        base
     }
 }
 

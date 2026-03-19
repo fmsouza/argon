@@ -746,9 +746,8 @@ impl Runtime {
             Stmt::Match(m) => {
                 let disc = self.evaluate_expression(&m.discriminant)?;
                 for case in &m.cases {
-                    let pat = self.evaluate_expression(&case.pattern)?;
-                    if self.values_equal(&disc, &pat) {
-                        return self.execute_statement(&case.consequent);
+                    if let Some(outcome) = self.try_execute_match_case(case, &disc)? {
+                        return Ok(outcome);
                     }
                 }
                 Ok(ExecOutcome::Normal)
@@ -776,32 +775,6 @@ impl Runtime {
                     }
                 }
                 Ok(ExecOutcome::Normal)
-            }
-            Stmt::Throw(t) => {
-                let value = self.evaluate_expression(&t.argument)?;
-                Err(RuntimeError::Thrown(self.value_to_string(&value)))
-            }
-            Stmt::Try(t) => {
-                let try_result = self.execute_statement(&Stmt::Block(t.block.clone()));
-                let outcome = match try_result {
-                    Ok(outcome) => outcome,
-                    Err(err) => {
-                        if let Some(handler) = &t.handler {
-                            if let Some(Pattern::Identifier(id)) = &handler.param {
-                                self.scope
-                                    .set(id.name.sym.clone(), Value::String(err.to_string()));
-                            }
-                            self.execute_statement(&Stmt::Block(handler.body.clone()))?
-                        } else {
-                            return Err(err);
-                        }
-                    }
-                };
-
-                if let Some(finalizer) = &t.finalizer {
-                    let _ = self.execute_statement(&Stmt::Block(finalizer.clone()))?;
-                }
-                Ok(outcome)
             }
             Stmt::Import(_)
             | Stmt::Export(_)
@@ -2886,6 +2859,84 @@ impl Runtime {
             Value::Future(_) => "[future]".to_string(),
         }
     }
+
+    fn try_execute_match_case(
+        &mut self,
+        case: &MatchCase,
+        discriminant: &Value,
+    ) -> Result<Option<ExecOutcome>, RuntimeError> {
+        match &case.pattern {
+            MatchPattern::Expr(pattern) => {
+                let pat = self.evaluate_expression(pattern)?;
+                if !self.values_equal(discriminant, &pat) {
+                    return Ok(None);
+                }
+                if let Some(guard) = &case.guard {
+                    let guard_value = self.evaluate_expression(guard)?;
+                    if !self.is_truthy(&guard_value) {
+                        return Ok(None);
+                    }
+                }
+                Ok(Some(self.execute_statement(&case.consequent)?))
+            }
+            MatchPattern::Result(pattern) => {
+                let Some(payload) = self.result_pattern_payload(discriminant, pattern.kind) else {
+                    return Ok(None);
+                };
+
+                let binding_name = pattern.binding.sym.clone();
+                let previous = self.scope.get(&binding_name);
+                self.scope.define(binding_name.clone(), payload);
+
+                let outcome = (|| -> Result<Option<ExecOutcome>, RuntimeError> {
+                    if let Some(guard) = &case.guard {
+                        let guard_value = self.evaluate_expression(guard)?;
+                        if !self.is_truthy(&guard_value) {
+                            return Ok(None);
+                        }
+                    }
+                    Ok(Some(self.execute_statement(&case.consequent)?))
+                })();
+
+                match previous {
+                    Some(value) => self.scope.set(binding_name, value),
+                    None => {
+                        self.scope.values.remove(&binding_name);
+                    }
+                }
+
+                outcome
+            }
+        }
+    }
+
+    fn result_pattern_payload(&self, value: &Value, kind: ResultPatternKind) -> Option<Value> {
+        let Value::Object(map) = value else {
+            return None;
+        };
+        let map = map.borrow();
+        let tag = match map.get("__tag") {
+            Some(Value::String(tag)) => Some(tag.as_str()),
+            _ => None,
+        };
+
+        match kind {
+            ResultPatternKind::Ok => {
+                if tag == Some("Ok") || matches!(map.get("isOk"), Some(Value::Boolean(true))) {
+                    map.get("value").cloned()
+                } else {
+                    None
+                }
+            }
+            ResultPatternKind::Err => {
+                if tag == Some("Err") || matches!(map.get("isErr"), Some(Value::Boolean(true))) {
+                    map.get("error").cloned()
+                } else {
+                    None
+                }
+            }
+        }
+    }
 }
 
 fn function_params(f: &FunctionDecl) -> Vec<String> {
@@ -3040,18 +3091,20 @@ fn expect_handle_id(args: &[Value], idx: usize) -> Result<u64, RuntimeError> {
     }
 }
 
-/// Create an Ok result value (wraps value in an object with `value` and `isOk` fields).
+/// Create an Ok result value using the shared Result object shape.
 fn make_ok(value: Value) -> Value {
     let mut obj = HashMap::new();
+    obj.insert("__tag".to_string(), Value::String("Ok".to_string()));
     obj.insert("value".to_string(), value);
     obj.insert("isOk".to_string(), Value::Boolean(true));
     obj.insert("isErr".to_string(), Value::Boolean(false));
     Value::Object(Rc::new(RefCell::new(obj)))
 }
 
-/// Create an Err result value (wraps error in an object with `error` and `isErr` fields).
+/// Create an Err result value using the shared Result object shape.
 fn make_err(error: Value) -> Value {
     let mut obj = HashMap::new();
+    obj.insert("__tag".to_string(), Value::String("Err".to_string()));
     obj.insert("error".to_string(), error);
     obj.insert("isOk".to_string(), Value::Boolean(false));
     obj.insert("isErr".to_string(), Value::Boolean(true));
@@ -3238,29 +3291,6 @@ fn detect_compile_only_feature_in_stmt(stmt: &Stmt) -> Option<&'static str> {
             .argument
             .as_ref()
             .and_then(detect_compile_only_feature_in_expr),
-        Stmt::Throw(t) => detect_compile_only_feature_in_expr(&t.argument),
-        Stmt::Try(t) => t
-            .block
-            .statements
-            .iter()
-            .find_map(detect_compile_only_feature_in_stmt)
-            .or_else(|| {
-                t.handler.as_ref().and_then(|handler| {
-                    handler
-                        .body
-                        .statements
-                        .iter()
-                        .find_map(detect_compile_only_feature_in_stmt)
-                })
-            })
-            .or_else(|| {
-                t.finalizer.as_ref().and_then(|finalizer| {
-                    finalizer
-                        .statements
-                        .iter()
-                        .find_map(detect_compile_only_feature_in_stmt)
-                })
-            }),
         Stmt::Variable(v) => v
             .declarations
             .iter()
