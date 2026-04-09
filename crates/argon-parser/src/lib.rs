@@ -158,10 +158,14 @@ pub fn parse(source: &str) -> Result<SourceFile, ParseError> {
     parser.parse()
 }
 
+const MAX_RECURSION_DEPTH: usize = 50;
+const MAX_COLLECTION_ELEMENTS: usize = 65_536;
+
 pub struct Parser {
     tokens: Vec<LexerToken>,
     current: usize,
     source: String,
+    depth: usize,
 }
 
 impl Parser {
@@ -170,7 +174,23 @@ impl Parser {
             tokens,
             current: 0,
             source,
+            depth: 0,
         }
+    }
+
+    fn enter_recursion(&mut self) -> Result<(), ParseError> {
+        self.depth += 1;
+        if self.depth > MAX_RECURSION_DEPTH {
+            return Err(ParseError::Parser {
+                msg: "maximum nesting depth exceeded".to_string(),
+                span: self.peek().span.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    fn exit_recursion(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
     }
 
     pub fn parse(&mut self) -> Result<SourceFile, ParseError> {
@@ -199,6 +219,13 @@ impl Parser {
     }
 
     fn parse_statement(&mut self) -> Result<argon_ast::Stmt, ParseError> {
+        self.enter_recursion()?;
+        let result = self.parse_statement_inner();
+        self.exit_recursion();
+        result
+    }
+
+    fn parse_statement_inner(&mut self) -> Result<argon_ast::Stmt, ParseError> {
         if self.match_one(&[TokenKind::At]) {
             return self.parse_decorated_statement();
         }
@@ -1932,6 +1959,7 @@ impl Parser {
         use argon_ast::*;
         let mut args = Vec::new();
         let mut seen_named = false;
+        let mut seen_names = std::collections::HashSet::new();
 
         while !self.check(&TokenKind::CloseParen) && !self.is_at_end() {
             if !args.is_empty() {
@@ -1943,13 +1971,7 @@ impl Parser {
             match &arg {
                 ExprOrSpread::Named { name, .. } => {
                     seen_named = true;
-                    if args.iter().any(|a| {
-                        if let ExprOrSpread::Named { name: n, .. } = a {
-                            n.sym == name.sym
-                        } else {
-                            false
-                        }
-                    }) {
+                    if !seen_names.insert(name.sym.clone()) {
                         return Err(ParseError::DuplicateNamedArg {
                             name: name.sym.clone(),
                             span: name.span.clone(),
@@ -1973,7 +1995,10 @@ impl Parser {
     }
 
     fn parse_expression(&mut self) -> Result<argon_ast::Expr, ParseError> {
-        self.parse_assignment()
+        self.enter_recursion()?;
+        let result = self.parse_assignment();
+        self.exit_recursion();
+        result
     }
 
     fn parse_assignment(&mut self) -> Result<argon_ast::Expr, ParseError> {
@@ -2264,8 +2289,14 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> Result<argon_ast::Expr, ParseError> {
-        use argon_ast::*;
+        self.enter_recursion()?;
+        let result = self.parse_unary_inner();
+        self.exit_recursion();
+        result
+    }
 
+    fn parse_unary_inner(&mut self) -> Result<argon_ast::Expr, ParseError> {
+        use argon_ast::*;
         if self.match_one(&[TokenKind::Await]) {
             let start = self.previous().span.start;
             let argument = Box::new(self.parse_unary()?);
@@ -2825,6 +2856,10 @@ impl Parser {
                     continue;
                 }
 
+                if properties.len() >= MAX_COLLECTION_ELEMENTS {
+                    return Err(self.parser_error_here("object literal exceeds maximum number of properties"));
+                }
+
                 let key = self.parse_expression()?;
                 let (value, shorthand) = if self.match_one(&[TokenKind::Colon]) {
                     (ExprOrSpread::Expr(self.parse_expression()?), false)
@@ -2859,6 +2894,10 @@ impl Parser {
             let mut elements: Vec<Option<argon_ast::ExprOrSpread>> = Vec::new();
 
             while !self.check(&TokenKind::CloseBracket) && !self.is_at_end() {
+                if elements.len() >= MAX_COLLECTION_ELEMENTS {
+                    return Err(self.parser_error_here("array literal exceeds maximum number of elements"));
+                }
+
                 if self.match_one(&[TokenKind::DotDotDot]) {
                     let start = self.previous().span.start;
                     let expr = self.parse_expression()?;
@@ -3042,6 +3081,7 @@ impl Parser {
         })?;
 
         let mut parser = Parser::new(tokens, expr_src.to_string());
+        parser.depth = self.depth;
         let expr = parser.parse_expression().map_err(|e| {
             self.parser_error_prev(format!("Invalid template interpolation expression: {}", e))
         })?;

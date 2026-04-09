@@ -24,22 +24,23 @@ pub enum BorrowKind {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 struct VariableState {
+    #[allow(dead_code)] // TODO: use for diagnostic messages
     name: String,
     ownership: Ownership,
     borrows: Vec<Borrow>,
+    #[allow(dead_code)] // TODO: use for lifetime analysis
     lifetime: Option<Lifetime>,
     is_copyable: bool,
     drop_scope: usize,
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 struct Borrow {
     kind: BorrowKind,
     location: Span,
     lifetime: Lifetime,
+    #[allow(dead_code)] // TODO: use for borrow origin tracking in diagnostics
     from: String,
 }
 
@@ -50,6 +51,8 @@ pub struct Lifetime {
     pub end: usize,
 }
 
+// TODO: LifetimeScope is constructed but never read -- implement lifetime scope
+// analysis or remove if the current approach supersedes it.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct LifetimeScope {
@@ -98,18 +101,21 @@ struct SummaryState {
     thread_captured_params: HashSet<usize>,
 }
 
-#[allow(dead_code)]
 pub struct BorrowChecker {
     locals: HashMap<String, VariableState>,
     active_borrows: HashMap<String, Vec<Borrow>>,
     errors: Vec<BorrowError>,
+    #[allow(dead_code)] // TODO: emit borrow checker warnings
     warnings: Vec<String>,
     scope_depth: usize,
     lifetime_counter: usize,
+    #[allow(dead_code)] // TODO: use for lifetime scope tracking
     lifetimes: HashMap<usize, LifetimeScope>,
+    #[allow(dead_code)] // TODO: use for nested lifetime scopes
     parent_lifetime: Option<usize>,
     returned_borrows: Vec<String>,
     loop_scope: usize,
+    #[allow(dead_code)] // TODO: use for unsafe block analysis
     in_unsafe: bool,
     thread_access: HashSet<String>,
     type_info: Option<TypeCheckOutput>,
@@ -215,17 +221,24 @@ impl BorrowChecker {
 
         for component in components {
             loop {
-                let previous = self.function_summaries.clone();
+                // Take ownership temporarily to avoid cloning the entire map.
+                // `compute_function_summary` needs `&self` plus a read-only reference to
+                // summaries, while the loop also needs to mutate summaries.
+                let mut summaries = std::mem::take(&mut self.function_summaries);
                 let mut changed = false;
                 for name in &component {
                     if let Some(function) = functions.get(name) {
-                        let summary = self.compute_function_summary(function, &previous);
-                        if previous.get(name) != Some(&summary) {
-                            self.function_summaries.insert(name.clone(), summary);
+                        self.function_summaries = summaries;
+                        let summary =
+                            self.compute_function_summary(function, &self.function_summaries);
+                        summaries = std::mem::take(&mut self.function_summaries);
+                        if summaries.get(name) != Some(&summary) {
+                            summaries.insert(name.clone(), summary);
                             changed = true;
                         }
                     }
                 }
+                self.function_summaries = summaries;
 
                 if !changed {
                     break;
@@ -2912,6 +2925,7 @@ impl BorrowChecker {
         }
     }
 
+    // TODO: use when lifetime narrowing/extension is implemented
     #[allow(dead_code)]
     fn extend_lifetime(&mut self, lifetime: &mut Lifetime) {
         lifetime.end = self.scope_depth;

@@ -355,3 +355,103 @@ impl WarningLabel {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diagnostic_bag_tracks_errors_and_warnings() {
+        let mut bag = DiagnosticBag::new();
+        assert!(!bag.has_errors());
+        assert_eq!(bag.error_count(), 0);
+        assert_eq!(bag.warning_count(), 0);
+
+        bag.add_error(Diagnostic::new(
+            "test".into(),
+            0..5,
+            "test error".into(),
+        ));
+        bag.add_warning(Warning::new("test".into(), 0..5, "test warning".into()));
+
+        assert!(bag.has_errors());
+        assert_eq!(bag.error_count(), 1);
+        assert_eq!(bag.warning_count(), 1);
+    }
+
+    #[test]
+    fn diagnostic_builder_pattern() {
+        let diag = Diagnostic::new("src".into(), 10..20, "type mismatch".into())
+            .with_code("E001".into())
+            .with_note("expected i32, found string".into())
+            .with_label(
+                DiagnosticLabel::new(10..20).with_message("this expression".into()),
+            );
+
+        assert_eq!(diag.code.as_deref(), Some("E001"));
+        assert_eq!(diag.note.as_deref(), Some("expected i32, found string"));
+        assert_eq!(diag.labels.len(), 1);
+        assert_eq!(diag.severity, Severity::Error);
+    }
+
+    #[test]
+    fn source_file_get_line_at() {
+        let source = SourceFile::new(
+            "test".into(),
+            "test.arg".into(),
+            "line one\nline two\nline three".into(),
+        );
+
+        let (line, content) = source.get_line_at(0).unwrap();
+        assert_eq!(line, 1);
+        assert_eq!(content, "line one");
+
+        let (line, content) = source.get_line_at(10).unwrap();
+        assert_eq!(line, 2);
+        assert_eq!(content, "line two");
+    }
+
+    #[test]
+    fn diagnostic_engine_renders_error() {
+        let mut engine = DiagnosticEngine::new();
+        engine.add_source(SourceFile::new(
+            "test".into(),
+            "test.arg".into(),
+            "let x = 5;".into(),
+        ));
+
+        let diag = Diagnostic::new("test".into(), 4..5, "undefined variable".into())
+            .with_code("T001".into());
+
+        let output = engine.report(&diag);
+        assert!(output.contains("undefined variable"));
+        assert!(output.contains("T001"));
+        assert!(output.contains("test.arg"));
+    }
+
+    #[test]
+    fn diagnostic_engine_renders_bag() {
+        let mut engine = DiagnosticEngine::new();
+        engine.add_source(SourceFile::new(
+            "test".into(),
+            "test.arg".into(),
+            "let x = 5;".into(),
+        ));
+
+        let mut bag = DiagnosticBag::new();
+        bag.add_error(Diagnostic::new(
+            "test".into(),
+            0..3,
+            "first error".into(),
+        ));
+        bag.add_error(Diagnostic::new(
+            "test".into(),
+            4..5,
+            "second error".into(),
+        ));
+
+        let output = engine.render(&bag);
+        assert!(output.contains("first error"));
+        assert!(output.contains("second error"));
+    }
+}

@@ -218,7 +218,7 @@ pub struct TypeChecker {
     resolving_type_aliases: Vec<String>,
     current_return_type: Option<TypeId>,
     errors: Vec<TypeError>,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // TODO: emit type checker warnings
     warnings: Vec<String>,
 }
 

@@ -145,6 +145,29 @@ impl Compiler {
         path: &Path,
         options: &CompileOptions,
     ) -> Result<CompileResult, DriverError> {
+        const MAX_SOURCE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
+
+        let metadata = std::fs::metadata(path).map_err(|e| DriverError::WithDiagnostics {
+            message: format!("io error: {}", e),
+            diagnostics: Diagnostics {
+                bag: DiagnosticBag::new(),
+                rendered: format!("io error: {}", e),
+            },
+        })?;
+        if metadata.len() > MAX_SOURCE_SIZE {
+            return Err(DriverError::WithDiagnostics {
+                message: "source file exceeds 10 MB limit".to_string(),
+                diagnostics: Diagnostics {
+                    bag: DiagnosticBag::new(),
+                    rendered: format!(
+                        "error: source file '{}' is {} bytes, exceeding the 10 MB limit",
+                        path.display(),
+                        metadata.len()
+                    ),
+                },
+            });
+        }
+
         let source = std::fs::read_to_string(path).map_err(|e| DriverError::WithDiagnostics {
             message: format!("io error: {}", e),
             diagnostics: Diagnostics {

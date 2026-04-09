@@ -1349,3 +1349,97 @@ mod named_arg_parsing {
         assert!(result.is_err());
     }
 }
+
+mod security_limits {
+    use super::*;
+
+    // Debug-mode parser frames are large (~10KB each), and the full expression
+    // precedence chain adds ~12 frames per recursion level. We use a 32MB stack
+    // to avoid false stack overflows in tests. In release builds, the default
+    // 8MB stack handles the MAX_RECURSION_DEPTH (50) limit comfortably.
+    fn run_with_large_stack<F: FnOnce() + Send + 'static>(f: F) {
+        let builder = std::thread::Builder::new().stack_size(32 * 1024 * 1024);
+        let handle = builder.spawn(f).expect("failed to spawn test thread");
+        handle.join().expect("test thread panicked");
+    }
+
+    #[test]
+    fn rejects_deeply_nested_parenthesized_expressions() {
+        run_with_large_stack(|| {
+            let mut source = String::new();
+            for _ in 0..60 {
+                source.push('(');
+            }
+            source.push('1');
+            for _ in 0..60 {
+                source.push(')');
+            }
+            source.push(';');
+
+            let result = parse(&source);
+
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(
+                err.to_string().contains("nesting depth"),
+                "Expected nesting depth error, got: {}",
+                err
+            );
+        });
+    }
+
+    #[test]
+    fn accepts_moderately_nested_expressions() {
+        run_with_large_stack(|| {
+            let mut source = String::new();
+            for _ in 0..20 {
+                source.push('(');
+            }
+            source.push('1');
+            for _ in 0..20 {
+                source.push(')');
+            }
+            source.push(';');
+
+            let result = parse(&source);
+
+            assert!(result.is_ok());
+        });
+    }
+
+    #[test]
+    fn rejects_deeply_nested_unary_operators() {
+        run_with_large_stack(|| {
+            let mut source = "!".repeat(60);
+            source.push_str("true;");
+
+            let result = parse(&source);
+
+            assert!(result.is_err());
+            let err = result.unwrap_err();
+            assert!(
+                err.to_string().contains("nesting depth"),
+                "Expected nesting depth error, got: {}",
+                err
+            );
+        });
+    }
+
+    #[test]
+    fn rejects_deeply_nested_blocks() {
+        run_with_large_stack(|| {
+            let mut source = String::new();
+            for _ in 0..60 {
+                source.push_str("if (true) { ");
+            }
+            source.push_str("const x = 1;");
+            for _ in 0..60 {
+                source.push_str(" }");
+            }
+
+            let result = parse(&source);
+
+            assert!(result.is_err());
+        });
+    }
+}
