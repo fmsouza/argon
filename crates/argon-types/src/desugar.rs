@@ -145,7 +145,10 @@ fn desugar_expr(expr: &mut Expr, env: &TypeEnvironment) {
                 desugar_expr_or_spread(arg, env);
             }
             // Then reorder named args if present
-            if c.arguments.iter().any(|a| matches!(a, ExprOrSpread::Named { .. })) {
+            if c.arguments
+                .iter()
+                .any(|a| matches!(a, ExprOrSpread::Named { .. }))
+            {
                 if let Some(sig) = resolve_callee_sig(&c.callee, env) {
                     reorder_args(&mut c.arguments, &sig);
                 }
@@ -156,7 +159,10 @@ fn desugar_expr(expr: &mut Expr, env: &TypeEnvironment) {
             for arg in &mut n.arguments {
                 desugar_expr_or_spread(arg, env);
             }
-            if n.arguments.iter().any(|a| matches!(a, ExprOrSpread::Named { .. })) {
+            if n.arguments
+                .iter()
+                .any(|a| matches!(a, ExprOrSpread::Named { .. }))
+            {
                 if let Some(sig) = resolve_callee_sig(&n.callee, env) {
                     reorder_args(&mut n.arguments, &sig);
                 }
@@ -167,7 +173,10 @@ fn desugar_expr(expr: &mut Expr, env: &TypeEnvironment) {
             for arg in &mut c.arguments {
                 desugar_expr_or_spread(arg, env);
             }
-            if c.arguments.iter().any(|a| matches!(a, ExprOrSpread::Named { .. })) {
+            if c.arguments
+                .iter()
+                .any(|a| matches!(a, ExprOrSpread::Named { .. }))
+            {
                 if let Some(sig) = resolve_callee_sig(&c.callee, env) {
                     reorder_args(&mut c.arguments, &sig);
                 }
@@ -268,7 +277,11 @@ fn desugar_expr(expr: &mut Expr, env: &TypeEnvironment) {
                         for arg in &mut call.arguments {
                             desugar_expr_or_spread(arg, env);
                         }
-                        if call.arguments.iter().any(|a| matches!(a, ExprOrSpread::Named { .. })) {
+                        if call
+                            .arguments
+                            .iter()
+                            .any(|a| matches!(a, ExprOrSpread::Named { .. }))
+                        {
                             if let Some(sig) = resolve_callee_sig(&call.callee, env) {
                                 reorder_args(&mut call.arguments, &sig);
                             }
@@ -279,7 +292,11 @@ fn desugar_expr(expr: &mut Expr, env: &TypeEnvironment) {
                         for arg in &mut call.arguments {
                             desugar_expr_or_spread(arg, env);
                         }
-                        if call.arguments.iter().any(|a| matches!(a, ExprOrSpread::Named { .. })) {
+                        if call
+                            .arguments
+                            .iter()
+                            .any(|a| matches!(a, ExprOrSpread::Named { .. }))
+                        {
                             if let Some(sig) = resolve_callee_sig(&call.callee, env) {
                                 reorder_args(&mut call.arguments, &sig);
                             }

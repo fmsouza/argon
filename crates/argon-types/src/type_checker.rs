@@ -1330,9 +1330,8 @@ impl TypeChecker {
         let mut seen_named: HashMap<String, bool> = HashMap::new();
         for (name, ty) in &named_tys {
             if seen_named.contains_key(name) {
-                self.errors.push(TypeError::DuplicateNamedArg {
-                    name: name.clone(),
-                });
+                self.errors
+                    .push(TypeError::DuplicateNamedArg { name: name.clone() });
                 continue;
             }
             seen_named.insert(name.clone(), true);

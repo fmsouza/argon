@@ -824,7 +824,9 @@ impl Runtime {
                             let key = self.property_key(&p.key)?;
                             let value = match &p.value {
                                 ExprOrSpread::Expr(e) => self.evaluate_expression(e)?,
-                                ExprOrSpread::Named { value, .. } => self.evaluate_expression(value)?,
+                                ExprOrSpread::Named { value, .. } => {
+                                    self.evaluate_expression(value)?
+                                }
                                 ExprOrSpread::Spread(_) => {
                                     return Err(RuntimeError::Unsupported(
                                         "spread in object literals is not supported".to_string(),
@@ -855,7 +857,9 @@ impl Runtime {
                 for el in &a.elements {
                     match el {
                         Some(ExprOrSpread::Expr(e)) => values.push(self.evaluate_expression(e)?),
-                        Some(ExprOrSpread::Named { value, .. }) => values.push(self.evaluate_expression(value)?),
+                        Some(ExprOrSpread::Named { value, .. }) => {
+                            values.push(self.evaluate_expression(value)?)
+                        }
                         Some(ExprOrSpread::Spread(_)) => {
                             return Err(RuntimeError::Unsupported(
                                 "array spread is not supported".to_string(),
@@ -1023,7 +1027,9 @@ impl Runtime {
                                     let found = named_args.iter().find(|(n, _)| n == param_name);
                                     if let Some((_, val)) = found {
                                         resolved.push(val.clone());
-                                    } else if let Some(Some(default_expr)) = func.param_defaults.get(i) {
+                                    } else if let Some(Some(default_expr)) =
+                                        func.param_defaults.get(i)
+                                    {
                                         resolved.push(self.evaluate_expression(default_expr)?);
                                     } else {
                                         resolved.push(Value::Undefined);
@@ -1046,7 +1052,8 @@ impl Runtime {
                 };
 
                 // For native function method calls, prepend the receiver as first arg
-                let final_args = if let (Value::NativeFunction(_), Some(recv)) = (&callee, receiver) {
+                let final_args = if let (Value::NativeFunction(_), Some(recv)) = (&callee, receiver)
+                {
                     let mut a = vec![recv];
                     a.extend(args);
                     a
@@ -1303,7 +1310,9 @@ impl Runtime {
                         map.insert(name.sym.clone(), val);
                     }
                     ExprOrSpread::Spread(_) => {
-                        return Err(RuntimeError::Unsupported("spread in struct init".to_string()));
+                        return Err(RuntimeError::Unsupported(
+                            "spread in struct init".to_string(),
+                        ));
                     }
                 }
             }
@@ -1327,15 +1336,20 @@ impl Runtime {
             if let Value::Object(init_obj) = &init_value {
                 for param in &constructor.params {
                     if let Pattern::Identifier(id) = &param.pat {
-                        let val = init_obj
-                            .borrow()
-                            .get(&id.name.sym)
-                            .cloned()
-                            .unwrap_or_else(|| {
-                                param.default.as_ref().and_then(|default_expr| {
-                                    self.evaluate_expression(default_expr).ok()
-                                }).unwrap_or(Value::Undefined)
-                            });
+                        let val =
+                            init_obj
+                                .borrow()
+                                .get(&id.name.sym)
+                                .cloned()
+                                .unwrap_or_else(|| {
+                                    param
+                                        .default
+                                        .as_ref()
+                                        .and_then(|default_expr| {
+                                            self.evaluate_expression(default_expr).ok()
+                                        })
+                                        .unwrap_or(Value::Undefined)
+                                });
                         ctor_scope.define(id.name.sym.clone(), val);
                     }
                 }
@@ -1370,7 +1384,9 @@ impl Runtime {
                     ExprOrSpread::Expr(init_expr) => self.evaluate_expression(init_expr)?,
                     ExprOrSpread::Named { value, .. } => self.evaluate_expression(value)?,
                     ExprOrSpread::Spread(_) => {
-                        return Err(RuntimeError::Unsupported("spread in struct init".to_string()));
+                        return Err(RuntimeError::Unsupported(
+                            "spread in struct init".to_string(),
+                        ));
                     }
                 };
                 if let Value::Object(init_map) = init {

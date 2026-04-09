@@ -421,7 +421,8 @@ mod named_arg_codegen {
 
     #[test]
     fn generates_default_params() {
-        let source = r#"function greet(name: string, greeting: string = "Hello"): string { return name; }"#;
+        let source =
+            r#"function greet(name: string, greeting: string = "Hello"): string { return name; }"#;
         let ast = parse(source).unwrap();
         let mut codegen = JsCodegen::new();
 
