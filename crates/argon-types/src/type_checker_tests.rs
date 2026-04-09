@@ -700,3 +700,102 @@ mod error_recovery {
         let _ = result;
     }
 }
+
+mod named_arg_type_checking {
+    use super::*;
+
+    #[test]
+    fn accepts_named_args_with_correct_types() {
+        // Assign
+        let source = r#"
+            function greet(name: string, greeting: string = "Hello"): string {
+                return greeting + ", " + name + "!";
+            }
+            const r = greet(name="Bob");
+        "#;
+
+        // Act
+        let ast = parse(source).unwrap();
+        let mut checker = TypeChecker::new();
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok(), "type check error: {:?}", result.err());
+    }
+
+    #[test]
+    fn accepts_out_of_order_named_args() {
+        // Assign
+        let source = r#"
+            function greet(name: string, greeting: string): string {
+                return greeting + ", " + name + "!";
+            }
+            const r = greet(greeting="Hey", name="Eve");
+        "#;
+
+        // Act
+        let ast = parse(source).unwrap();
+        let mut checker = TypeChecker::new();
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok(), "type check error: {:?}", result.err());
+    }
+
+    #[test]
+    fn rejects_unknown_named_arg() {
+        // Assign
+        let source = r#"
+            function greet(name: string): string {
+                return name;
+            }
+            const r = greet(nonexistent="Bob");
+        "#;
+
+        // Act
+        let ast = parse(source).unwrap();
+        let mut checker = TypeChecker::new();
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_missing_required_arg() {
+        // Assign
+        let source = r#"
+            function greet(name: string, greeting: string): string {
+                return greeting + ", " + name + "!";
+            }
+            const r = greet(greeting="Hey");
+        "#;
+
+        // Act
+        let ast = parse(source).unwrap();
+        let mut checker = TypeChecker::new();
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn accepts_defaults_with_named_args() {
+        // Assign
+        let source = r#"
+            function greet(name: string, greeting: string = "Hello"): string {
+                return greeting + ", " + name + "!";
+            }
+            const r = greet(name="Bob");
+        "#;
+
+        // Act
+        let ast = parse(source).unwrap();
+        let mut checker = TypeChecker::new();
+        let result = checker.check(&ast);
+
+        // Assert
+        assert!(result.is_ok(), "type check error: {:?}", result.err());
+    }
+}

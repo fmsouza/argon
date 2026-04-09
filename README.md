@@ -304,6 +304,28 @@ function reduceThree(a: i32, b: i32, c: i32, reducer: Reducer): i32 {
 }
 ```
 
+### Named parameters and default values
+
+Functions can declare default parameter values with `=`. At call sites, arguments can be passed by name using `name=value` syntax, allowing you to skip defaulted parameters or pass arguments in any order:
+
+```ts
+function greet(name: string, greeting: string = "Hello"): string {
+    return greeting + ", " + name + "!";
+}
+
+greet("World");                          // "Hello, World!"
+greet("Alice", "Hi");                    // "Hi, Alice!"
+greet(name="Bob");                       // "Hello, Bob!"
+greet(greeting="Hey", name="Eve");       // "Hey, Eve!"
+greet("Dave", greeting="Yo");            // "Yo, Dave!"
+```
+
+Rules:
+- Positional arguments must come before named arguments
+- Duplicate named arguments are a compile error
+- Named arguments must match a declared parameter name
+- All parameters without defaults must be provided (positionally or by name)
+
 ### Control flow
 
 Argon supports `if`/`else`, `for`, `while`, `loop`, `switch`, `match`, `break`, `continue`:

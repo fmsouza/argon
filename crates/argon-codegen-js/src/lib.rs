@@ -2285,6 +2285,10 @@ impl JsCodegen {
             if let Pattern::Identifier(id) = &p.pat {
                 self.output.push_str(&id.name.sym);
             }
+            if let Some(ref default) = p.default {
+                self.output.push_str(" = ");
+                self.generate_expression(default)?;
+            }
         }
         self.output.push_str(") {\n");
 
@@ -2314,6 +2318,10 @@ impl JsCodegen {
                     self.output.push_str(&id.name.sym);
                     self.output.push_str(" = init.");
                     self.output.push_str(&id.name.sym);
+                    if let Some(ref default) = param.default {
+                        self.output.push_str(" ?? ");
+                        self.generate_expression(default)?;
+                    }
                     self.output.push_str(";\n");
                 }
             }
@@ -2358,19 +2366,18 @@ impl JsCodegen {
                         self.output.push_str("this.");
                         self.generate_expression(&method.key)?;
                         self.output.push_str(" = function(");
-                        let params: Vec<_> = method
-                            .value
-                            .params
-                            .iter()
-                            .map(|p| {
-                                if let Pattern::Identifier(id) = &p.pat {
-                                    id.name.sym.as_str()
-                                } else {
-                                    ""
-                                }
-                            })
-                            .collect();
-                        self.output.push_str(&params.join(", "));
+                        for (i, p) in method.value.params.iter().enumerate() {
+                            if i > 0 {
+                                self.output.push_str(", ");
+                            }
+                            if let Pattern::Identifier(id) = &p.pat {
+                                self.output.push_str(&id.name.sym);
+                            }
+                            if let Some(ref default) = p.default {
+                                self.output.push_str(" = ");
+                                self.generate_expression(default)?;
+                            }
+                        }
                         self.output.push_str(") {\n");
                         for stmt in &method.value.body.statements {
                             self.generate_statement(stmt)?;
@@ -2386,19 +2393,18 @@ impl JsCodegen {
             self.output.push_str("this.");
             self.generate_expression(&method.key)?;
             self.output.push_str(" = function(");
-            let params: Vec<_> = method
-                .value
-                .params
-                .iter()
-                .map(|p| {
-                    if let Pattern::Identifier(id) = &p.pat {
-                        id.name.sym.as_str()
-                    } else {
-                        ""
-                    }
-                })
-                .collect();
-            self.output.push_str(&params.join(", "));
+            for (i, p) in method.value.params.iter().enumerate() {
+                if i > 0 {
+                    self.output.push_str(", ");
+                }
+                if let Pattern::Identifier(id) = &p.pat {
+                    self.output.push_str(&id.name.sym);
+                }
+                if let Some(ref default) = p.default {
+                    self.output.push_str(" = ");
+                    self.generate_expression(default)?;
+                }
+            }
             self.output.push_str(") {\n");
             for stmt in &method.value.body.statements {
                 self.generate_statement(stmt)?;
@@ -2435,11 +2441,7 @@ impl JsCodegen {
                 self.output.push_str("new ");
                 self.generate_expression(&n.callee)?;
                 self.output.push('(');
-                for arg in &n.arguments {
-                    if let ExprOrSpread::Expr(e) = arg {
-                        self.generate_expression(e)?;
-                    }
-                }
+                self.generate_args(&n.arguments)?;
                 self.output.push(')');
                 Ok(())
             }
@@ -2684,20 +2686,30 @@ impl JsCodegen {
         Ok(())
     }
 
+    fn generate_args(&mut self, args: &[ExprOrSpread]) -> Result<(), CodegenError> {
+        for (i, arg) in args.iter().enumerate() {
+            if i > 0 {
+                self.output.push_str(", ");
+            }
+            match arg {
+                ExprOrSpread::Expr(e) => self.generate_expression(e)?,
+                ExprOrSpread::Named { value, .. } => self.generate_expression(value)?,
+                ExprOrSpread::Spread(s) => {
+                    self.output.push_str("...");
+                    self.generate_expression(&s.argument)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn generate_call(&mut self, c: &CallExpr) -> Result<(), CodegenError> {
         // Check if this is a Some(), None, Ok(), or Err() call
         if let Expr::Identifier(id) = c.callee.as_ref() {
             match id.sym.as_str() {
                 "Some" => {
                     self.output.push_str("new Argon.Option.Some(");
-                    for (i, arg) in c.arguments.iter().enumerate() {
-                        if i > 0 {
-                            self.output.push_str(", ");
-                        }
-                        if let ExprOrSpread::Expr(e) = arg {
-                            self.generate_expression(e)?;
-                        }
-                    }
+                    self.generate_args(&c.arguments)?;
                     self.output.push(')');
                     return Ok(());
                 }
@@ -2707,53 +2719,25 @@ impl JsCodegen {
                 }
                 "Ok" => {
                     self.output.push_str("new Argon.Result.Ok(");
-                    for (i, arg) in c.arguments.iter().enumerate() {
-                        if i > 0 {
-                            self.output.push_str(", ");
-                        }
-                        if let ExprOrSpread::Expr(e) = arg {
-                            self.generate_expression(e)?;
-                        }
-                    }
+                    self.generate_args(&c.arguments)?;
                     self.output.push(')');
                     return Ok(());
                 }
                 "Err" => {
                     self.output.push_str("new Argon.Result.Err(");
-                    for (i, arg) in c.arguments.iter().enumerate() {
-                        if i > 0 {
-                            self.output.push_str(", ");
-                        }
-                        if let ExprOrSpread::Expr(e) = arg {
-                            self.generate_expression(e)?;
-                        }
-                    }
+                    self.generate_args(&c.arguments)?;
                     self.output.push(')');
                     return Ok(());
                 }
                 "Vec" => {
                     self.output.push_str("new Argon.Vec(");
-                    for (i, arg) in c.arguments.iter().enumerate() {
-                        if i > 0 {
-                            self.output.push_str(", ");
-                        }
-                        if let ExprOrSpread::Expr(e) = arg {
-                            self.generate_expression(e)?;
-                        }
-                    }
+                    self.generate_args(&c.arguments)?;
                     self.output.push(')');
                     return Ok(());
                 }
                 "Shared" => {
                     self.output.push_str("Argon.Shared.wrap(");
-                    for (i, arg) in c.arguments.iter().enumerate() {
-                        if i > 0 {
-                            self.output.push_str(", ");
-                        }
-                        if let ExprOrSpread::Expr(e) = arg {
-                            self.generate_expression(e)?;
-                        }
-                    }
+                    self.generate_args(&c.arguments)?;
                     self.output.push(')');
                     return Ok(());
                 }
@@ -2768,19 +2752,11 @@ impl JsCodegen {
                     if obj_id.sym == "Argon" {
                         if let Expr::Identifier(inner_id) = outer.property.as_ref() {
                             if let Expr::Identifier(method_id) = m.property.as_ref() {
-                                // Check for Option.Some, Option.None, Result.Ok, Result.Err
                                 if inner_id.sym == "Option" {
                                     match method_id.sym.as_str() {
                                         "Some" => {
                                             self.output.push_str("new Argon.Option.Some(");
-                                            for (i, arg) in c.arguments.iter().enumerate() {
-                                                if i > 0 {
-                                                    self.output.push_str(", ");
-                                                }
-                                                if let ExprOrSpread::Expr(e) = arg {
-                                                    self.generate_expression(e)?;
-                                                }
-                                            }
+                                            self.generate_args(&c.arguments)?;
                                             self.output.push(')');
                                             return Ok(());
                                         }
@@ -2795,27 +2771,13 @@ impl JsCodegen {
                                     match method_id.sym.as_str() {
                                         "Ok" => {
                                             self.output.push_str("new Argon.Result.Ok(");
-                                            for (i, arg) in c.arguments.iter().enumerate() {
-                                                if i > 0 {
-                                                    self.output.push_str(", ");
-                                                }
-                                                if let ExprOrSpread::Expr(e) = arg {
-                                                    self.generate_expression(e)?;
-                                                }
-                                            }
+                                            self.generate_args(&c.arguments)?;
                                             self.output.push(')');
                                             return Ok(());
                                         }
                                         "Err" => {
                                             self.output.push_str("new Argon.Result.Err(");
-                                            for (i, arg) in c.arguments.iter().enumerate() {
-                                                if i > 0 {
-                                                    self.output.push_str(", ");
-                                                }
-                                                if let ExprOrSpread::Expr(e) = arg {
-                                                    self.generate_expression(e)?;
-                                                }
-                                            }
+                                            self.generate_args(&c.arguments)?;
                                             self.output.push(')');
                                             return Ok(());
                                         }
@@ -2831,14 +2793,7 @@ impl JsCodegen {
 
         self.generate_expression(&c.callee)?;
         self.output.push('(');
-        for (i, arg) in c.arguments.iter().enumerate() {
-            if i > 0 {
-                self.output.push_str(", ");
-            }
-            if let ExprOrSpread::Expr(e) = arg {
-                self.generate_expression(e)?;
-            }
-        }
+        self.generate_args(&c.arguments)?;
         self.output.push(')');
         Ok(())
     }
@@ -2853,8 +2808,14 @@ impl JsCodegen {
                 ObjectProperty::Property(p) => {
                     self.generate_expression(&p.key)?;
                     self.output.push_str(": ");
-                    if let ExprOrSpread::Expr(e) = &p.value {
-                        self.generate_expression(e)?;
+                    match &p.value {
+                        ExprOrSpread::Expr(e) => {
+                            self.generate_expression(e)?;
+                        }
+                        ExprOrSpread::Named { value, .. } => {
+                            self.generate_expression(value.as_ref())?;
+                        }
+                        ExprOrSpread::Spread(_) => {}
                     }
                 }
                 ObjectProperty::Shorthand(id) => {
@@ -3110,6 +3071,10 @@ impl JsCodegen {
             }
             if let Pattern::Identifier(id) = &p.pat {
                 self.output.push_str(&id.name.sym);
+            }
+            if let Some(ref default) = p.default {
+                self.output.push_str(" = ");
+                self.generate_expression(default)?;
             }
         }
         self.output.push_str(") {\n");

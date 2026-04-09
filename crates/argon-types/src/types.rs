@@ -138,8 +138,15 @@ impl fmt::Display for Type {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FunctionParam {
+    pub name: String,
+    pub ty: TypeId,
+    pub has_default: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FunctionSig {
-    pub params: Vec<TypeId>,
+    pub params: Vec<FunctionParam>,
     pub return_type: TypeId,
     pub is_async: bool,
 }
@@ -151,7 +158,7 @@ impl fmt::Display for FunctionSig {
             if i > 0 {
                 write!(f, ", ")?;
             }
-            write!(f, "{}", param)?;
+            write!(f, "{}: {}", param.name, param.ty)?;
         }
         write!(f, ") => {}", self.return_type)
     }
@@ -421,7 +428,11 @@ impl TypeInstantiator {
                 let new_params: Vec<_> = sig
                     .params
                     .iter()
-                    .map(|&p| self.instantiate(type_table, p))
+                    .map(|p| FunctionParam {
+                        name: p.name.clone(),
+                        ty: self.instantiate(type_table, p.ty),
+                        has_default: p.has_default,
+                    })
                     .collect();
                 let new_return = self.instantiate(type_table, sig.return_type);
                 type_table.function(FunctionSig {
@@ -488,7 +499,11 @@ impl TypeInstantiator {
                                 .sig
                                 .params
                                 .iter()
-                                .map(|&p| self.instantiate(type_table, p))
+                                .map(|p| FunctionParam {
+                                    name: p.name.clone(),
+                                    ty: self.instantiate(type_table, p.ty),
+                                    has_default: p.has_default,
+                                })
                                 .collect(),
                             return_type: self.instantiate(type_table, m.sig.return_type),
                             is_async: m.sig.is_async,
@@ -527,7 +542,11 @@ impl TypeInstantiator {
                                 .sig
                                 .params
                                 .iter()
-                                .map(|&p| self.instantiate(type_table, p))
+                                .map(|p| FunctionParam {
+                                    name: p.name.clone(),
+                                    ty: self.instantiate(type_table, p.ty),
+                                    has_default: p.has_default,
+                                })
                                 .collect(),
                             return_type: self.instantiate(type_table, m.sig.return_type),
                             is_async: m.sig.is_async,
@@ -544,7 +563,11 @@ impl TypeInstantiator {
                                 .sig
                                 .params
                                 .iter()
-                                .map(|&p| self.instantiate(type_table, p))
+                                .map(|p| FunctionParam {
+                                    name: p.name.clone(),
+                                    ty: self.instantiate(type_table, p.ty),
+                                    has_default: p.has_default,
+                                })
                                 .collect(),
                             return_type: self.instantiate(type_table, m.sig.return_type),
                             is_async: m.sig.is_async,
@@ -578,7 +601,11 @@ impl TypeInstantiator {
                                 params: sig
                                     .params
                                     .iter()
-                                    .map(|&p| self.instantiate(type_table, p))
+                                    .map(|p| FunctionParam {
+                                        name: p.name.clone(),
+                                        ty: self.instantiate(type_table, p.ty),
+                                        has_default: p.has_default,
+                                    })
                                     .collect(),
                                 return_type: self.instantiate(type_table, sig.return_type),
                                 is_async: sig.is_async,
@@ -611,7 +638,11 @@ impl TypeInstantiator {
                                 .sig
                                 .params
                                 .iter()
-                                .map(|&p| self.instantiate(type_table, p))
+                                .map(|p| FunctionParam {
+                                    name: p.name.clone(),
+                                    ty: self.instantiate(type_table, p.ty),
+                                    has_default: p.has_default,
+                                })
                                 .collect(),
                             return_type: self.instantiate(type_table, m.sig.return_type),
                             is_async: m.sig.is_async,

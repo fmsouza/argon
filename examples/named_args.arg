@@ -1,0 +1,18 @@
+function greet(name: string, greeting: string = "Hello"): string {
+    return greeting + ", " + name + "!";
+}
+
+const r1 = greet("World");
+println(r1);
+
+const r2 = greet("Alice", "Hi");
+println(r2);
+
+const r3 = greet(name="Bob");
+println(r3);
+
+const r4 = greet(greeting="Hey", name="Eve");
+println(r4);
+
+const r5 = greet("Dave", greeting="Yo");
+println(r5);

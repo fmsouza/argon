@@ -128,7 +128,10 @@ impl Compiler {
     ) -> Result<CompileArtifacts, DriverError> {
         let ast = self.parse(source, source_name)?;
         self.validate_std_imports(&ast)?;
-        let _types = self.check_semantics(source, source_name, &ast)?;
+        let types = self.check_semantics(source, source_name, &ast)?;
+
+        let mut ast = ast;
+        argon_types::desugar::desugar_named_args(&mut ast, &types.env);
 
         match options.target {
             Target::Js => self.compile_js(source, source_name, &ast, options),
@@ -155,7 +158,10 @@ impl Compiler {
         self.validate_std_imports(&ast)?;
         let deps = self.collect_deps(&ast, path.parent().unwrap_or(Path::new(".")));
 
-        let _types = self.check_semantics(&source, &source_name, &ast)?;
+        let types = self.check_semantics(&source, &source_name, &ast)?;
+
+        let mut ast = ast;
+        argon_types::desugar::desugar_named_args(&mut ast, &types.env);
 
         let artifacts = match options.target {
             Target::Js => self.compile_js(&source, &source_name, &ast, options)?,

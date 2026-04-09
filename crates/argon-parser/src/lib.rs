@@ -31,6 +31,13 @@ pub enum ParseError {
         func_name: String,
         span: Span,
     },
+    PositionalArgAfterNamedArg {
+        span: Span,
+    },
+    DuplicateNamedArg {
+        name: String,
+        span: Span,
+    },
 }
 
 impl std::fmt::Display for ParseError {
@@ -59,6 +66,12 @@ impl std::fmt::Display for ParseError {
                     "Function '{}' is missing return type annotation. Example: function {}(): number {{ ... }}",
                     func_name, func_name
                 )
+            }
+            ParseError::PositionalArgAfterNamedArg { .. } => {
+                write!(f, "Positional argument cannot follow a named argument")
+            }
+            ParseError::DuplicateNamedArg { name, .. } => {
+                write!(f, "Duplicate named argument '{}'", name)
             }
         }
     }
@@ -111,6 +124,18 @@ impl ParseError {
                 ),
             )
             .with_code("P004".to_string()),
+            ParseError::PositionalArgAfterNamedArg { span } => Diagnostic::new(
+                source_id.to_string(),
+                span.clone(),
+                "Positional argument cannot follow a named argument".to_string(),
+            )
+            .with_code("P005".to_string()),
+            ParseError::DuplicateNamedArg { name, span } => Diagnostic::new(
+                source_id.to_string(),
+                span.clone(),
+                format!("Duplicate named argument '{}'", name),
+            )
+            .with_code("P006".to_string()),
         }
     }
 
@@ -546,37 +571,7 @@ impl Parser {
         let id = self.expect_identifier()?;
         let type_params = self.parse_type_params_opt()?;
 
-        self.expect(TokenKind::OpenParen)?;
-
-        let mut params = Vec::new();
-        while !self.check(&TokenKind::CloseParen) && !self.is_at_end() {
-            let name = self.expect_identifier()?;
-            let param_start = name.span.start;
-            let ty = if self.match_one(&[TokenKind::Colon]) {
-                Some(Box::new(self.parse_type()?))
-            } else {
-                None
-            };
-            let param_end = self.previous().span.end;
-
-            params.push(Param {
-                pat: Pattern::Identifier(IdentPattern {
-                    name: name.clone(),
-                    type_annotation: ty.clone(),
-                    default: None,
-                }),
-                ty,
-                default: None,
-                is_optional: false,
-                span: param_start..param_end,
-            });
-
-            if !self.check(&TokenKind::CloseParen) {
-                self.expect_comma()?;
-            }
-        }
-
-        self.expect(TokenKind::CloseParen)?;
+        let params = self.parse_params()?;
 
         let return_type = if self.match_one(&[TokenKind::Colon]) {
             Some(Box::new(self.parse_type()?))
@@ -648,37 +643,7 @@ impl Parser {
         let id = self.expect_identifier()?;
         let type_params = self.parse_type_params_opt()?;
 
-        self.expect(TokenKind::OpenParen)?;
-
-        let mut params = Vec::new();
-        while !self.check(&TokenKind::CloseParen) && !self.is_at_end() {
-            let name = self.expect_identifier()?;
-            let param_start = name.span.start;
-            let ty = if self.match_one(&[TokenKind::Colon]) {
-                Some(Box::new(self.parse_type()?))
-            } else {
-                None
-            };
-            let param_end = self.previous().span.end;
-
-            params.push(Param {
-                pat: Pattern::Identifier(IdentPattern {
-                    name: name.clone(),
-                    type_annotation: ty.clone(),
-                    default: None,
-                }),
-                ty,
-                default: None,
-                is_optional: false,
-                span: param_start..param_end,
-            });
-
-            if !self.check(&TokenKind::CloseParen) {
-                self.expect_comma()?;
-            }
-        }
-
-        self.expect(TokenKind::CloseParen)?;
+        let params = self.parse_params()?;
 
         let return_type = if self.match_one(&[TokenKind::Colon]) {
             Some(Box::new(self.parse_type()?))
@@ -725,37 +690,7 @@ impl Parser {
 
         let span_start = self.previous().span.start;
 
-        self.expect(TokenKind::OpenParen)?;
-
-        let mut params = Vec::new();
-        while !self.check(&TokenKind::CloseParen) && !self.is_at_end() {
-            let name = self.expect_identifier()?;
-            let param_start = name.span.start;
-            let ty = if self.match_one(&[TokenKind::Colon]) {
-                Some(Box::new(self.parse_type()?))
-            } else {
-                None
-            };
-            let param_end = self.previous().span.end;
-
-            params.push(Param {
-                pat: Pattern::Identifier(IdentPattern {
-                    name: name.clone(),
-                    type_annotation: ty.clone(),
-                    default: None,
-                }),
-                ty,
-                default: None,
-                is_optional: false,
-                span: param_start..param_end,
-            });
-
-            if !self.check(&TokenKind::CloseParen) {
-                self.expect_comma()?;
-            }
-        }
-
-        self.expect(TokenKind::CloseParen)?;
+        let params = self.parse_params()?;
 
         let return_type = if self.match_one(&[TokenKind::Colon]) {
             Some(Box::new(self.parse_type()?))
@@ -1301,37 +1236,7 @@ impl Parser {
                 // Method — check if it has a body (concrete) or just a signature (abstract)
                 let type_params = self.parse_type_params_opt()?;
 
-                let mut params = Vec::new();
-                self.expect(TokenKind::OpenParen)?;
-
-                while !self.check(&TokenKind::CloseParen) && !self.is_at_end() {
-                    let name = self.expect_identifier()?;
-                    let param_start = name.span.start;
-                    let ty = if self.match_one(&[TokenKind::Colon]) {
-                        Some(Box::new(self.parse_type()?))
-                    } else {
-                        None
-                    };
-                    let param_end = self.previous().span.end;
-
-                    params.push(Param {
-                        pat: Pattern::Identifier(IdentPattern {
-                            name: name.clone(),
-                            type_annotation: ty.clone(),
-                            default: None,
-                        }),
-                        ty,
-                        default: None,
-                        is_optional: false,
-                        span: param_start..param_end,
-                    });
-
-                    if !self.check(&TokenKind::CloseParen) {
-                        self.expect_comma()?;
-                    }
-                }
-
-                self.expect(TokenKind::CloseParen)?;
+                let params = self.parse_params()?;
 
                 let return_type = if self.match_one(&[TokenKind::Colon]) {
                     Some(Box::new(self.parse_type()?))
@@ -1477,37 +1382,7 @@ impl Parser {
             // Method signature: `name<T>(...): R;`
             if self.check(&TokenKind::LessThan) || self.check(&TokenKind::OpenParen) {
                 let method_type_params = self.parse_type_params_opt()?;
-                self.expect(TokenKind::OpenParen)?;
-
-                let mut params = Vec::new();
-                while !self.check(&TokenKind::CloseParen) && !self.is_at_end() {
-                    let name = self.expect_identifier()?;
-                    let param_start = name.span.start;
-                    let is_optional = self.match_one(&[TokenKind::Question]);
-                    let ty = if self.match_one(&[TokenKind::Colon]) {
-                        Some(Box::new(self.parse_type()?))
-                    } else {
-                        None
-                    };
-                    let param_end = self.previous().span.end;
-
-                    params.push(Param {
-                        pat: Pattern::Identifier(IdentPattern {
-                            name: name.clone(),
-                            type_annotation: ty.clone(),
-                            default: None,
-                        }),
-                        ty,
-                        default: None,
-                        is_optional,
-                        span: param_start..param_end,
-                    });
-
-                    if !self.check(&TokenKind::CloseParen) {
-                        self.expect_comma()?;
-                    }
-                }
-                self.expect(TokenKind::CloseParen)?;
+                let params = self.parse_params()?;
 
                 let return_type = if self.match_one(&[TokenKind::Colon]) {
                     Some(Box::new(self.parse_type()?))
@@ -1624,37 +1499,7 @@ impl Parser {
         use argon_ast::*;
 
         let start = self.previous().span.start;
-        let mut params = Vec::new();
-        self.expect(TokenKind::OpenParen)?;
-
-        while !self.check(&TokenKind::CloseParen) && !self.is_at_end() {
-            let name = self.expect_identifier()?;
-            let param_start = name.span.start;
-            let ty = if self.match_one(&[TokenKind::Colon]) {
-                Some(Box::new(self.parse_type()?))
-            } else {
-                None
-            };
-            let param_end = self.previous().span.end;
-
-            params.push(Param {
-                pat: Pattern::Identifier(IdentPattern {
-                    name: name.clone(),
-                    type_annotation: ty.clone(),
-                    default: None,
-                }),
-                ty,
-                default: None,
-                is_optional: false,
-                span: param_start..param_end,
-            });
-
-            if !self.check(&TokenKind::CloseParen) {
-                self.expect_comma()?;
-            }
-        }
-
-        self.expect(TokenKind::CloseParen)?;
+        let params = self.parse_params()?;
 
         self.validate_function_types(
             &params,
@@ -1686,37 +1531,7 @@ impl Parser {
         let start = key.span().start;
         let type_params = self.parse_type_params_opt()?;
 
-        let mut params = Vec::new();
-        self.expect(TokenKind::OpenParen)?;
-
-        while !self.check(&TokenKind::CloseParen) && !self.is_at_end() {
-            let name = self.expect_identifier()?;
-            let param_start = name.span.start;
-            let ty = if self.match_one(&[TokenKind::Colon]) {
-                Some(Box::new(self.parse_type()?))
-            } else {
-                None
-            };
-            let param_end = self.previous().span.end;
-
-            params.push(Param {
-                pat: Pattern::Identifier(IdentPattern {
-                    name: name.clone(),
-                    type_annotation: ty.clone(),
-                    default: None,
-                }),
-                ty,
-                default: None,
-                is_optional: false,
-                span: param_start..param_end,
-            });
-
-            if !self.check(&TokenKind::CloseParen) {
-                self.expect_comma()?;
-            }
-        }
-
-        self.expect(TokenKind::CloseParen)?;
+        let params = self.parse_params()?;
 
         let return_type = if self.match_one(&[TokenKind::Colon]) {
             Some(Box::new(self.parse_type()?))
@@ -2034,6 +1849,127 @@ impl Parser {
             return Ok(argon_ast::Ident { sym, span });
         }
         Err(self.parser_error_here("Expected identifier"))
+    }
+
+    fn parse_params(&mut self) -> Result<Vec<argon_ast::Param>, ParseError> {
+        use argon_ast::*;
+        self.expect(TokenKind::OpenParen)?;
+
+        let mut params = Vec::new();
+        while !self.check(&TokenKind::CloseParen) && !self.is_at_end() {
+            let name = self.expect_identifier()?;
+            let param_start = name.span.start;
+            let is_optional = self.match_one(&[TokenKind::Question]);
+            let ty = if self.match_one(&[TokenKind::Colon]) {
+                Some(Box::new(self.parse_type()?))
+            } else {
+                None
+            };
+            let default = if self.match_one(&[TokenKind::Equal]) {
+                Some(self.parse_assignment()?)
+            } else {
+                None
+            };
+            let param_end = self.previous().span.end;
+            let has_default = default.is_some();
+
+            params.push(Param {
+                pat: Pattern::Identifier(IdentPattern {
+                    name: name.clone(),
+                    type_annotation: ty.clone(),
+                    default: default.clone(),
+                }),
+                ty,
+                default,
+                is_optional: is_optional || has_default,
+                span: param_start..param_end,
+            });
+
+            if !self.check(&TokenKind::CloseParen) {
+                self.expect_comma()?;
+            }
+        }
+
+        self.expect(TokenKind::CloseParen)?;
+        Ok(params)
+    }
+
+    fn is_named_arg(&self) -> bool {
+        if self.current + 1 >= self.tokens.len() {
+            return false;
+        }
+        let curr = &self.tokens[self.current];
+        let next = &self.tokens[self.current + 1];
+        curr.kind == TokenKind::Identifier && next.kind == TokenKind::Equal
+    }
+
+    fn parse_argument(&mut self) -> Result<argon_ast::ExprOrSpread, ParseError> {
+        use argon_ast::*;
+
+        if self.is_named_arg() {
+            let name = self.expect_identifier()?;
+            self.expect(TokenKind::Equal)?;
+            let value = self.parse_assignment()?;
+            return Ok(ExprOrSpread::Named {
+                name,
+                value: Box::new(value),
+            });
+        }
+
+        if self.match_one(&[TokenKind::DotDotDot]) {
+            let arg = self.parse_assignment()?;
+            let span_end = self.previous().span.end;
+            return Ok(ExprOrSpread::Spread(SpreadElement {
+                argument: Box::new(arg),
+                span: self.previous().span.start..span_end,
+            }));
+        }
+
+        Ok(ExprOrSpread::Expr(self.parse_expression()?))
+    }
+
+    fn parse_arguments(&mut self) -> Result<Vec<argon_ast::ExprOrSpread>, ParseError> {
+        use argon_ast::*;
+        let mut args = Vec::new();
+        let mut seen_named = false;
+
+        while !self.check(&TokenKind::CloseParen) && !self.is_at_end() {
+            if !args.is_empty() {
+                self.expect_comma()?;
+            }
+
+            let arg = self.parse_argument()?;
+
+            match &arg {
+                ExprOrSpread::Named { name, .. } => {
+                    seen_named = true;
+                    if args.iter().any(|a| {
+                        if let ExprOrSpread::Named { name: n, .. } = a {
+                            n.sym == name.sym
+                        } else {
+                            false
+                        }
+                    }) {
+                        return Err(ParseError::DuplicateNamedArg {
+                            name: name.sym.clone(),
+                            span: name.span.clone(),
+                        });
+                    }
+                }
+                ExprOrSpread::Expr(_) => {
+                    if seen_named {
+                        return Err(ParseError::PositionalArgAfterNamedArg {
+                            span: arg.span().clone(),
+                        });
+                    }
+                }
+                ExprOrSpread::Spread(_) => {}
+            }
+
+            args.push(arg);
+        }
+
+        Ok(args)
     }
 
     fn parse_expression(&mut self) -> Result<argon_ast::Expr, ParseError> {
@@ -2451,18 +2387,7 @@ impl Parser {
                 };
 
                 if !type_args.is_empty() && self.match_one(&[TokenKind::OpenParen]) {
-                    let mut args = Vec::new();
-                    let mut first = true;
-                    while !self.check(&TokenKind::CloseParen) && !self.is_at_end() {
-                        if !first {
-                            if !self.check(&TokenKind::CloseParen) {
-                                self.expect_comma()?;
-                            }
-                        } else {
-                            first = false;
-                        }
-                        args.push(ExprOrSpread::Expr(self.parse_expression()?));
-                    }
+                    let args = self.parse_arguments()?;
                     self.expect(TokenKind::CloseParen)?;
                     let span = expr.span().start..self.previous().span.end;
                     expr = Expr::Call(CallExpr {
@@ -2477,18 +2402,7 @@ impl Parser {
                     break;
                 }
             } else if self.match_one(&[TokenKind::OpenParen]) {
-                let mut args = Vec::new();
-                let mut first = true;
-                while !self.check(&TokenKind::CloseParen) && !self.is_at_end() {
-                    if !first {
-                        if !self.check(&TokenKind::CloseParen) {
-                            self.expect_comma()?;
-                        }
-                    } else {
-                        first = false;
-                    }
-                    args.push(ExprOrSpread::Expr(self.parse_expression()?));
-                }
+                let args = self.parse_arguments()?;
                 self.expect(TokenKind::CloseParen)?;
                 let span = expr.span().start..self.previous().span.end;
                 expr = Expr::Call(CallExpr {
@@ -2884,12 +2798,7 @@ impl Parser {
 
             let mut arguments = Vec::new();
             if self.match_one(&[TokenKind::OpenParen]) {
-                while !self.check(&TokenKind::CloseParen) && !self.is_at_end() {
-                    arguments.push(ExprOrSpread::Expr(self.parse_expression()?));
-                    if !self.check(&TokenKind::CloseParen) {
-                        self.expect_comma()?;
-                    }
-                }
+                arguments = self.parse_arguments()?;
                 self.expect(TokenKind::CloseParen)?;
             }
             let end = self.previous().span.end;

@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod type_checker_tests;
 
+pub mod desugar;
 mod type_checker;
 mod types;
 
