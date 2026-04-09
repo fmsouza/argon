@@ -415,3 +415,45 @@ mod import_path_rewriting {
         assert_eq!(JsCodegen::rewrite_import_source("\"react\""), "\"react\"");
     }
 }
+
+mod named_arg_codegen {
+    use super::*;
+
+    #[test]
+    fn generates_default_params() {
+        let source =
+            r#"function greet(name: string, greeting: string = "Hello"): string { return name; }"#;
+        let ast = parse(source).unwrap();
+        let mut codegen = JsCodegen::new();
+
+        let result = codegen.generate_from_ast(&ast);
+
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(
+            output.contains("= \"Hello\""),
+            "Expected default param in output, got: {}",
+            output
+        );
+    }
+
+    #[test]
+    fn generates_named_args_as_positional() {
+        // After desugaring, named args should be converted to positional,
+        // so direct AST codegen just emits the values in order.
+        let source = r#"greet(name="Bob");"#;
+        let ast = parse(source).unwrap();
+        let mut codegen = JsCodegen::new();
+
+        let result = codegen.generate_from_ast(&ast);
+
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        // Without desugaring, the codegen still emits the value
+        assert!(
+            output.contains("\"Bob\""),
+            "Expected arg value in output, got: {}",
+            output
+        );
+    }
+}

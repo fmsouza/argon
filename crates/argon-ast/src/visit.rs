@@ -42,8 +42,10 @@ pub trait Visitor {
             Expr::Call(c) => {
                 self.visit_expr(&c.callee);
                 for arg in &c.arguments {
-                    if let ExprOrSpread::Expr(e) = arg {
-                        self.visit_expr(e);
+                    match arg {
+                        ExprOrSpread::Expr(e) => self.visit_expr(e),
+                        ExprOrSpread::Spread(s) => self.visit_expr(&s.argument),
+                        ExprOrSpread::Named { value, .. } => self.visit_expr(value),
                     }
                 }
             }

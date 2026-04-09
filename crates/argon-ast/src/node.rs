@@ -564,6 +564,7 @@ pub struct NewExpr {
 pub enum ExprOrSpread {
     Expr(Expr),
     Spread(SpreadElement),
+    Named { name: Ident, value: Box<Expr> },
 }
 #[derive(Debug, Clone)]
 pub struct SpreadElement {
@@ -1554,6 +1555,16 @@ impl Spanned for MatchPattern {
         match self {
             MatchPattern::Expr(expr) => expr.span(),
             MatchPattern::Result(pattern) => &pattern.span,
+        }
+    }
+}
+
+impl Spanned for ExprOrSpread {
+    fn span(&self) -> &Span {
+        match self {
+            ExprOrSpread::Expr(e) => e.span(),
+            ExprOrSpread::Spread(s) => &s.span,
+            ExprOrSpread::Named { name, .. } => &name.span,
         }
     }
 }

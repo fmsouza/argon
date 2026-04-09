@@ -1,8 +1,8 @@
 //! Argon - Type checker
 
 use crate::types::{
-    EnumDef, FieldDef, FunctionSig, InterfaceDef, InterfaceMember, MethodDef, ObjectShapeDef,
-    SkillTypeDef, StructDef, Type as CompType, TypeId, TypeInstantiator, TypeTable,
+    EnumDef, FieldDef, FunctionParam, FunctionSig, InterfaceDef, InterfaceMember, MethodDef,
+    ObjectShapeDef, SkillTypeDef, StructDef, Type as CompType, TypeId, TypeInstantiator, TypeTable,
 };
 use argon_ast::*;
 use std::collections::HashMap;
@@ -236,7 +236,11 @@ impl TypeChecker {
         env.add_function(
             "print".to_string(),
             FunctionSig {
-                params: vec![type_table.any()],
+                params: vec![FunctionParam {
+                    name: "value".to_string(),
+                    ty: type_table.any(),
+                    has_default: false,
+                }],
                 return_type: type_table.void(),
                 is_async: false,
             },
@@ -245,7 +249,11 @@ impl TypeChecker {
         env.add_function(
             "println".to_string(),
             FunctionSig {
-                params: vec![type_table.any()],
+                params: vec![FunctionParam {
+                    name: "value".to_string(),
+                    ty: type_table.any(),
+                    has_default: false,
+                }],
                 return_type: type_table.void(),
                 is_async: false,
             },
@@ -383,9 +391,21 @@ impl TypeChecker {
                                     .params
                                     .iter()
                                     .map(|p| {
-                                        p.ty.as_ref()
-                                            .map(|t| self.resolve_type(t))
-                                            .unwrap_or_else(|| self.type_table.unknown())
+                                        let name = if let Pattern::Identifier(id) = &p.pat {
+                                            id.name.sym.clone()
+                                        } else {
+                                            "_".to_string()
+                                        };
+                                        let ty =
+                                            p.ty.as_ref()
+                                                .map(|t| self.resolve_type(t))
+                                                .unwrap_or_else(|| self.type_table.unknown());
+                                        let has_default = p.default.is_some() || p.is_optional;
+                                        FunctionParam {
+                                            name,
+                                            ty,
+                                            has_default,
+                                        }
                                     })
                                     .collect();
                                 let return_type = m
@@ -499,9 +519,21 @@ impl TypeChecker {
             .params
             .iter()
             .map(|p| {
-                p.ty.as_ref()
-                    .map(|t| self.resolve_type(t))
-                    .unwrap_or_else(|| self.type_table.unknown())
+                let name = if let Pattern::Identifier(id) = &p.pat {
+                    id.name.sym.clone()
+                } else {
+                    "_".to_string()
+                };
+                let ty =
+                    p.ty.as_ref()
+                        .map(|t| self.resolve_type(t))
+                        .unwrap_or_else(|| self.type_table.unknown());
+                let has_default = p.default.is_some() || p.is_optional;
+                FunctionParam {
+                    name,
+                    ty,
+                    has_default,
+                }
             })
             .collect();
         let return_type = f
@@ -559,9 +591,21 @@ impl TypeChecker {
                     .params
                     .iter()
                     .map(|p| {
-                        p.ty.as_ref()
-                            .map(|t| self.resolve_type(t))
-                            .unwrap_or_else(|| self.type_table.any())
+                        let name = if let Pattern::Identifier(id) = &p.pat {
+                            id.name.sym.clone()
+                        } else {
+                            "_".to_string()
+                        };
+                        let ty =
+                            p.ty.as_ref()
+                                .map(|t| self.resolve_type(t))
+                                .unwrap_or_else(|| self.type_table.any());
+                        let has_default = p.default.is_some() || p.is_optional;
+                        FunctionParam {
+                            name,
+                            ty,
+                            has_default,
+                        }
                     })
                     .collect();
                 let return_type = m
@@ -771,6 +815,7 @@ impl TypeChecker {
                             });
                             continue;
                         }
+                        ExprOrSpread::Named { value, .. } => self.infer_expression(value),
                     };
                     provided_values.insert(key, value_ty);
                 }
@@ -1259,25 +1304,97 @@ impl TypeChecker {
         }
     }
 
-    fn infer_call(&mut self, c: &CallExpr) -> TypeId {
-        let arg_tys: Vec<TypeId> = c
-            .arguments
-            .iter()
-            .filter_map(|arg| {
-                if let ExprOrSpread::Expr(e) = arg {
-                    Some(self.infer_expression(e))
-                } else {
-                    None
-                }
-            })
-            .collect();
+    fn validate_call_args(
+        &mut self,
+        arguments: &[ExprOrSpread],
+        sig: &FunctionSig,
+        func_name: &str,
+    ) {
+        let mut positional_tys: Vec<TypeId> = Vec::new();
+        let mut named_tys: Vec<(String, TypeId)> = Vec::new();
 
+        for arg in arguments {
+            match arg {
+                ExprOrSpread::Expr(e) => {
+                    positional_tys.push(self.infer_expression(e));
+                }
+                ExprOrSpread::Named { name, value } => {
+                    let ty = self.infer_expression(value);
+                    named_tys.push((name.sym.clone(), ty));
+                }
+                ExprOrSpread::Spread(_) => {}
+            }
+        }
+
+        // Validate named arg names and detect duplicates
+        let mut seen_named: HashMap<String, bool> = HashMap::new();
+        for (name, ty) in &named_tys {
+            if seen_named.contains_key(name) {
+                self.errors
+                    .push(TypeError::DuplicateNamedArg { name: name.clone() });
+                continue;
+            }
+            seen_named.insert(name.clone(), true);
+
+            let param = sig.params.iter().find(|p| &p.name == name);
+            match param {
+                Some(p) => self.unify(*ty, p.ty),
+                None => {
+                    self.errors.push(TypeError::UnknownNamedArg {
+                        name: name.clone(),
+                        func: func_name.to_string(),
+                    });
+                }
+            }
+        }
+
+        // Check for overlap: named arg targeting a position already covered by positional
+        for (i, param) in sig.params.iter().enumerate() {
+            if i < positional_tys.len() && seen_named.contains_key(&param.name) {
+                self.errors.push(TypeError::DuplicateNamedArg {
+                    name: param.name.clone(),
+                });
+            }
+        }
+
+        // Unify positional arg types with param types
+        for (arg_ty, param) in positional_tys.iter().zip(sig.params.iter()) {
+            self.unify(*arg_ty, param.ty);
+        }
+
+        // Check that all required params are covered
+        for (i, param) in sig.params.iter().enumerate() {
+            let covered_by_positional = i < positional_tys.len();
+            let covered_by_named = seen_named.contains_key(&param.name);
+            if !covered_by_positional && !covered_by_named && !param.has_default {
+                self.errors.push(TypeError::MissingRequiredArg {
+                    param_name: param.name.clone(),
+                    func: func_name.to_string(),
+                });
+            }
+        }
+    }
+
+    fn infer_call(&mut self, c: &CallExpr) -> TypeId {
         if let Expr::Identifier(id) = &*c.callee {
+            // Generic function path — need positional arg types for type inference
             if let Some(generic_func) = self.env.get_generic_function(&id.sym).cloned() {
+                let positional_arg_tys: Vec<TypeId> = c
+                    .arguments
+                    .iter()
+                    .filter_map(|arg| {
+                        if let ExprOrSpread::Expr(e) = arg {
+                            Some(self.infer_expression(e))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
                 let type_args: Vec<TypeId> = if !c.type_args.is_empty() {
                     c.type_args.iter().map(|t| self.resolve_type(t)).collect()
                 } else {
-                    self.infer_type_args(&generic_func, &arg_tys)
+                    self.infer_type_args(&generic_func, &positional_arg_tys)
                 };
 
                 self.check_generic_constraints(&generic_func.type_params, &type_args);
@@ -1292,27 +1409,46 @@ impl TypeChecker {
                         .sig
                         .params
                         .iter()
-                        .map(|&p| instantiator.instantiate(&mut self.type_table, p))
+                        .map(|p| FunctionParam {
+                            name: p.name.clone(),
+                            ty: instantiator.instantiate(&mut self.type_table, p.ty),
+                            has_default: p.has_default,
+                        })
                         .collect(),
                     return_type: instantiator
                         .instantiate(&mut self.type_table, generic_func.sig.return_type),
                     is_async: generic_func.sig.is_async,
                 };
 
-                if arg_tys.len() == instantiated_sig.params.len() {
-                    for (arg_ty, param_ty) in arg_tys.iter().zip(instantiated_sig.params.iter()) {
-                        self.unify(*arg_ty, *param_ty);
-                    }
-                }
-
+                self.validate_call_args(&c.arguments, &instantiated_sig, &id.sym);
                 return instantiated_sig.return_type;
+            }
+
+            // Non-generic named function path
+            if let Some(sig) = self.env.get_function(&id.sym).cloned() {
+                self.validate_call_args(&c.arguments, &sig, &id.sym);
+                return sig.return_type;
             }
         }
 
         let callee_ty = self.infer_expression(&c.callee);
 
-        if let Some(CompType::Function(sig)) = self.type_table.get(callee_ty) {
+        if let Some(CompType::Function(sig)) = self.type_table.get(callee_ty).cloned() {
+            self.validate_call_args(&c.arguments, &sig, "<anonymous>");
             return sig.return_type;
+        }
+
+        // Infer all arg values even when we can't resolve the callee
+        for arg in &c.arguments {
+            match arg {
+                ExprOrSpread::Expr(e) => {
+                    self.infer_expression(e);
+                }
+                ExprOrSpread::Named { value, .. } => {
+                    self.infer_expression(value);
+                }
+                ExprOrSpread::Spread(_) => {}
+            }
         }
 
         self.type_table.unknown()
@@ -1325,8 +1461,8 @@ impl TypeChecker {
     ) -> Vec<TypeId> {
         let mut inferred = HashMap::new();
 
-        for (arg_ty, param_ty) in arg_tys.iter().zip(generic_func.sig.params.iter()) {
-            self.collect_type_arg_bindings(*param_ty, *arg_ty, &mut inferred);
+        for (arg_ty, param) in arg_tys.iter().zip(generic_func.sig.params.iter()) {
+            self.collect_type_arg_bindings(param.ty, *arg_ty, &mut inferred);
         }
 
         generic_func
@@ -1414,8 +1550,8 @@ impl TypeChecker {
             }
             CompType::Function(sig) => {
                 if let Some(CompType::Function(arg_sig)) = self.type_table.get(arg_ty).cloned() {
-                    for (param_item, arg_item) in sig.params.iter().zip(arg_sig.params.iter()) {
-                        self.collect_type_arg_bindings(*param_item, *arg_item, inferred);
+                    for (param, arg_param) in sig.params.iter().zip(arg_sig.params.iter()) {
+                        self.collect_type_arg_bindings(param.ty, arg_param.ty, inferred);
                     }
                     self.collect_type_arg_bindings(sig.return_type, arg_sig.return_type, inferred);
                 }
@@ -1443,12 +1579,12 @@ impl TypeChecker {
                                 if let Some(arg_method) =
                                     arg_methods.iter().find(|m| m.name == name)
                                 {
-                                    for (param_item, arg_item) in
+                                    for (param, arg_param) in
                                         sig.params.iter().zip(arg_method.sig.params.iter())
                                     {
                                         self.collect_type_arg_bindings(
-                                            *param_item,
-                                            *arg_item,
+                                            param.ty,
+                                            arg_param.ty,
                                             inferred,
                                         );
                                     }
@@ -1742,7 +1878,11 @@ impl TypeChecker {
                                 .sig
                                 .params
                                 .iter()
-                                .map(|p| instantiator.instantiate(&mut self.type_table, *p))
+                                .map(|p| FunctionParam {
+                                    name: p.name.clone(),
+                                    ty: instantiator.instantiate(&mut self.type_table, p.ty),
+                                    has_default: p.has_default,
+                                })
                                 .collect(),
                             return_type: instantiator
                                 .instantiate(&mut self.type_table, m.sig.return_type),
@@ -1931,9 +2071,21 @@ impl TypeChecker {
                 .params
                 .iter()
                 .map(|p| {
-                    p.ty.as_ref()
-                        .map(|t| self.resolve_type(t))
-                        .unwrap_or_else(|| self.type_table.unknown())
+                    let name = if let Pattern::Identifier(id) = &p.pat {
+                        id.name.sym.clone()
+                    } else {
+                        "_".to_string()
+                    };
+                    let ty =
+                        p.ty.as_ref()
+                            .map(|t| self.resolve_type(t))
+                            .unwrap_or_else(|| self.type_table.unknown());
+                    let has_default = p.default.is_some() || p.is_optional;
+                    FunctionParam {
+                        name,
+                        ty,
+                        has_default,
+                    }
                 })
                 .collect(),
             return_type: return_ty,
@@ -2032,7 +2184,11 @@ impl TypeChecker {
                         params: sig
                             .params
                             .iter()
-                            .map(|&p| instantiator.instantiate(&mut self.type_table, p))
+                            .map(|p| FunctionParam {
+                                name: p.name.clone(),
+                                ty: instantiator.instantiate(&mut self.type_table, p.ty),
+                                has_default: p.has_default,
+                            })
                             .collect(),
                         return_type: instantiator
                             .instantiate(&mut self.type_table, sig.return_type),
@@ -2102,9 +2258,21 @@ impl TypeChecker {
                         .params
                         .iter()
                         .map(|p| {
-                            p.ty.as_ref()
-                                .map(|t| self.resolve_type(t))
-                                .unwrap_or_else(|| self.type_table.any())
+                            let name = if let Pattern::Identifier(id) = &p.pat {
+                                id.name.sym.clone()
+                            } else {
+                                "_".to_string()
+                            };
+                            let ty =
+                                p.ty.as_ref()
+                                    .map(|t| self.resolve_type(t))
+                                    .unwrap_or_else(|| self.type_table.any());
+                            let has_default = p.default.is_some() || p.is_optional;
+                            FunctionParam {
+                                name,
+                                ty,
+                                has_default,
+                            }
                         })
                         .collect();
                     let return_type = m
@@ -2215,8 +2383,11 @@ impl TypeChecker {
                                             .sig
                                             .params
                                             .iter()
-                                            .map(|p| {
-                                                instantiator.instantiate(&mut self.type_table, *p)
+                                            .map(|p| FunctionParam {
+                                                name: p.name.clone(),
+                                                ty: instantiator
+                                                    .instantiate(&mut self.type_table, p.ty),
+                                                has_default: p.has_default,
                                             })
                                             .collect(),
                                         return_type: instantiator
@@ -2334,7 +2505,24 @@ impl TypeChecker {
                 self.type_table.add(CompType::Shared(inner))
             }
             argon_ast::Type::Function(f) => {
-                let params = f.params.iter().map(|p| self.resolve_type(&p.ty)).collect();
+                let params = f
+                    .params
+                    .iter()
+                    .map(|p| {
+                        let name = p
+                            .name
+                            .as_ref()
+                            .map(|id| id.sym.clone())
+                            .unwrap_or_else(|| "_".to_string());
+                        let ty = self.resolve_type(&p.ty);
+                        let has_default = p.optional;
+                        FunctionParam {
+                            name,
+                            ty,
+                            has_default,
+                        }
+                    })
+                    .collect();
                 let return_type = self.resolve_type(&f.return_type);
                 self.type_table.add(CompType::Function(FunctionSig {
                     params,
@@ -2436,7 +2624,7 @@ impl TypeChecker {
                     return;
                 }
                 for (fp, ep) in fs.params.iter().zip(es.params.iter()) {
-                    self.unify(*fp, *ep);
+                    self.unify(fp.ty, ep.ty);
                 }
                 self.unify(fs.return_type, es.return_type);
             }
@@ -2554,7 +2742,7 @@ impl TypeChecker {
                 .params
                 .iter()
                 .zip(expected.params.iter())
-                .all(|(f, e)| self.is_assignable(*f, *e))
+                .all(|(f, e)| self.is_assignable(f.ty, e.ty))
             && self.is_assignable(found.return_type, expected.return_type)
     }
 
@@ -2595,6 +2783,17 @@ pub enum TypeError {
         func: String,
         expected: TypeId,
     },
+    UnknownNamedArg {
+        name: String,
+        func: String,
+    },
+    DuplicateNamedArg {
+        name: String,
+    },
+    MissingRequiredArg {
+        param_name: String,
+        func: String,
+    },
 }
 
 impl std::fmt::Display for TypeError {
@@ -2619,6 +2818,19 @@ impl std::fmt::Display for TypeError {
                     f,
                     "Function '{}' missing return, expected {}",
                     func, expected
+                )
+            }
+            TypeError::UnknownNamedArg { name, func } => {
+                write!(f, "Unknown named argument '{}' in call to '{}'", name, func)
+            }
+            TypeError::DuplicateNamedArg { name } => {
+                write!(f, "Duplicate named argument '{}'", name)
+            }
+            TypeError::MissingRequiredArg { param_name, func } => {
+                write!(
+                    f,
+                    "Missing required argument '{}' in call to '{}'",
+                    param_name, func
                 )
             }
         }

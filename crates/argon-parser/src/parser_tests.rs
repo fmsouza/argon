@@ -1274,3 +1274,78 @@ mod export_parsing {
         assert!(result.is_err());
     }
 }
+
+mod named_arg_parsing {
+    use super::*;
+
+    #[test]
+    fn parses_named_arg_in_function_call() {
+        // Assign
+        let source = r#"f(name="Bob");"#;
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let ast = result.unwrap();
+        if let Stmt::Expr(expr_stmt) = &ast.statements[0] {
+            if let Expr::Call(call) = &expr_stmt.expr {
+                assert_eq!(call.arguments.len(), 1);
+                assert!(matches!(&call.arguments[0], ExprOrSpread::Named { .. }));
+            } else {
+                panic!("Expected call expression");
+            }
+        } else {
+            panic!("Expected expression statement");
+        }
+    }
+
+    #[test]
+    fn parses_mixed_positional_and_named_args() {
+        // Assign
+        let source = r#"f("Alice", greeting="Hi");"#;
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_ok());
+        let ast = result.unwrap();
+        if let Stmt::Expr(expr_stmt) = &ast.statements[0] {
+            if let Expr::Call(call) = &expr_stmt.expr {
+                assert_eq!(call.arguments.len(), 2);
+                assert!(matches!(&call.arguments[0], ExprOrSpread::Expr(_)));
+                assert!(matches!(&call.arguments[1], ExprOrSpread::Named { .. }));
+            } else {
+                panic!("Expected call expression");
+            }
+        } else {
+            panic!("Expected expression statement");
+        }
+    }
+
+    #[test]
+    fn rejects_positional_after_named_arg() {
+        // Assign
+        let source = r#"f(name="Bob", "world");"#;
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_named_arg() {
+        // Assign
+        let source = r#"f(name="a", name="b");"#;
+
+        // Act
+        let result = parse(source);
+
+        // Assert
+        assert!(result.is_err());
+    }
+}

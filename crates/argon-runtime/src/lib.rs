@@ -64,6 +64,7 @@ impl Clone for Value {
 pub struct RcFunction {
     pub name: Option<String>,
     pub params: Vec<String>,
+    pub param_defaults: Vec<Option<argon_ast::Expr>>,
     pub body: Vec<Stmt>,
     pub closure: Scope,
 }
@@ -823,6 +824,9 @@ impl Runtime {
                             let key = self.property_key(&p.key)?;
                             let value = match &p.value {
                                 ExprOrSpread::Expr(e) => self.evaluate_expression(e)?,
+                                ExprOrSpread::Named { value, .. } => {
+                                    self.evaluate_expression(value)?
+                                }
                                 ExprOrSpread::Spread(_) => {
                                     return Err(RuntimeError::Unsupported(
                                         "spread in object literals is not supported".to_string(),
@@ -853,6 +857,9 @@ impl Runtime {
                 for el in &a.elements {
                     match el {
                         Some(ExprOrSpread::Expr(e)) => values.push(self.evaluate_expression(e)?),
+                        Some(ExprOrSpread::Named { value, .. }) => {
+                            values.push(self.evaluate_expression(value)?)
+                        }
                         Some(ExprOrSpread::Spread(_)) => {
                             return Err(RuntimeError::Unsupported(
                                 "array spread is not supported".to_string(),
@@ -988,14 +995,20 @@ impl Runtime {
                     (self.evaluate_expression(&c.callee)?, None)
                 };
 
-                let mut args = Vec::new();
-                // For native function method calls, prepend the receiver as first arg
-                if let (Value::NativeFunction(_), Some(recv)) = (&callee, receiver) {
-                    args.push(recv);
-                }
+                // Separate positional args and named args
+                let mut positional_args: Vec<Value> = Vec::new();
+                let mut named_args: Vec<(String, Value)> = Vec::new();
+                let mut has_named = false;
+
                 for arg in &c.arguments {
                     match arg {
-                        ExprOrSpread::Expr(e) => args.push(self.evaluate_expression(e)?),
+                        ExprOrSpread::Expr(e) => {
+                            positional_args.push(self.evaluate_expression(e)?);
+                        }
+                        ExprOrSpread::Named { name, value } => {
+                            has_named = true;
+                            named_args.push((name.sym.clone(), self.evaluate_expression(value)?));
+                        }
                         ExprOrSpread::Spread(_) => {
                             return Err(RuntimeError::Unsupported(
                                 "spread arguments are not supported".to_string(),
@@ -1003,7 +1016,52 @@ impl Runtime {
                         }
                     }
                 }
-                self.call_value(callee, &args)
+
+                let args = if has_named {
+                    // Resolve named args using callee's param names
+                    match &callee {
+                        Value::Function(func) => {
+                            let mut resolved: Vec<Value> = positional_args;
+                            for (i, param_name) in func.params.iter().enumerate() {
+                                if i >= resolved.len() {
+                                    let found = named_args.iter().find(|(n, _)| n == param_name);
+                                    if let Some((_, val)) = found {
+                                        resolved.push(val.clone());
+                                    } else if let Some(Some(default_expr)) =
+                                        func.param_defaults.get(i)
+                                    {
+                                        resolved.push(self.evaluate_expression(default_expr)?);
+                                    } else {
+                                        resolved.push(Value::Undefined);
+                                    }
+                                }
+                            }
+                            resolved
+                        }
+                        _ => {
+                            if has_named {
+                                return Err(RuntimeError::Unsupported(
+                                    "named arguments are only supported for user-defined function calls".to_string(),
+                                ));
+                            }
+                            positional_args
+                        }
+                    }
+                } else {
+                    positional_args
+                };
+
+                // For native function method calls, prepend the receiver as first arg
+                let final_args = if let (Value::NativeFunction(_), Some(recv)) = (&callee, receiver)
+                {
+                    let mut a = vec![recv];
+                    a.extend(args);
+                    a
+                } else {
+                    args
+                };
+
+                self.call_value(callee, &final_args)
             }
             Expr::New(n) => {
                 if let Expr::Identifier(id) = &*n.callee {
@@ -1107,10 +1165,17 @@ impl Runtime {
                     call_scope.define(name.clone(), Value::Function(func.clone()));
                 }
                 for (i, param) in func.params.iter().enumerate() {
-                    call_scope.define(
-                        param.clone(),
-                        args.get(i).cloned().unwrap_or(Value::Undefined),
-                    );
+                    let value = match args.get(i) {
+                        Some(v) if !matches!(v, Value::Undefined) => v.clone(),
+                        _ => {
+                            if let Some(Some(default_expr)) = func.param_defaults.get(i) {
+                                self.evaluate_expression(default_expr)?
+                            } else {
+                                Value::Undefined
+                            }
+                        }
+                    };
+                    call_scope.define(param.clone(), value);
                 }
 
                 let mut rt = Runtime {
@@ -1223,26 +1288,68 @@ impl Runtime {
             .ok_or_else(|| RuntimeError::UndefinedVariable(name.to_string()))?;
         let obj = Rc::new(RefCell::new(HashMap::new()));
 
+        // Build an init object from args, handling named args
+        let mut init_map: Option<HashMap<String, Value>> = None;
+
+        let has_named = args.iter().any(|a| matches!(a, ExprOrSpread::Named { .. }));
+        if has_named {
+            let mut map = HashMap::new();
+            // First, if there's a single positional arg that's an object, merge it
+            for arg in args {
+                match arg {
+                    ExprOrSpread::Expr(e) => {
+                        let val = self.evaluate_expression(e)?;
+                        if let Value::Object(existing) = val {
+                            for (k, v) in existing.borrow().iter() {
+                                map.insert(k.clone(), v.clone());
+                            }
+                        }
+                    }
+                    ExprOrSpread::Named { name, value } => {
+                        let val = self.evaluate_expression(value)?;
+                        map.insert(name.sym.clone(), val);
+                    }
+                    ExprOrSpread::Spread(_) => {
+                        return Err(RuntimeError::Unsupported(
+                            "spread in struct init".to_string(),
+                        ));
+                    }
+                }
+            }
+            init_map = Some(map);
+        }
+
         if let Some(constructor) = &def.constructor {
-            // Get the init object from args
-            let init_value = if let Some(ExprOrSpread::Expr(arg)) = args.first() {
-                self.evaluate_expression(arg)?
+            let init_value = if let Some(ref map) = init_map {
+                Value::Object(Rc::new(RefCell::new(map.clone())))
             } else {
-                Value::Undefined
+                match args.first() {
+                    Some(ExprOrSpread::Expr(arg)) => self.evaluate_expression(arg)?,
+                    Some(ExprOrSpread::Named { value, .. }) => self.evaluate_expression(value)?,
+                    _ => Value::Undefined,
+                }
             };
 
-            // Set up constructor scope with params extracted from init object
             let mut ctor_scope = Scope::new();
             ctor_scope.define("this".to_string(), Value::Object(obj.clone()));
 
             if let Value::Object(init_obj) = &init_value {
                 for param in &constructor.params {
                     if let Pattern::Identifier(id) = &param.pat {
-                        let val = init_obj
-                            .borrow()
-                            .get(&id.name.sym)
-                            .cloned()
-                            .unwrap_or(Value::Undefined);
+                        let val =
+                            init_obj
+                                .borrow()
+                                .get(&id.name.sym)
+                                .cloned()
+                                .unwrap_or_else(|| {
+                                    param
+                                        .default
+                                        .as_ref()
+                                        .and_then(|default_expr| {
+                                            self.evaluate_expression(default_expr).ok()
+                                        })
+                                        .unwrap_or(Value::Undefined)
+                                });
                         ctor_scope.define(id.name.sym.clone(), val);
                     }
                 }
@@ -1267,9 +1374,21 @@ impl Runtime {
                 }
             }
         } else {
-            // No constructor - unpack init object fields (original struct behavior)
-            if let Some(ExprOrSpread::Expr(init_expr)) = args.first() {
-                let init = self.evaluate_expression(init_expr)?;
+            // No constructor - populate fields from args
+            if let Some(map) = init_map {
+                for (k, v) in &map {
+                    obj.borrow_mut().insert(k.clone(), v.clone());
+                }
+            } else if let Some(arg) = args.first() {
+                let init = match arg {
+                    ExprOrSpread::Expr(init_expr) => self.evaluate_expression(init_expr)?,
+                    ExprOrSpread::Named { value, .. } => self.evaluate_expression(value)?,
+                    ExprOrSpread::Spread(_) => {
+                        return Err(RuntimeError::Unsupported(
+                            "spread in struct init".to_string(),
+                        ));
+                    }
+                };
                 if let Value::Object(init_map) = init {
                     for (k, v) in init_map.borrow().iter() {
                         obj.borrow_mut().insert(k.clone(), v.clone());
@@ -1304,9 +1423,11 @@ impl Runtime {
     }
 
     fn function_value(&self, decl: &FunctionDecl, closure: Scope) -> RcFunction {
+        let (params, defaults) = function_params_with_defaults(decl);
         RcFunction {
             name: decl.id.as_ref().map(|id| id.sym.clone()),
-            params: function_params(decl),
+            params,
+            param_defaults: defaults,
             body: decl.body.statements.clone(),
             closure,
         }
@@ -2939,17 +3060,16 @@ impl Runtime {
     }
 }
 
-fn function_params(f: &FunctionDecl) -> Vec<String> {
-    f.params
-        .iter()
-        .filter_map(|p| {
-            if let Pattern::Identifier(id) = &p.pat {
-                Some(id.name.sym.clone())
-            } else {
-                None
-            }
-        })
-        .collect()
+fn function_params_with_defaults(f: &FunctionDecl) -> (Vec<String>, Vec<Option<argon_ast::Expr>>) {
+    let mut params = Vec::new();
+    let mut defaults = Vec::new();
+    for p in &f.params {
+        if let Pattern::Identifier(id) = &p.pat {
+            params.push(id.name.sym.clone());
+            defaults.push(p.default.clone());
+        }
+    }
+    (params, defaults)
 }
 
 fn one_number<F>(args: &[Value], f: F) -> Result<Value, RuntimeError>
@@ -3354,12 +3474,14 @@ fn detect_compile_only_feature_in_expr(expr: &Expr) -> Option<&'static str> {
             c.arguments.iter().find_map(|arg| match arg {
                 ExprOrSpread::Expr(expr) => detect_compile_only_feature_in_expr(expr),
                 ExprOrSpread::Spread(spread) => detect_compile_only_feature_in_expr(&spread.argument),
+                ExprOrSpread::Named { value, .. } => detect_compile_only_feature_in_expr(value),
             })
         }),
         Expr::New(n) => detect_compile_only_feature_in_expr(&n.callee).or_else(|| {
             n.arguments.iter().find_map(|arg| match arg {
                 ExprOrSpread::Expr(expr) => detect_compile_only_feature_in_expr(expr),
                 ExprOrSpread::Spread(spread) => detect_compile_only_feature_in_expr(&spread.argument),
+                ExprOrSpread::Named { value, .. } => detect_compile_only_feature_in_expr(value),
             })
         }),
         Expr::Update(u) => detect_compile_only_feature_in_expr(&u.argument),
@@ -3381,6 +3503,7 @@ fn detect_compile_only_feature_in_expr(expr: &Expr) -> Option<&'static str> {
             element.as_ref().and_then(|element| match element {
                 ExprOrSpread::Expr(expr) => detect_compile_only_feature_in_expr(expr),
                 ExprOrSpread::Spread(spread) => detect_compile_only_feature_in_expr(&spread.argument),
+                ExprOrSpread::Named { value, .. } => detect_compile_only_feature_in_expr(value),
             })
         }),
         Expr::Object(o) => o.properties.iter().find_map(|prop| match prop {
@@ -3388,6 +3511,7 @@ fn detect_compile_only_feature_in_expr(expr: &Expr) -> Option<&'static str> {
                 match &p.value {
                     ExprOrSpread::Expr(expr) => detect_compile_only_feature_in_expr(expr),
                     ExprOrSpread::Spread(spread) => detect_compile_only_feature_in_expr(&spread.argument),
+                    ExprOrSpread::Named { value, .. } => detect_compile_only_feature_in_expr(value),
                 }
             }),
             ObjectProperty::Spread(spread) => detect_compile_only_feature_in_expr(&spread.argument),
@@ -3438,6 +3562,7 @@ fn detect_compile_only_feature_in_expr(expr: &Expr) -> Option<&'static str> {
             call.arguments.iter().find_map(|arg| match arg {
                 ExprOrSpread::Expr(expr) => detect_compile_only_feature_in_expr(expr),
                 ExprOrSpread::Spread(spread) => detect_compile_only_feature_in_expr(&spread.argument),
+                ExprOrSpread::Named { value, .. } => detect_compile_only_feature_in_expr(value),
             })
         }),
         Expr::OptionalMember(member) => detect_compile_only_feature_in_expr(&member.object)

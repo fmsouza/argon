@@ -434,6 +434,8 @@ impl BorrowChecker {
                         ExprOrSpread::Expr(e) => {
                             self.collect_called_functions_from_expr(e, functions, called)
                         }
+                        ExprOrSpread::Named { value, .. } => self
+                            .collect_called_functions_from_expr(value.as_ref(), functions, called),
                         ExprOrSpread::Spread(s) => {
                             self.collect_called_functions_from_expr(&s.argument, functions, called)
                         }
@@ -452,6 +454,8 @@ impl BorrowChecker {
                         ExprOrSpread::Expr(e) => {
                             self.collect_called_functions_from_expr(e, functions, called)
                         }
+                        ExprOrSpread::Named { value, .. } => self
+                            .collect_called_functions_from_expr(value.as_ref(), functions, called),
                         ExprOrSpread::Spread(s) => {
                             self.collect_called_functions_from_expr(&s.argument, functions, called)
                         }
@@ -482,6 +486,8 @@ impl BorrowChecker {
                         ExprOrSpread::Expr(e) => {
                             self.collect_called_functions_from_expr(e, functions, called)
                         }
+                        ExprOrSpread::Named { value, .. } => self
+                            .collect_called_functions_from_expr(value.as_ref(), functions, called),
                         ExprOrSpread::Spread(s) => {
                             self.collect_called_functions_from_expr(&s.argument, functions, called)
                         }
@@ -504,6 +510,12 @@ impl BorrowChecker {
                             ExprOrSpread::Expr(e) => {
                                 self.collect_called_functions_from_expr(e, functions, called)
                             }
+                            ExprOrSpread::Named { value, .. } => self
+                                .collect_called_functions_from_expr(
+                                    value.as_ref(),
+                                    functions,
+                                    called,
+                                ),
                             ExprOrSpread::Spread(s) => self.collect_called_functions_from_expr(
                                 &s.argument,
                                 functions,
@@ -526,6 +538,8 @@ impl BorrowChecker {
                         ExprOrSpread::Expr(e) => {
                             self.collect_called_functions_from_expr(e, functions, called)
                         }
+                        ExprOrSpread::Named { value, .. } => self
+                            .collect_called_functions_from_expr(value.as_ref(), functions, called),
                         ExprOrSpread::Spread(s) => {
                             self.collect_called_functions_from_expr(&s.argument, functions, called)
                         }
@@ -564,6 +578,12 @@ impl BorrowChecker {
                                 match arg {
                                     ExprOrSpread::Expr(e) => self
                                         .collect_called_functions_from_expr(e, functions, called),
+                                    ExprOrSpread::Named { value, .. } => self
+                                        .collect_called_functions_from_expr(
+                                            value.as_ref(),
+                                            functions,
+                                            called,
+                                        ),
                                     ExprOrSpread::Spread(s) => self
                                         .collect_called_functions_from_expr(
                                             &s.argument,
@@ -588,6 +608,12 @@ impl BorrowChecker {
                                 match arg {
                                     ExprOrSpread::Expr(e) => self
                                         .collect_called_functions_from_expr(e, functions, called),
+                                    ExprOrSpread::Named { value, .. } => self
+                                        .collect_called_functions_from_expr(
+                                            value.as_ref(),
+                                            functions,
+                                            called,
+                                        ),
                                     ExprOrSpread::Spread(s) => self
                                         .collect_called_functions_from_expr(
                                             &s.argument,
@@ -1327,8 +1353,13 @@ impl BorrowChecker {
             if !Self::borrow_kind_satisfies(source.kind, expected_kind) {
                 continue;
             }
-            let Some(ExprOrSpread::Expr(arg_expr)) = call.arguments.get(source.param_index) else {
+            let Some(arg) = call.arguments.get(source.param_index) else {
                 continue;
+            };
+            let arg_expr = match arg {
+                ExprOrSpread::Expr(e) => e,
+                ExprOrSpread::Named { value, .. } => value.as_ref(),
+                ExprOrSpread::Spread(_) => continue,
             };
             let mut sources = self.return_sources_from_param_expr(
                 arg_expr,
@@ -1356,16 +1387,34 @@ impl BorrowChecker {
                 if let Expr::Identifier(id) = &*c.callee {
                     if id.sym == "thread" || id.sym == "process" {
                         for arg in &c.arguments {
-                            if let ExprOrSpread::Expr(e) = arg {
-                                for index in self.param_indices_for_expr(e, param_indices, bindings)
-                                {
-                                    thread_captured_params.insert(index);
+                            match arg {
+                                ExprOrSpread::Expr(e) => {
+                                    for index in
+                                        self.param_indices_for_expr(e, param_indices, bindings)
+                                    {
+                                        thread_captured_params.insert(index);
+                                    }
                                 }
+                                ExprOrSpread::Named { value, .. } => {
+                                    for index in self.param_indices_for_expr(
+                                        value.as_ref(),
+                                        param_indices,
+                                        bindings,
+                                    ) {
+                                        thread_captured_params.insert(index);
+                                    }
+                                }
+                                ExprOrSpread::Spread(_) => {}
                             }
                         }
                     } else if let Some(summary) = known_summaries.get(&id.sym) {
                         for param_index in &summary.thread_captured_params {
-                            if let Some(ExprOrSpread::Expr(e)) = c.arguments.get(*param_index) {
+                            if let Some(arg) = c.arguments.get(*param_index) {
+                                let e = match arg {
+                                    ExprOrSpread::Expr(e) => e,
+                                    ExprOrSpread::Named { value, .. } => value.as_ref(),
+                                    ExprOrSpread::Spread(_) => continue,
+                                };
                                 for index in self.param_indices_for_expr(e, param_indices, bindings)
                                 {
                                     thread_captured_params.insert(index);
@@ -1383,14 +1432,26 @@ impl BorrowChecker {
                     thread_captured_params,
                 );
                 for arg in &c.arguments {
-                    if let ExprOrSpread::Expr(e) = arg {
-                        self.collect_thread_captures_from_expr(
-                            e,
-                            param_indices,
-                            known_summaries,
-                            bindings,
-                            thread_captured_params,
-                        );
+                    match arg {
+                        ExprOrSpread::Expr(e) => {
+                            self.collect_thread_captures_from_expr(
+                                e,
+                                param_indices,
+                                known_summaries,
+                                bindings,
+                                thread_captured_params,
+                            );
+                        }
+                        ExprOrSpread::Named { value, .. } => {
+                            self.collect_thread_captures_from_expr(
+                                value.as_ref(),
+                                param_indices,
+                                known_summaries,
+                                bindings,
+                                thread_captured_params,
+                            );
+                        }
+                        ExprOrSpread::Spread(_) => {}
                     }
                 }
             }
@@ -1412,22 +1473,34 @@ impl BorrowChecker {
             }
             Expr::Array(a) => {
                 for element in &a.elements {
-                    if let Some(ExprOrSpread::Expr(e)) = element {
-                        self.collect_thread_captures_from_expr(
-                            e,
-                            param_indices,
-                            known_summaries,
-                            bindings,
-                            thread_captured_params,
-                        );
+                    match element {
+                        Some(ExprOrSpread::Expr(e)) => {
+                            self.collect_thread_captures_from_expr(
+                                e,
+                                param_indices,
+                                known_summaries,
+                                bindings,
+                                thread_captured_params,
+                            );
+                        }
+                        Some(ExprOrSpread::Named { value, .. }) => {
+                            self.collect_thread_captures_from_expr(
+                                value.as_ref(),
+                                param_indices,
+                                known_summaries,
+                                bindings,
+                                thread_captured_params,
+                            );
+                        }
+                        Some(ExprOrSpread::Spread(_)) | None => {}
                     }
                 }
             }
             Expr::Object(o) => {
                 for prop in &o.properties {
                     match prop {
-                        ObjectProperty::Property(p) => {
-                            if let ExprOrSpread::Expr(e) = &p.value {
+                        ObjectProperty::Property(p) => match &p.value {
+                            ExprOrSpread::Expr(e) => {
                                 self.collect_thread_captures_from_expr(
                                     e,
                                     param_indices,
@@ -1436,7 +1509,17 @@ impl BorrowChecker {
                                     thread_captured_params,
                                 );
                             }
-                        }
+                            ExprOrSpread::Named { value, .. } => {
+                                self.collect_thread_captures_from_expr(
+                                    value.as_ref(),
+                                    param_indices,
+                                    known_summaries,
+                                    bindings,
+                                    thread_captured_params,
+                                );
+                            }
+                            ExprOrSpread::Spread(_) => {}
+                        },
                         ObjectProperty::Method(m) => {
                             let mut nested_state = SummaryState {
                                 bindings: bindings.clone(),
@@ -1590,8 +1673,13 @@ impl BorrowChecker {
                 }
                 let mut result = Vec::new();
                 for source in &summary.return_sources {
-                    let ExprOrSpread::Expr(arg_expr) = c.arguments.get(source.param_index)? else {
+                    let Some(arg) = c.arguments.get(source.param_index) else {
                         continue;
+                    };
+                    let arg_expr = match arg {
+                        ExprOrSpread::Expr(e) => e,
+                        ExprOrSpread::Named { value, .. } => value.as_ref(),
+                        ExprOrSpread::Spread(_) => continue,
                     };
                     let mut sources = self.return_sources_from_param_expr(
                         arg_expr,
@@ -1905,8 +1993,13 @@ impl BorrowChecker {
 
         let mut result = Vec::new();
         for source in &summary.return_sources {
-            let ExprOrSpread::Expr(argument) = call.arguments.get(source.param_index)? else {
+            let Some(arg) = call.arguments.get(source.param_index) else {
                 continue;
+            };
+            let argument = match arg {
+                ExprOrSpread::Expr(e) => e,
+                ExprOrSpread::Named { value, .. } => value.as_ref(),
+                ExprOrSpread::Spread(_) => continue,
             };
             let mut mapped = self.binding_sources_from_expr(argument)?;
             mapped.retain(|candidate| Self::borrow_kind_satisfies(candidate.kind, source.kind));
@@ -1937,8 +2030,13 @@ impl BorrowChecker {
 
         let mut result = Vec::new();
         for source in &summary.return_sources {
-            let ExprOrSpread::Expr(argument) = call.arguments.get(source.param_index)? else {
+            let Some(arg) = call.arguments.get(source.param_index) else {
                 continue;
+            };
+            let argument = match arg {
+                ExprOrSpread::Expr(e) => e,
+                ExprOrSpread::Named { value, .. } => value.as_ref(),
+                ExprOrSpread::Spread(_) => continue,
             };
             let mut mapped = self.binding_sources_from_expr(argument)?;
             mapped.retain(|candidate| Self::borrow_kind_satisfies(candidate.kind, source.kind));
@@ -2582,6 +2680,9 @@ impl BorrowChecker {
                 for arg in &c.arguments {
                     match arg {
                         ExprOrSpread::Expr(e) => self.count_identifier_uses_in_expr(e, uses),
+                        ExprOrSpread::Named { value, .. } => {
+                            self.count_identifier_uses_in_expr(value.as_ref(), uses)
+                        }
                         ExprOrSpread::Spread(s) => {
                             self.count_identifier_uses_in_expr(&s.argument, uses)
                         }
@@ -2606,6 +2707,9 @@ impl BorrowChecker {
                 for arg in &n.arguments {
                     match arg {
                         ExprOrSpread::Expr(e) => self.count_identifier_uses_in_expr(e, uses),
+                        ExprOrSpread::Named { value, .. } => {
+                            self.count_identifier_uses_in_expr(value.as_ref(), uses)
+                        }
                         ExprOrSpread::Spread(s) => {
                             self.count_identifier_uses_in_expr(&s.argument, uses)
                         }
@@ -2632,6 +2736,9 @@ impl BorrowChecker {
                                 ExprOrSpread::Expr(e) => {
                                     self.count_identifier_uses_in_expr(e, uses)
                                 }
+                                ExprOrSpread::Named { value, .. } => {
+                                    self.count_identifier_uses_in_expr(value.as_ref(), uses)
+                                }
                                 ExprOrSpread::Spread(s) => {
                                     self.count_identifier_uses_in_expr(&s.argument, uses)
                                 }
@@ -2653,6 +2760,9 @@ impl BorrowChecker {
                 for elem in a.elements.iter().flatten() {
                     match elem {
                         ExprOrSpread::Expr(e) => self.count_identifier_uses_in_expr(e, uses),
+                        ExprOrSpread::Named { value, .. } => {
+                            self.count_identifier_uses_in_expr(value.as_ref(), uses)
+                        }
                         ExprOrSpread::Spread(s) => {
                             self.count_identifier_uses_in_expr(&s.argument, uses)
                         }
@@ -2684,6 +2794,9 @@ impl BorrowChecker {
                                     ExprOrSpread::Expr(e) => {
                                         self.count_identifier_uses_in_expr(e, uses)
                                     }
+                                    ExprOrSpread::Named { value, .. } => {
+                                        self.count_identifier_uses_in_expr(value.as_ref(), uses)
+                                    }
                                     ExprOrSpread::Spread(s) => {
                                         self.count_identifier_uses_in_expr(&s.argument, uses)
                                     }
@@ -2702,6 +2815,9 @@ impl BorrowChecker {
                                 match arg {
                                     ExprOrSpread::Expr(e) => {
                                         self.count_identifier_uses_in_expr(e, uses)
+                                    }
+                                    ExprOrSpread::Named { value, .. } => {
+                                        self.count_identifier_uses_in_expr(value.as_ref(), uses)
                                     }
                                     ExprOrSpread::Spread(s) => {
                                         self.count_identifier_uses_in_expr(&s.argument, uses)
@@ -2723,6 +2839,9 @@ impl BorrowChecker {
                 for arg in &c.arguments {
                     match arg {
                         ExprOrSpread::Expr(e) => self.count_identifier_uses_in_expr(e, uses),
+                        ExprOrSpread::Named { value, .. } => {
+                            self.count_identifier_uses_in_expr(value.as_ref(), uses)
+                        }
                         ExprOrSpread::Spread(s) => {
                             self.count_identifier_uses_in_expr(&s.argument, uses)
                         }
@@ -3539,8 +3658,14 @@ impl BorrowChecker {
             Expr::New(n) => {
                 self.check_expression(&n.callee)?;
                 for arg in &n.arguments {
-                    if let ExprOrSpread::Expr(e) = arg {
-                        self.check_expression(e)?;
+                    match arg {
+                        ExprOrSpread::Expr(e) => {
+                            self.check_expression(e)?;
+                        }
+                        ExprOrSpread::Named { value, .. } => {
+                            self.check_expression(value.as_ref())?;
+                        }
+                        ExprOrSpread::Spread(_) => {}
                     }
                 }
             }
@@ -3558,8 +3683,14 @@ impl BorrowChecker {
             }
             Expr::Array(a) => {
                 for elem in &a.elements {
-                    if let Some(ExprOrSpread::Expr(e)) = elem {
-                        self.check_expression(e)?;
+                    match elem {
+                        Some(ExprOrSpread::Expr(e)) => {
+                            self.check_expression(e)?;
+                        }
+                        Some(ExprOrSpread::Named { value, .. }) => {
+                            self.check_expression(value.as_ref())?;
+                        }
+                        Some(ExprOrSpread::Spread(_)) | None => {}
                     }
                 }
             }
@@ -3605,8 +3736,14 @@ impl BorrowChecker {
                         ChainElement::OptionalCall(c) => {
                             self.check_expression(&c.callee)?;
                             for arg in &c.arguments {
-                                if let ExprOrSpread::Expr(e) = arg {
-                                    self.check_expression(e)?;
+                                match arg {
+                                    ExprOrSpread::Expr(e) => {
+                                        self.check_expression(e)?;
+                                    }
+                                    ExprOrSpread::Named { value, .. } => {
+                                        self.check_expression(value.as_ref())?;
+                                    }
+                                    ExprOrSpread::Spread(_) => {}
                                 }
                             }
                         }
@@ -3707,41 +3844,44 @@ impl BorrowChecker {
         let mut ownership_snapshots: HashMap<String, Ownership> = HashMap::new();
 
         for (arg_index, arg) in c.arguments.iter().enumerate() {
-            if let ExprOrSpread::Expr(e) = arg {
-                let expected_borrow = function_summary
+            let e = match arg {
+                ExprOrSpread::Expr(e) => e,
+                ExprOrSpread::Named { value, .. } => value.as_ref(),
+                ExprOrSpread::Spread(_) => continue,
+            };
+            let expected_borrow = function_summary
+                .as_ref()
+                .and_then(|summary| summary.param_borrows.get(arg_index))
+                .copied()
+                .flatten();
+
+            if let Some(kind) = expected_borrow {
+                let borrow_name = self.borrowed_argument_name(e);
+                let borrow_count_before = borrow_name
                     .as_ref()
-                    .and_then(|summary| summary.param_borrows.get(arg_index))
-                    .copied()
-                    .flatten();
+                    .map(|name| self.active_borrows.get(name).map_or(0, Vec::len));
 
-                if let Some(kind) = expected_borrow {
-                    let borrow_name = self.borrowed_argument_name(e);
-                    let borrow_count_before = borrow_name
-                        .as_ref()
-                        .map(|name| self.active_borrows.get(name).map_or(0, Vec::len));
-
-                    if let Some(name) = borrow_name.as_ref() {
-                        if !ownership_snapshots.contains_key(name) {
-                            if let Some(state) = self.locals.get(name) {
-                                ownership_snapshots.insert(name.clone(), state.ownership.clone());
-                            }
+                if let Some(name) = borrow_name.as_ref() {
+                    if !ownership_snapshots.contains_key(name) {
+                        if let Some(state) = self.locals.get(name) {
+                            ownership_snapshots.insert(name.clone(), state.ownership.clone());
                         }
                     }
+                }
 
-                    self.check_borrow_argument(e, kind)?;
+                self.check_borrow_argument(e, kind)?;
 
-                    if let (Some(name), Some(before_count)) = (borrow_name, borrow_count_before) {
-                        let after_count = self.active_borrows.get(&name).map_or(0, Vec::len);
-                        let added = after_count.saturating_sub(before_count);
-                        if added > 0 {
-                            *temporary_borrow_counts.entry(name).or_insert(0) += added;
-                        }
+                if let (Some(name), Some(before_count)) = (borrow_name, borrow_count_before) {
+                    let after_count = self.active_borrows.get(&name).map_or(0, Vec::len);
+                    let added = after_count.saturating_sub(before_count);
+                    if added > 0 {
+                        *temporary_borrow_counts.entry(name).or_insert(0) += added;
                     }
-                } else {
-                    self.check_expression(e)?;
-                    if let Expr::Identifier(id) = e {
-                        self.move_identifier_if_needed(id)?;
-                    }
+                }
+            } else {
+                self.check_expression(e)?;
+                if let Expr::Identifier(id) = e {
+                    self.move_identifier_if_needed(id)?;
                 }
             }
         }
@@ -3749,13 +3889,24 @@ impl BorrowChecker {
         if let Expr::Identifier(id) = &*c.callee {
             if id.sym == "process" || id.sym == "thread" {
                 for arg in &c.arguments {
-                    if let ExprOrSpread::Expr(e) = arg {
-                        self.check_thread_capture_argument(e)?;
+                    match arg {
+                        ExprOrSpread::Expr(e) => {
+                            self.check_thread_capture_argument(e)?;
+                        }
+                        ExprOrSpread::Named { value, .. } => {
+                            self.check_thread_capture_argument(value.as_ref())?;
+                        }
+                        ExprOrSpread::Spread(_) => {}
                     }
                 }
             } else if let Some(summary) = function_summary.as_ref() {
                 for param_index in &summary.thread_captured_params {
-                    if let Some(ExprOrSpread::Expr(e)) = c.arguments.get(*param_index) {
+                    if let Some(arg) = c.arguments.get(*param_index) {
+                        let e = match arg {
+                            ExprOrSpread::Expr(e) => e,
+                            ExprOrSpread::Named { value, .. } => value.as_ref(),
+                            ExprOrSpread::Spread(_) => continue,
+                        };
                         self.check_thread_capture_argument(e)?;
                     }
                 }
@@ -4002,12 +4153,17 @@ impl BorrowChecker {
                 continue;
             }
 
-            let Some(ExprOrSpread::Expr(arg_expr)) = call.arguments.get(source.param_index) else {
+            let Some(arg) = call.arguments.get(source.param_index) else {
                 self.errors.push(BorrowError::LifetimeError(format!(
                     "borrowed return call '{}' is missing source parameter {}",
                     callee.sym, source.param_index
                 )));
                 continue;
+            };
+            let arg_expr = match arg {
+                ExprOrSpread::Expr(e) => e,
+                ExprOrSpread::Named { value, .. } => value.as_ref(),
+                ExprOrSpread::Spread(_) => continue,
             };
 
             match arg_expr {

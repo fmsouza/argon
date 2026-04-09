@@ -558,7 +558,8 @@ impl IrBuilder {
 
                             let value_expr = match &p.value {
                                 ExprOrSpread::Expr(e) => e,
-                                _ => {
+                                ExprOrSpread::Named { value, .. } => value,
+                                ExprOrSpread::Spread(_) => {
                                     return Err(IrError::Unsupported(
                                         "object literal spread properties".to_string(),
                                     ))
@@ -670,9 +671,16 @@ impl IrBuilder {
             Expr::Call(c) => {
                 let mut args = Vec::new();
                 for arg in &c.arguments {
-                    if let ExprOrSpread::Expr(e) = arg {
-                        let a = self.translate_expression(e, instructions)?;
-                        args.push(a);
+                    match arg {
+                        ExprOrSpread::Expr(e) => {
+                            let a = self.translate_expression(e, instructions)?;
+                            args.push(a);
+                        }
+                        ExprOrSpread::Named { value, .. } => {
+                            let a = self.translate_expression(value, instructions)?;
+                            args.push(a);
+                        }
+                        ExprOrSpread::Spread(_) => {}
                     }
                 }
                 let dest = self.new_value();
@@ -683,13 +691,20 @@ impl IrBuilder {
             Expr::New(n) => {
                 let mut args = Vec::new();
                 for arg in &n.arguments {
-                    if let ExprOrSpread::Expr(e) = arg {
-                        let a = self.translate_expression(e, instructions)?;
-                        args.push(a);
-                    } else {
-                        return Err(IrError::Unsupported(
-                            "new expression spread arguments".to_string(),
-                        ));
+                    match arg {
+                        ExprOrSpread::Expr(e) => {
+                            let a = self.translate_expression(e, instructions)?;
+                            args.push(a);
+                        }
+                        ExprOrSpread::Named { value, .. } => {
+                            let a = self.translate_expression(value, instructions)?;
+                            args.push(a);
+                        }
+                        ExprOrSpread::Spread(_) => {
+                            return Err(IrError::Unsupported(
+                                "new expression spread arguments".to_string(),
+                            ));
+                        }
                     }
                 }
                 let dest = self.new_value();
@@ -766,6 +781,9 @@ impl IrBuilder {
                         None => elements.push(None),
                         Some(ExprOrSpread::Expr(e)) => {
                             elements.push(Some(self.translate_expression(e, instructions)?));
+                        }
+                        Some(ExprOrSpread::Named { value, .. }) => {
+                            elements.push(Some(self.translate_expression(value, instructions)?));
                         }
                         Some(ExprOrSpread::Spread(_)) => {
                             return Err(IrError::Unsupported(
