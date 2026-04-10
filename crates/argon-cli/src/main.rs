@@ -568,14 +568,14 @@ fn compile_with_session(
     Ok(())
 }
 
-fn check(input: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+fn check(input: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let session = CompilationSession::new();
     check_with_session(&session, input)
 }
 
 fn check_with_session(
     session: &CompilationSession,
-    input: &PathBuf,
+    input: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Parsing {}...", input.display());
     println!("Type checking...");
@@ -592,33 +592,31 @@ fn check_with_session(
     Ok(())
 }
 
-fn run(input: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+fn run(input: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let session = CompilationSession::new();
     run_with_session(&session, input)
 }
 
 fn run_with_session(
     session: &CompilationSession,
-    input: &PathBuf,
+    input: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Parsing {}...", input.display());
     println!("Type checking...");
     println!("Borrow checking...");
 
-    let checked = session.check_project(input).map_err(|e| {
+    let checked = session.check_project(input).inspect_err(|e| {
         if let Some(diag) = e.diagnostics() {
             eprintln!("{}", diag.rendered);
         }
-        e
     })?;
 
     // Reject async programs — the interpreter is synchronous-only.
     let compiler = Compiler::new();
-    compiler.validate_no_async(&checked.ast).map_err(|e| {
+    compiler.validate_no_async(&checked.ast).inspect_err(|e| {
         if let Some(diag) = e.diagnostics() {
             eprintln!("{}", diag.rendered);
         }
-        e
     })?;
 
     execute_checked_ast(&checked.ast)
