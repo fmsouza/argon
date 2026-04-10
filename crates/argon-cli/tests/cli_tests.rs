@@ -575,6 +575,8 @@ function sumTo(n: i32): i32 {
         .arg(&output_file)
         .arg("--target")
         .arg("wasm")
+        .arg("--emit")
+        .arg("wat")
         .arg("--pipeline")
         .arg("ir")
         .assert()
@@ -659,6 +661,36 @@ console.log(runtime.readString(runtime.exports.greet()));
 }
 
 #[test]
+fn test_compile_wasm_does_not_write_wat_without_emit_flag() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("loader.arg");
+    let output_file = temp_dir.path().join("loader.wasm");
+    fs::write(
+        &source_file,
+        r#"
+function greet(): string {
+    return "hello";
+}
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("-o")
+        .arg(&output_file)
+        .arg("--target")
+        .arg("wasm")
+        .arg("--pipeline")
+        .arg("ir")
+        .assert()
+        .success();
+
+    assert!(!output_file.with_extension("wat").exists());
+}
+
+#[test]
 fn test_compile_wasm_async_executes_via_host_sidecar() {
     let temp_dir = tempfile::tempdir().unwrap();
     let source_file = temp_dir.path().join("async_loader.arg");
@@ -685,6 +717,8 @@ async function main(): string {
         .arg(&output_file)
         .arg("--target")
         .arg("wasm")
+        .arg("--emit")
+        .arg("wat")
         .arg("--pipeline")
         .arg("ir")
         .assert()
@@ -735,6 +769,8 @@ async function main(): string {
         .arg(&output_file)
         .arg("--target")
         .arg("wasm")
+        .arg("--emit")
+        .arg("wat")
         .arg("--pipeline")
         .arg("ir")
         .assert()

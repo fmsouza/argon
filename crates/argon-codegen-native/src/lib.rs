@@ -39,20 +39,41 @@ impl std::fmt::Display for CodegenError {
 
 impl std::error::Error for CodegenError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NativeOptLevel {
+    None,
+    Speed,
+}
+
 pub struct NativeCodegen {
     triple: TargetTriple,
+    opt_level: NativeOptLevel,
 }
 
 impl NativeCodegen {
     pub fn new(triple: TargetTriple) -> Self {
-        Self { triple }
+        Self {
+            triple,
+            opt_level: NativeOptLevel::Speed,
+        }
+    }
+
+    pub fn with_opt_level(mut self, opt_level: NativeOptLevel) -> Self {
+        self.opt_level = opt_level;
+        self
     }
 
     /// Generate an object file (.o) from the Argon IR module.
     pub fn generate(&self, ir_module: &IrModule) -> Result<Vec<u8>, CodegenError> {
         let mut flag_builder = settings::builder();
         flag_builder
-            .set("opt_level", "speed")
+            .set(
+                "opt_level",
+                match self.opt_level {
+                    NativeOptLevel::None => "none",
+                    NativeOptLevel::Speed => "speed",
+                },
+            )
             .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
         flag_builder
             .set("is_pic", "true")

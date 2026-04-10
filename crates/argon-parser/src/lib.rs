@@ -2857,7 +2857,8 @@ impl Parser {
                 }
 
                 if properties.len() >= MAX_COLLECTION_ELEMENTS {
-                    return Err(self.parser_error_here("object literal exceeds maximum number of properties"));
+                    return Err(self
+                        .parser_error_here("object literal exceeds maximum number of properties"));
                 }
 
                 let key = self.parse_expression()?;
@@ -2895,7 +2896,9 @@ impl Parser {
 
             while !self.check(&TokenKind::CloseBracket) && !self.is_at_end() {
                 if elements.len() >= MAX_COLLECTION_ELEMENTS {
-                    return Err(self.parser_error_here("array literal exceeds maximum number of elements"));
+                    return Err(
+                        self.parser_error_here("array literal exceeds maximum number of elements")
+                    );
                 }
 
                 if self.match_one(&[TokenKind::DotDotDot]) {

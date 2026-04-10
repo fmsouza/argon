@@ -638,10 +638,7 @@ impl JsCodegen {
         Ok(())
     }
 
-    pub(crate) fn generate_async_function(
-        &mut self,
-        f: &FunctionDecl,
-    ) -> Result<(), CodegenError> {
+    pub(crate) fn generate_async_function(&mut self, f: &FunctionDecl) -> Result<(), CodegenError> {
         self.output.push_str("async function ");
         if let Some(ref id) = f.id {
             self.output.push_str(&id.sym);
@@ -672,11 +669,7 @@ impl JsCodegen {
         Ok(())
     }
 
-    pub(crate) fn generate_enum(
-        &mut self,
-        e: &EnumDecl,
-        export: bool,
-    ) -> Result<(), CodegenError> {
+    pub(crate) fn generate_enum(&mut self, e: &EnumDecl, export: bool) -> Result<(), CodegenError> {
         if export {
             self.output.push_str("export ");
         }

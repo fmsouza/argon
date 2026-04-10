@@ -3,10 +3,7 @@ use argon_ast::*;
 use super::*;
 
 impl JsCodegen {
-    pub(crate) fn generate_jsx_element(
-        &mut self,
-        elem: &JsxElement,
-    ) -> Result<(), CodegenError> {
+    pub(crate) fn generate_jsx_element(&mut self, elem: &JsxElement) -> Result<(), CodegenError> {
         self.output.push_str("React.createElement(");
 
         // Generate element name
@@ -43,10 +40,7 @@ impl JsCodegen {
         Ok(())
     }
 
-    pub(crate) fn generate_jsx_fragment(
-        &mut self,
-        frag: &JsxFragment,
-    ) -> Result<(), CodegenError> {
+    pub(crate) fn generate_jsx_fragment(&mut self, frag: &JsxFragment) -> Result<(), CodegenError> {
         self.output
             .push_str("React.createElement(React.Fragment, null, ");
         for (i, child) in frag.children.iter().enumerate() {

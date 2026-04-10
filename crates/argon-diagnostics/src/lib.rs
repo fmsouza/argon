@@ -367,11 +367,7 @@ mod tests {
         assert_eq!(bag.error_count(), 0);
         assert_eq!(bag.warning_count(), 0);
 
-        bag.add_error(Diagnostic::new(
-            "test".into(),
-            0..5,
-            "test error".into(),
-        ));
+        bag.add_error(Diagnostic::new("test".into(), 0..5, "test error".into()));
         bag.add_warning(Warning::new("test".into(), 0..5, "test warning".into()));
 
         assert!(bag.has_errors());
@@ -384,9 +380,7 @@ mod tests {
         let diag = Diagnostic::new("src".into(), 10..20, "type mismatch".into())
             .with_code("E001".into())
             .with_note("expected i32, found string".into())
-            .with_label(
-                DiagnosticLabel::new(10..20).with_message("this expression".into()),
-            );
+            .with_label(DiagnosticLabel::new(10..20).with_message("this expression".into()));
 
         assert_eq!(diag.code.as_deref(), Some("E001"));
         assert_eq!(diag.note.as_deref(), Some("expected i32, found string"));
@@ -439,16 +433,8 @@ mod tests {
         ));
 
         let mut bag = DiagnosticBag::new();
-        bag.add_error(Diagnostic::new(
-            "test".into(),
-            0..3,
-            "first error".into(),
-        ));
-        bag.add_error(Diagnostic::new(
-            "test".into(),
-            4..5,
-            "second error".into(),
-        ));
+        bag.add_error(Diagnostic::new("test".into(), 0..3, "first error".into()));
+        bag.add_error(Diagnostic::new("test".into(), 4..5, "second error".into()));
 
         let output = engine.render(&bag);
         assert!(output.contains("first error"));

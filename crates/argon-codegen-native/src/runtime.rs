@@ -7,10 +7,13 @@
 //! variadic calling convention issues on aarch64.
 
 use crate::CodegenError;
+use argon_target::TargetTriple;
 use cranelift_codegen::ir::types;
 use cranelift_codegen::ir::{AbiParam, InstBuilder};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{FuncId, Linkage, Module};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 /// Declare and define the C-ABI `main` function that wraps `__argon_init`.
@@ -413,16 +416,33 @@ int __argon_net_resolve(const char *host, long host_len, char *out_buf, long out
 
 /// Compile the C runtime to an object file for the given target.
 /// Returns the path to the generated .o file.
-pub fn compile_c_runtime(target_dir: &Path) -> Result<PathBuf, CodegenError> {
-    let c_path = target_dir.join("__argon_runtime.c");
-    let o_path = target_dir.join("__argon_runtime.o");
+pub fn compile_c_runtime(
+    target_dir: &Path,
+    triple: &TargetTriple,
+) -> Result<PathBuf, CodegenError> {
+    let cache_dir = runtime_cache_dir(target_dir, triple);
+    std::fs::create_dir_all(&cache_dir).map_err(|e| {
+        CodegenError::CraneliftError(format!("failed to create runtime cache dir: {}", e))
+    })?;
+
+    let o_path = cache_dir.join(format!("__argon_runtime{}", triple.obj_suffix()));
+    if o_path.exists() {
+        return Ok(o_path);
+    }
+
+    let c_path = cache_dir.join("__argon_runtime.c");
+    let tmp_o_path = cache_dir.join(format!(
+        "__argon_runtime.{}.tmp{}",
+        std::process::id(),
+        triple.obj_suffix()
+    ));
 
     std::fs::write(&c_path, C_RUNTIME_SOURCE)
         .map_err(|e| CodegenError::CraneliftError(format!("failed to write C runtime: {}", e)))?;
 
     let output = std::process::Command::new("cc")
         .args(["-c", "-O2", "-o"])
-        .arg(&o_path)
+        .arg(&tmp_o_path)
         .arg(&c_path)
         .output()
         .map_err(|e| {
@@ -443,5 +463,57 @@ pub fn compile_c_runtime(target_dir: &Path) -> Result<PathBuf, CodegenError> {
     // Clean up C source
     let _ = std::fs::remove_file(&c_path);
 
+    if let Err(err) = std::fs::rename(&tmp_o_path, &o_path) {
+        if o_path.exists() {
+            let _ = std::fs::remove_file(&tmp_o_path);
+        } else {
+            return Err(CodegenError::LinkerError(format!(
+                "failed to place cached runtime object: {}",
+                err
+            )));
+        }
+    }
+
     Ok(o_path)
+}
+
+fn runtime_cache_dir(base_dir: &Path, triple: &TargetTriple) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    C_RUNTIME_SOURCE.hash(&mut hasher);
+    env!("CARGO_PKG_VERSION").hash(&mut hasher);
+
+    base_dir
+        .join("argon-runtime-cache")
+        .join(triple.triple_str())
+        .join(format!("{:016x}", hasher.finish()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compile_c_runtime_reuses_cached_object() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let triple = TargetTriple::host();
+
+        let first = compile_c_runtime(temp_dir.path(), &triple).unwrap();
+        let second = compile_c_runtime(temp_dir.path(), &triple).unwrap();
+
+        assert_eq!(first, second);
+        assert!(second.exists());
+    }
+
+    #[test]
+    fn compile_c_runtime_rebuilds_missing_cache_entry() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let triple = TargetTriple::host();
+
+        let cached = compile_c_runtime(temp_dir.path(), &triple).unwrap();
+        std::fs::remove_file(&cached).unwrap();
+
+        let rebuilt = compile_c_runtime(temp_dir.path(), &triple).unwrap();
+        assert_eq!(cached, rebuilt);
+        assert!(rebuilt.exists());
+    }
 }

@@ -2,6 +2,8 @@
 //!
 //! Centralizes pipeline orchestration so CLI/tooling (watch/REPL/LSP) can reuse it.
 
+mod session;
+
 use argon_ast::SourceFile;
 use argon_borrowck::BorrowChecker;
 use argon_codegen_js::{generate_type_declarations, JsCodegen};
@@ -14,34 +16,40 @@ use argon_target::TargetTriple;
 use argon_types::{TypeCheckOutput, TypeChecker};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub use argon_codegen_native::NativeOptLevel;
+pub use session::{CheckedFile, CompilationSession};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Target {
     Js,
     Wasm,
     Native,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EmitKind {
     Exe,
     Obj,
     Asm,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Pipeline {
     Ast,
     Ir,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CompileOptions {
     pub target: Target,
     pub pipeline: Pipeline,
     pub optimize: bool,
     pub source_map: bool,
     pub declarations: bool,
+    pub emit_wat: bool,
+    pub native_opt_level: NativeOptLevel,
     /// Target triple for native compilation (e.g., "x86_64-unknown-linux-gnu").
     /// When None, defaults to the host triple.
     pub target_triple: Option<String>,
@@ -57,6 +65,8 @@ impl Default for CompileOptions {
             optimize: false,
             source_map: false,
             declarations: false,
+            emit_wat: false,
+            native_opt_level: NativeOptLevel::None,
             target_triple: None,
             emit: EmitKind::Exe,
         }
@@ -126,18 +136,7 @@ impl Compiler {
         source_name: &str,
         options: &CompileOptions,
     ) -> Result<CompileArtifacts, DriverError> {
-        let ast = self.parse(source, source_name)?;
-        self.validate_std_imports(&ast)?;
-        let types = self.check_semantics(source, source_name, &ast)?;
-
-        let mut ast = ast;
-        argon_types::desugar::desugar_named_args(&mut ast, &types.env);
-
-        match options.target {
-            Target::Js => self.compile_js(source, source_name, &ast, options),
-            Target::Wasm => self.compile_wasm(source, source_name, &ast, options),
-            Target::Native => self.compile_native(source, source_name, &ast, options),
-        }
+        self.new_session().compile(source, source_name, options)
     }
 
     pub fn compile_file(
@@ -145,54 +144,7 @@ impl Compiler {
         path: &Path,
         options: &CompileOptions,
     ) -> Result<CompileResult, DriverError> {
-        const MAX_SOURCE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
-
-        let metadata = std::fs::metadata(path).map_err(|e| DriverError::WithDiagnostics {
-            message: format!("io error: {}", e),
-            diagnostics: Diagnostics {
-                bag: DiagnosticBag::new(),
-                rendered: format!("io error: {}", e),
-            },
-        })?;
-        if metadata.len() > MAX_SOURCE_SIZE {
-            return Err(DriverError::WithDiagnostics {
-                message: "source file exceeds 10 MB limit".to_string(),
-                diagnostics: Diagnostics {
-                    bag: DiagnosticBag::new(),
-                    rendered: format!(
-                        "error: source file '{}' is {} bytes, exceeding the 10 MB limit",
-                        path.display(),
-                        metadata.len()
-                    ),
-                },
-            });
-        }
-
-        let source = std::fs::read_to_string(path).map_err(|e| DriverError::WithDiagnostics {
-            message: format!("io error: {}", e),
-            diagnostics: Diagnostics {
-                bag: DiagnosticBag::new(),
-                rendered: format!("io error: {}", e),
-            },
-        })?;
-
-        let source_name = path.display().to_string();
-        let ast = self.parse(&source, &source_name)?;
-        self.validate_std_imports(&ast)?;
-        let deps = self.collect_deps(&ast, path.parent().unwrap_or(Path::new(".")));
-
-        let types = self.check_semantics(&source, &source_name, &ast)?;
-
-        let mut ast = ast;
-        argon_types::desugar::desugar_named_args(&mut ast, &types.env);
-
-        let artifacts = match options.target {
-            Target::Js => self.compile_js(&source, &source_name, &ast, options)?,
-            Target::Wasm => self.compile_wasm(&source, &source_name, &ast, options)?,
-            Target::Native => self.compile_native(&source, &source_name, &ast, options)?,
-        };
-
-        Ok(CompileResult { artifacts, deps })
+        self.new_session().compile_file(path, options)
     }
 
     /// Compile a file and all its transitive `.arg` dependencies.
@@ -201,41 +153,11 @@ impl Compiler {
         entry: &Path,
         options: &CompileOptions,
     ) -> Result<ProjectCompileResult, DriverError> {
-        let entry_canonical =
-            std::fs::canonicalize(entry).map_err(|e| DriverError::WithDiagnostics {
-                message: format!("io error: {}", e),
-                diagnostics: Diagnostics {
-                    bag: DiagnosticBag::new(),
-                    rendered: format!("io error: {}", e),
-                },
-            })?;
+        self.new_session().compile_project(entry, options)
+    }
 
-        let mut compiled: HashSet<PathBuf> = HashSet::new();
-        let mut results: Vec<(PathBuf, CompileArtifacts)> = Vec::new();
-        let mut queue: Vec<PathBuf> = vec![entry_canonical];
-
-        while let Some(path) = queue.pop() {
-            if compiled.contains(&path) {
-                continue;
-            }
-            compiled.insert(path.clone());
-
-            let result = self.compile_file(&path, options)?;
-
-            for dep in &result.deps {
-                if dep.exists() {
-                    if let Ok(canonical) = std::fs::canonicalize(dep) {
-                        if !compiled.contains(&canonical) {
-                            queue.push(canonical);
-                        }
-                    }
-                }
-            }
-
-            results.push((path, result.artifacts));
-        }
-
-        Ok(ProjectCompileResult { files: results })
+    pub fn new_session(&self) -> CompilationSession {
+        CompilationSession::new()
     }
 
     pub fn collect_deps(&self, ast: &SourceFile, base_dir: &Path) -> Vec<PathBuf> {
@@ -272,7 +194,7 @@ impl Compiler {
     }
 
     /// Validate that WASM-unsupported std modules are not imported.
-    fn validate_wasm_imports(
+    pub(crate) fn validate_wasm_imports(
         &self,
         source: &str,
         source_name: &str,
@@ -416,7 +338,7 @@ impl Compiler {
         source: &str,
         source_name: &str,
         ast: &SourceFile,
-        types: TypeCheckOutput,
+        types: Arc<TypeCheckOutput>,
     ) -> Result<(), DriverError> {
         let mut borrow_checker = BorrowChecker::new();
         borrow_checker
@@ -431,11 +353,12 @@ impl Compiler {
         source_name: &str,
         ast: &SourceFile,
     ) -> Result<TypeCheckOutput, DriverError> {
-        let types = self.type_check_output(source, source_name, ast)?;
-        self.borrow_check_typed(source, source_name, ast, types.clone())?;
-        Ok(types)
+        let types = Arc::new(self.type_check_output(source, source_name, ast)?);
+        self.borrow_check_typed(source, source_name, ast, Arc::clone(&types))?;
+        Ok((*types).clone())
     }
 
+    #[allow(dead_code)] // TODO: remove once all internal callers migrate to CompilationSession.
     fn compile_js(
         &self,
         source: &str,
@@ -482,6 +405,7 @@ impl Compiler {
         })
     }
 
+    #[allow(dead_code)] // TODO: remove once all internal callers migrate to CompilationSession.
     fn compile_wasm(
         &self,
         source: &str,
@@ -509,7 +433,10 @@ impl Compiler {
         }
         .map_err(|e| self.simple_error_to_driver(source, source_name, "codegen error", &e))?;
 
-        let wat = wasmprinter::print_bytes(&wasm).ok();
+        let wat = options
+            .emit_wat
+            .then(|| wasmprinter::print_bytes(&wasm).ok())
+            .flatten();
 
         Ok(CompileArtifacts {
             js: None,
@@ -524,6 +451,7 @@ impl Compiler {
         })
     }
 
+    #[allow(dead_code)] // TODO: remove once all internal callers migrate to CompilationSession.
     fn compile_native(
         &self,
         source: &str,
@@ -547,7 +475,7 @@ impl Compiler {
             let _ = argon_ir::passes::optimize_module(&mut ir);
         }
 
-        let codegen = NativeCodegen::new(triple);
+        let codegen = NativeCodegen::new(triple).with_opt_level(options.native_opt_level);
         let obj_bytes = codegen.generate(&ir).map_err(|e| {
             self.simple_error_to_driver(source, source_name, "native codegen error", &e)
         })?;
@@ -565,7 +493,7 @@ impl Compiler {
         })
     }
 
-    fn generate_wasm_host_module_from_ir(
+    pub(crate) fn generate_wasm_host_module_from_ir(
         &self,
         source: &str,
         source_name: &str,
@@ -601,7 +529,11 @@ impl Compiler {
         Ok(self.append_host_exports(host_js, &host_only_exports))
     }
 
-    fn append_host_exports(&self, mut host_js: String, host_only_exports: &[String]) -> String {
+    pub(crate) fn append_host_exports(
+        &self,
+        mut host_js: String,
+        host_only_exports: &[String],
+    ) -> String {
         if !host_only_exports.is_empty() {
             host_js.push_str("\nexport { ");
             for (idx, export_name) in host_only_exports.iter().enumerate() {
@@ -616,7 +548,11 @@ impl Compiler {
         host_js
     }
 
-    fn generate_wasm_loader(&self, wasm_file_name: &str, host_file_name: &str) -> String {
+    pub(crate) fn generate_wasm_loader(
+        &self,
+        wasm_file_name: &str,
+        host_file_name: &str,
+    ) -> String {
         format!(
             r#"export function createArgonEnv(overrides = {{}}) {{
   return {{
@@ -735,7 +671,7 @@ export async function instantiateArgon(imports = {{}}) {{
         }
     }
 
-    fn simple_error_to_driver(
+    pub(crate) fn simple_error_to_driver(
         &self,
         source: &str,
         source_name: &str,
@@ -890,5 +826,79 @@ mod tests {
         let result = compiler.compile_project(&a_path, &options).unwrap();
 
         assert_eq!(result.files.len(), 3);
+    }
+
+    #[test]
+    fn session_invalidates_cached_ast_when_source_changes() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let source_path = temp_dir.path().join("main.arg");
+        std::fs::write(&source_path, "const x: i32 = 1;\n").unwrap();
+
+        let session = CompilationSession::new();
+        let first = session.check_file(&source_path).unwrap();
+        assert_eq!(first.ast.statements.len(), 1);
+
+        std::fs::write(&source_path, "const x: i32 = 1;\nconst y: i32 = x + 1;\n").unwrap();
+
+        let second = session.check_file(&source_path).unwrap();
+        assert_eq!(second.ast.statements.len(), 2);
+    }
+
+    #[test]
+    fn session_project_files_refresh_when_missing_dep_appears() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let main_path = temp_dir.path().join("main.arg");
+        let dep_path = temp_dir.path().join("dep.arg");
+
+        std::fs::write(
+            &main_path,
+            "from \"./dep\" import { answer };\nprintln(answer);\n",
+        )
+        .unwrap();
+
+        let session = CompilationSession::new();
+        let first = session.project_files(&main_path).unwrap();
+        assert_eq!(first.len(), 1);
+
+        std::fs::write(&dep_path, "export const answer: i32 = 42;\n").unwrap();
+
+        let second = session.project_files(&main_path).unwrap();
+        assert_eq!(second.len(), 2);
+        assert!(second.iter().any(|path| path.ends_with("dep.arg")));
+    }
+
+    #[test]
+    fn compile_project_order_is_deterministic_across_runs() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let shared_path = temp_dir.path().join("shared.arg");
+        let a_path = temp_dir.path().join("a.arg");
+        let b_path = temp_dir.path().join("b.arg");
+        let main_path = temp_dir.path().join("main.arg");
+
+        std::fs::write(&shared_path, "export const X: i32 = 1;\n").unwrap();
+        std::fs::write(
+            &a_path,
+            "from \"./shared\" import { X };\nexport const A: i32 = X;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &b_path,
+            "from \"./shared\" import { X };\nexport const B: i32 = X;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &main_path,
+            "from \"./a\" import { A };\nfrom \"./b\" import { B };\nprintln(A + B);\n",
+        )
+        .unwrap();
+
+        let session = CompilationSession::new();
+        let options = CompileOptions::default();
+        let first = session.compile_project(&main_path, &options).unwrap();
+        let second = session.compile_project(&main_path, &options).unwrap();
+
+        let first_paths: Vec<_> = first.files.iter().map(|(path, _)| path.clone()).collect();
+        let second_paths: Vec<_> = second.files.iter().map(|(path, _)| path.clone()).collect();
+        assert_eq!(first_paths, second_paths);
     }
 }

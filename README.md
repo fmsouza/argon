@@ -55,6 +55,19 @@ cargo build --release
 
 The `argon` binary will be at `target/release/argon`.
 
+For faster local compiler rebuilds while iterating on Argon itself:
+
+```bash
+cargo build --profile fast-release -p argon-cli
+```
+
+If you only need compile/check commands while working on the compiler, you can
+skip the runtime dependency tree:
+
+```bash
+cargo build --profile fast-release -p argon-cli --no-default-features
+```
+
 ### Your first program
 
 Create a file called `hello.arg`:
@@ -688,10 +701,27 @@ crates/
 
 ```bash
 cargo build                                     # Debug build
+cargo build --profile fast-release -p argon-cli # Faster local release-style build
 cargo test --workspace --all-targets            # All tests
 cargo test --workspace --doc                    # Doc tests
 cargo fmt --all -- --check                      # Format check
 cargo clippy --workspace --all-targets -- -D warnings  # Lint
+```
+
+Optional local accelerators:
+
+```bash
+RUSTC_WRAPPER=sccache cargo build --profile fast-release -p argon-cli
+```
+
+On Linux systems with `mold` or `lld` installed, pairing them with the
+`fast-release` profile can reduce link time further.
+
+To benchmark compiler changes end-to-end:
+
+```bash
+./scripts/benchmark-cli.sh
+cargo bench -p argon-driver --bench driver_perf
 ```
 
 ### Explore the language

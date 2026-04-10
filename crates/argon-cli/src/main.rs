@@ -1,7 +1,11 @@
 //! Argon CLI
 
-use argon_driver::{CompileOptions, Compiler, EmitKind, Pipeline, Target};
+use argon_driver::{
+    CompilationSession, CompileOptions, Compiler, EmitKind, NativeOptLevel, Pipeline, Target,
+};
+#[cfg(feature = "runtime")]
 use argon_runtime::execute_ast;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -36,8 +40,12 @@ enum Commands {
         #[arg(long)]
         triple: Option<String>,
         /// What to emit for native target: exe (default), obj, asm.
+        /// For the wasm target, use `wat` to additionally write a `.wat` sidecar.
         #[arg(long, default_value = "exe")]
         emit: String,
+        /// Native codegen optimization level: none or speed.
+        #[arg(long)]
+        native_opt: Option<String>,
     },
     Check {
         input: PathBuf,
@@ -79,6 +87,9 @@ enum Commands {
         pipeline: String,
         #[arg(long)]
         check_only: bool,
+        /// Native codegen optimization level: none or speed.
+        #[arg(long)]
+        native_opt: Option<String>,
     },
     Repl {},
 }
@@ -98,6 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             pipeline,
             triple,
             emit,
+            native_opt,
         } => {
             compile(
                 &input,
@@ -110,6 +122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &pipeline,
                 triple.as_deref(),
                 &emit,
+                native_opt.as_deref(),
             )?;
         }
         Commands::Check { input } => {
@@ -141,6 +154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             declarations,
             pipeline,
             check_only,
+            native_opt,
         } => {
             watch(
                 &input,
@@ -151,6 +165,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 declarations,
                 &pipeline,
                 check_only,
+                native_opt.as_deref(),
             )?;
         }
         Commands::Repl {} => {
@@ -173,6 +188,39 @@ fn compile(
     pipeline: &str,
     triple: Option<&str>,
     emit: &str,
+    native_opt: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let session = CompilationSession::new();
+    compile_with_session(
+        &session,
+        input,
+        output,
+        out_dir,
+        target,
+        source_map,
+        opt,
+        declarations,
+        pipeline,
+        triple,
+        emit,
+        native_opt,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_with_session(
+    session: &CompilationSession,
+    input: &PathBuf,
+    output: Option<&PathBuf>,
+    out_dir: Option<&PathBuf>,
+    target: &str,
+    source_map: bool,
+    opt: bool,
+    declarations: bool,
+    pipeline: &str,
+    triple: Option<&str>,
+    emit: &str,
+    native_opt: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Parsing {}...", input.display());
     println!("Type checking...");
@@ -200,28 +248,57 @@ fn compile(
         }
     };
 
-    let emit = match emit {
-        "exe" => EmitKind::Exe,
-        "obj" => EmitKind::Obj,
-        "asm" => EmitKind::Asm,
-        other => {
-            return Err(format!("Unknown emit kind: {}. Use exe, obj, or asm.", other).into());
+    let native_opt_level = match native_opt {
+        Some("none") => NativeOptLevel::None,
+        Some("speed") => NativeOptLevel::Speed,
+        Some(other) => {
+            return Err(format!(
+                "Unknown native optimization level: {}. Use none or speed.",
+                other
+            )
+            .into());
         }
+        None if opt => NativeOptLevel::Speed,
+        None => NativeOptLevel::None,
     };
 
-    let compiler = Compiler::new();
+    let (emit, emit_wat) = match target {
+        Target::Native => match emit {
+            "exe" => (EmitKind::Exe, false),
+            "obj" => (EmitKind::Obj, false),
+            "asm" => (EmitKind::Asm, false),
+            other => {
+                return Err(format!("Unknown emit kind: {}. Use exe, obj, or asm.", other).into());
+            }
+        },
+        Target::Wasm => match emit {
+            "wat" => (EmitKind::Exe, true),
+            "exe" | "wasm" => (EmitKind::Exe, false),
+            other => {
+                return Err(format!(
+                    "Unknown emit kind for wasm: {}. Use wat or omit --emit.",
+                    other
+                )
+                .into());
+            }
+        },
+        Target::Js => (EmitKind::Exe, false),
+    };
+
     let options = CompileOptions {
         target,
         pipeline,
         optimize: opt,
         source_map,
         declarations,
+        emit_wat,
+        native_opt_level,
         target_triple: triple.map(|s| s.to_string()),
         emit,
     };
 
     // Multi-file project compilation: compile entry + all dependencies.
-    let result = match compiler.compile_file(input, &options) {
+    let result = match session.compile_file(input, &options) {
         Ok(r) => r,
         Err(e) => {
             if let Some(diag) = e.diagnostics() {
@@ -233,7 +310,7 @@ fn compile(
 
     // If there are dependencies, compile the full project.
     if !result.deps.is_empty() {
-        let project = match compiler.compile_project(input, &options) {
+        let project = match session.compile_project(input, &options) {
             Ok(p) => p,
             Err(e) => {
                 if let Some(diag) = e.diagnostics() {
@@ -282,6 +359,7 @@ fn compile(
             }
         }
 
+        println!("Done!");
         return Ok(());
     }
 
@@ -412,8 +490,9 @@ fn compile(
                     fs::write(&obj_path, &obj_bytes)?;
 
                     // Compile the C runtime helpers
-                    let runtime_obj_path = argon_codegen_native::compile_c_runtime(&tmp_dir)
-                        .map_err(|e| format!("{}", e))?;
+                    let runtime_obj_path =
+                        argon_codegen_native::compile_c_runtime(&tmp_dir, &triple)
+                            .map_err(|e| format!("{}", e))?;
 
                     // Link both objects
                     let linker_config = argon_codegen_native::LinkerConfig {
@@ -448,24 +527,19 @@ fn compile(
 }
 
 fn check(input: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let source = fs::read_to_string(input)?;
+    let session = CompilationSession::new();
+    check_with_session(&session, input)
+}
 
+fn check_with_session(
+    session: &CompilationSession,
+    input: &PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("Parsing {}...", input.display());
     println!("Type checking...");
     println!("Borrow checking...");
 
-    let compiler = Compiler::new();
-    let source_name = input.display().to_string();
-    let ast = match compiler.parse(&source, &source_name) {
-        Ok(ast) => ast,
-        Err(e) => {
-            if let Some(diag) = e.diagnostics() {
-                eprintln!("{}", diag.rendered);
-            }
-            return Err(e.into());
-        }
-    };
-    if let Err(e) = compiler.check_semantics(&source, &source_name, &ast) {
+    if let Err(e) = session.check_file(input) {
         if let Some(diag) = e.diagnostics() {
             eprintln!("{}", diag.rendered);
         }
@@ -477,32 +551,32 @@ fn check(input: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run(input: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    let source = fs::read_to_string(input)?;
+    let session = CompilationSession::new();
+    run_with_session(&session, input)
+}
 
+fn run_with_session(
+    session: &CompilationSession,
+    input: &PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
     println!("Parsing {}...", input.display());
     println!("Type checking...");
     println!("Borrow checking...");
 
-    let compiler = Compiler::new();
-    let source_name = input.display().to_string();
-    let ast = match compiler.parse(&source, &source_name) {
-        Ok(ast) => ast,
-        Err(e) => {
-            if let Some(diag) = e.diagnostics() {
-                eprintln!("{}", diag.rendered);
-            }
-            return Err(e.into());
-        }
-    };
-    if let Err(e) = compiler.check_semantics(&source, &source_name, &ast) {
+    let checked = session.check_file(input).map_err(|e| {
         if let Some(diag) = e.diagnostics() {
             eprintln!("{}", diag.rendered);
         }
-        return Err(e.into());
-    }
+        e
+    })?;
 
+    execute_checked_ast(&checked.ast)
+}
+
+#[cfg(feature = "runtime")]
+fn execute_checked_ast(ast: &argon_ast::SourceFile) -> Result<(), Box<dyn std::error::Error>> {
     println!("Executing...\n");
-    match execute_ast(&ast) {
+    match execute_ast(ast) {
         Ok(value) => {
             println!("=> {:?}", value);
         }
@@ -511,8 +585,12 @@ fn run(input: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
             return Err(format!("Runtime error: {}", e).into());
         }
     }
-
     Ok(())
+}
+
+#[cfg(not(feature = "runtime"))]
+fn execute_checked_ast(_ast: &argon_ast::SourceFile) -> Result<(), Box<dyn std::error::Error>> {
+    Err("argon run requires the `runtime` feature; rebuild with default features enabled".into())
 }
 
 fn test(
@@ -843,22 +921,26 @@ fn watch(
     declarations: bool,
     pipeline: &str,
     check_only: bool,
+    native_opt: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+    use notify::{Config, RecommendedWatcher, Watcher};
     use std::sync::mpsc;
     use std::time::Duration;
 
+    let session = CompilationSession::new();
     let (tx, rx) = mpsc::channel();
     let mut watcher = RecommendedWatcher::new(tx, Config::default())?;
-    watcher.watch(input, RecursiveMode::NonRecursive)?;
+    let mut watched_paths = HashSet::new();
+    sync_watch_paths(&session, &mut watcher, input, &mut watched_paths)?;
 
     println!("Watching {} (Ctrl-C to stop)", input.display());
 
     // Run once immediately.
     if check_only {
-        let _ = check(input);
+        let _ = check_with_session(&session, input);
     } else {
-        let _ = compile(
+        let _ = compile_with_session(
+            &session,
             input,
             output,
             None,
@@ -869,8 +951,10 @@ fn watch(
             pipeline,
             None,
             "exe",
+            native_opt,
         );
     }
+    sync_watch_paths(&session, &mut watcher, input, &mut watched_paths)?;
 
     loop {
         // Wait for at least one event, then debounce by draining the queue.
@@ -880,10 +964,11 @@ fn watch(
 
         println!("\nChange detected. Rebuilding...\n");
         if check_only {
-            if let Err(e) = check(input) {
+            if let Err(e) = check_with_session(&session, input) {
                 eprintln!("{}", e);
             }
-        } else if let Err(e) = compile(
+        } else if let Err(e) = compile_with_session(
+            &session,
             input,
             output,
             None,
@@ -894,10 +979,43 @@ fn watch(
             pipeline,
             None,
             "exe",
+            native_opt,
         ) {
             eprintln!("{}", e);
         }
+        sync_watch_paths(&session, &mut watcher, input, &mut watched_paths)?;
     }
+}
+
+fn sync_watch_paths(
+    session: &CompilationSession,
+    watcher: &mut notify::RecommendedWatcher,
+    entry: &Path,
+    watched_paths: &mut HashSet<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use notify::{RecursiveMode, Watcher};
+
+    let mut desired = HashSet::new();
+    if let Ok(canonical) = std::fs::canonicalize(entry) {
+        desired.insert(canonical);
+    } else {
+        desired.insert(entry.to_path_buf());
+    }
+
+    if let Ok(files) = session.project_files(entry) {
+        desired.extend(files);
+    }
+
+    for path in watched_paths.difference(&desired) {
+        let _ = watcher.unwatch(path);
+    }
+
+    for path in desired.difference(watched_paths) {
+        watcher.watch(path, RecursiveMode::NonRecursive)?;
+    }
+
+    *watched_paths = desired;
+    Ok(())
 }
 
 fn repl() -> Result<(), Box<dyn std::error::Error>> {
@@ -980,6 +1098,7 @@ fn repl() -> Result<(), Box<dyn std::error::Error>> {
                         optimize: false,
                         source_map: false,
                         declarations: false,
+                        emit_wat: target == Target::Wasm,
                         ..Default::default()
                     };
 

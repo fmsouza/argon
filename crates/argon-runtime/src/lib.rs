@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::io::{Read as IoRead, Seek as IoSeek, Write as IoWrite};
 use std::pin::Pin;
 use std::rc::Rc;
+use std::sync::OnceLock;
 
 /// A boxed future that resolves to a Value. Stored inside Rc<RefCell<Option<...>>>
 /// so it can be taken once and awaited.
@@ -3326,26 +3327,26 @@ impl std::fmt::Display for RuntimeError {
 impl std::error::Error for RuntimeError {}
 
 pub fn execute_ast(ast: &SourceFile) -> Result<Value, RuntimeError> {
-    // Create a multi-threaded tokio runtime with 1 worker thread.
-    // This allows us to call Handle::block_on from the main thread
-    // to await futures without the "nested block_on" panic that
-    // current_thread triggers.
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
-        .enable_all()
-        .build()
-        .map_err(|e| RuntimeError::Unsupported(format!("failed to create async runtime: {}", e)))?;
-
-    // Enter the runtime context so Handle::try_current() works
+    let rt = shared_tokio_runtime()?;
     let _guard = rt.enter();
 
     let mut runtime = Runtime::new();
-    let result = runtime.execute(ast);
+    runtime.execute(ast)
+}
 
-    drop(_guard);
-    drop(rt);
+fn shared_tokio_runtime() -> Result<&'static tokio::runtime::Runtime, RuntimeError> {
+    static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
 
-    result
+    RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .map_err(|e| format!("failed to create async runtime: {}", e))
+        })
+        .as_ref()
+        .map_err(|e| RuntimeError::Unsupported(e.clone()))
 }
 
 fn detect_compile_only_feature_in_source(source: &SourceFile) -> Option<&'static str> {

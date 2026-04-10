@@ -102,12 +102,10 @@ impl Scheduler {
         let worker_threads = Arc::new(current_thread);
 
         while running.load(Ordering::Relaxed) {
-            let task_id = worker
-                .pop()
-                .or_else(|| match injector.steal() {
-                    crossbeam_deque::Steal::Success(id) => Some(id),
-                    _ => None,
-                });
+            let task_id = worker.pop().or_else(|| match injector.steal() {
+                crossbeam_deque::Steal::Success(id) => Some(id),
+                _ => None,
+            });
 
             if let Some(task_id) = task_id {
                 Self::poll_task(task_id, &injector, &worker_threads, &tasks);
@@ -245,7 +243,10 @@ mod tests {
         // Give the worker thread time to pick up and execute the task
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        assert!(completed.load(Ordering::SeqCst), "Future should have been polled to completion");
+        assert!(
+            completed.load(Ordering::SeqCst),
+            "Future should have been polled to completion"
+        );
         sched.shutdown();
     }
 
@@ -263,7 +264,11 @@ mod tests {
 
         std::thread::sleep(std::time::Duration::from_millis(200));
 
-        assert_eq!(counter.load(Ordering::SeqCst), 10, "All 10 futures should have completed");
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            10,
+            "All 10 futures should have completed"
+        );
         sched.shutdown();
     }
 }

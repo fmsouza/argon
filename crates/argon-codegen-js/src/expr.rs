@@ -240,10 +240,7 @@ impl JsCodegen {
         Ok(())
     }
 
-    pub(crate) fn generate_object(
-        &mut self,
-        o: &ObjectExpression,
-    ) -> Result<(), CodegenError> {
+    pub(crate) fn generate_object(&mut self, o: &ObjectExpression) -> Result<(), CodegenError> {
         self.output.push_str("{ ");
         for (i, prop) in o.properties.iter().enumerate() {
             if i > 0 {

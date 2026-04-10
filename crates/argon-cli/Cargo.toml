@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["runtime"]
+runtime = ["dep:argon-runtime"]
+
 [dependencies]
 argon-driver = { path = "../argon-driver" }
 argon-lexer = { path = "../argon-lexer" }
@@ -21,7 +25,7 @@ argon-target = { path = "../argon-target" }
 argon-interop = { path = "../argon-interop" }
 argon-stdlib = { path = "../argon-stdlib" }
 argon-diagnostics = { path = "../argon-diagnostics" }
-argon-runtime = { path = "../argon-runtime" }
+argon-runtime = { path = "../argon-runtime", optional = true }
 clap.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true

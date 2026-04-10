@@ -7,6 +7,7 @@ mod borrow_checker_tests;
 use argon_ast::*;
 use argon_types::{Type as CheckedType, TypeCheckOutput, TypeId as CheckedTypeId};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ownership {
@@ -118,7 +119,7 @@ pub struct BorrowChecker {
     #[allow(dead_code)] // TODO: use for unsafe block analysis
     in_unsafe: bool,
     thread_access: HashSet<String>,
-    type_info: Option<TypeCheckOutput>,
+    type_info: Option<Arc<TypeCheckOutput>>,
     function_summaries: HashMap<String, FunctionBorrowSummary>,
     current_function_context: Option<FunctionBorrowContext>,
     scope_stack: Vec<Vec<String>>,
@@ -164,9 +165,9 @@ impl BorrowChecker {
     pub fn check_typed(
         &mut self,
         source: &SourceFile,
-        type_info: TypeCheckOutput,
+        type_info: impl Into<Arc<TypeCheckOutput>>,
     ) -> Result<(), BorrowError> {
-        self.type_info = Some(type_info);
+        self.type_info = Some(type_info.into());
         self.check_impl(source)
     }
 
