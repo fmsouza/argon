@@ -14,8 +14,8 @@ pub enum LexerError {
     #[error("unterminated template literal")]
     UnterminatedTemplate(usize),
 
-    #[error("invalid number literal: {0}")]
-    InvalidNumber(String),
+    #[error("invalid number literal at position {1}: {0}")]
+    InvalidNumber(String, usize),
 
     #[error("invalid unicode escape sequence")]
     InvalidUnicodeEscape(usize),
@@ -59,12 +59,19 @@ impl LexerError {
                 DiagnosticLabel::new(*pos..source.len())
                     .with_message("unterminated template".to_string()),
             ),
-            LexerError::InvalidNumber(msg) => Diagnostic::new(
-                source_id.to_string(),
-                0..10,
-                format!("invalid number literal: {}", msg),
-            )
-            .with_code("E004".to_string()),
+            LexerError::InvalidNumber(msg, pos) => {
+                let end = (*pos + msg.len()).min(source.len());
+                Diagnostic::new(
+                    source_id.to_string(),
+                    *pos..end,
+                    format!("invalid number literal: {}", msg),
+                )
+                .with_code("E004".to_string())
+                .with_label(
+                    DiagnosticLabel::new(*pos..end)
+                        .with_message("invalid number".to_string()),
+                )
+            }
             LexerError::InvalidUnicodeEscape(pos) => Diagnostic::new(
                 source_id.to_string(),
                 *pos..*pos + 6,
@@ -76,8 +83,13 @@ impl LexerError {
                     .with_message("invalid escape sequence".to_string()),
             ),
             LexerError::Io(msg) => {
-                Diagnostic::new(source_id.to_string(), 0..1, format!("IO error: {}", msg))
-                    .with_code("E006".to_string())
+                Diagnostic::new(
+                    source_id.to_string(),
+                    0..source.len().max(1),
+                    format!("IO error: {}", msg),
+                )
+                .with_code("E006".to_string())
+                .with_note("this is a file-level error, not associated with a specific line".to_string())
             }
         }
     }

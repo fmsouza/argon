@@ -1077,6 +1077,14 @@ WebAssembly.instantiate(bytes, {}).then(({ instance }) => {
 #[test]
 fn test_from_import_named_codegen() {
     let temp_dir = tempfile::tempdir().unwrap();
+    // Create the dependency module with the exported function
+    let math_file = temp_dir.path().join("math.arg");
+    fs::write(
+        &math_file,
+        r#"export function add(a: i32, b: i32): i32 { return a + b; }
+"#,
+    )
+    .unwrap();
     let source_file = temp_dir.path().join("test.arg");
     fs::write(
         &source_file,
@@ -1109,6 +1117,14 @@ const x = add(1, 2);
 #[test]
 fn test_from_import_namespace_codegen() {
     let temp_dir = tempfile::tempdir().unwrap();
+    // Create the dependency module
+    let math_file = temp_dir.path().join("math.arg");
+    fs::write(
+        &math_file,
+        r#"export function add(a: i32, b: i32): i32 { return a + b; }
+"#,
+    )
+    .unwrap();
     let source_file = temp_dir.path().join("test.arg");
     fs::write(
         &source_file,
@@ -1292,6 +1308,14 @@ println(getZ());
 #[test]
 fn test_compile_external_imports_unchanged() {
     let temp_dir = tempfile::tempdir().unwrap();
+    // Create the dependency module with the exported function
+    let local_file = temp_dir.path().join("local.arg");
+    fs::write(
+        &local_file,
+        r#"export function helper(): i32 { return 42; }
+"#,
+    )
+    .unwrap();
     let source_file = temp_dir.path().join("test.arg");
     fs::write(
         &source_file,
@@ -1317,4 +1341,211 @@ const x = helper();
     assert!(output.contains("from \"axios\""));
     // Relative should get .js.
     assert!(output.contains("from \"./local.js\""));
+}
+
+// --- Module semantics tests ---
+
+#[test]
+fn test_check_fails_on_missing_relative_module() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("main.arg");
+    fs::write(
+        &source_file,
+        r#"from "./nonexistent" import { foo };
+const x = foo();
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("check")
+        .arg(&source_file)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("not found"));
+}
+
+#[test]
+fn test_check_fails_on_missing_export() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let dep_file = temp_dir.path().join("dep.arg");
+    fs::write(&dep_file, "export const answer: i32 = 42;\n").unwrap();
+    let source_file = temp_dir.path().join("main.arg");
+    fs::write(
+        &source_file,
+        r#"from "./dep" import { nonexistent };
+const x = nonexistent;
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("check")
+        .arg(&source_file)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("not exported"));
+}
+
+#[test]
+fn test_native_compile_rejects_multi_file_project() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let dep_file = temp_dir.path().join("dep.arg");
+    fs::write(&dep_file, "export const X: i32 = 1;\n").unwrap();
+    let source_file = temp_dir.path().join("main.arg");
+    fs::write(
+        &source_file,
+        r#"from "./dep" import { X };
+println(X);
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("--target")
+        .arg("native")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "multi-file Argon projects are not yet supported for the native target",
+        ));
+}
+
+#[test]
+fn test_wasm_compile_rejects_multi_file_project() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let dep_file = temp_dir.path().join("dep.arg");
+    fs::write(&dep_file, "export const X: i32 = 1;\n").unwrap();
+    let source_file = temp_dir.path().join("main.arg");
+    fs::write(
+        &source_file,
+        r#"from "./dep" import { X };
+println(X);
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("--target")
+        .arg("wasm")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "multi-file Argon projects are not yet supported for the WASM target",
+        ));
+}
+
+#[test]
+fn test_native_single_file_still_compiles() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("main.arg");
+    fs::write(&source_file, "const x: i32 = 42;\nprintln(x);\n").unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("--target")
+        .arg("native")
+        .arg("--emit")
+        .arg("obj")
+        .arg("-o")
+        .arg(temp_dir.path().join("main.o"))
+        .assert()
+        .success();
+
+    assert!(temp_dir.path().join("main.o").exists());
+}
+
+#[test]
+fn test_native_emit_asm_rejected() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("main.arg");
+    fs::write(&source_file, "const x: i32 = 1;\n").unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("--target")
+        .arg("native")
+        .arg("--emit")
+        .arg("asm")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "--emit asm is not currently supported",
+        ));
+}
+
+#[test]
+fn test_run_rejects_async_program() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let source_file = temp_dir.path().join("main.arg");
+    fs::write(
+        &source_file,
+        r#"async function fetchData(): Future<string> { return "hello"; }
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("run")
+        .arg(&source_file)
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("async"));
+}
+
+#[test]
+fn test_js_multifile_emits_all_modules() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let out_dir = temp_dir.path().join("out");
+
+    let dep_file = temp_dir.path().join("utils.arg");
+    fs::write(
+        &dep_file,
+        "export function helper(): i32 { return 42; }\n",
+    )
+    .unwrap();
+
+    let source_file = temp_dir.path().join("main.arg");
+    fs::write(
+        &source_file,
+        r#"from "./utils" import { helper };
+const x = helper();
+println(x);
+"#,
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("argon");
+    cmd.arg("compile")
+        .arg(&source_file)
+        .arg("--out-dir")
+        .arg(&out_dir)
+        .arg("--declarations")
+        .assert()
+        .success();
+
+    // Both main.js and utils.js should be emitted
+    assert!(
+        out_dir.join("main.js").exists(),
+        "main.js should be emitted"
+    );
+    assert!(
+        out_dir.join("utils.js").exists(),
+        "utils.js should be emitted"
+    );
+    // Declaration files for both
+    assert!(
+        out_dir.join("main.d.ts").exists(),
+        "main.d.ts should be emitted"
+    );
+    assert!(
+        out_dir.join("utils.d.ts").exists(),
+        "utils.d.ts should be emitted"
+    );
 }

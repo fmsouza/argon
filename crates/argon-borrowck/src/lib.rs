@@ -418,11 +418,15 @@ impl BorrowChecker {
             | Stmt::Enum(_)
             | Stmt::Module(_)
             | Stmt::Import(_)
-            | Stmt::Export(_)
             | Stmt::Break(_)
             | Stmt::Continue(_)
             | Stmt::Empty(_)
             | Stmt::Debugger(_) => {}
+            Stmt::Export(e) => {
+                if let Some(ref decl) = e.declaration {
+                    self.collect_called_functions_from_stmt(decl, functions, called);
+                }
+            }
         }
     }
 
@@ -2656,6 +2660,11 @@ impl BorrowChecker {
                 self.count_identifier_uses_in_statement(&w.body, uses);
             }
             Stmt::Labeled(l) => self.count_identifier_uses_in_statement(&l.body, uses),
+            Stmt::Export(e) => {
+                if let Some(ref decl) = e.declaration {
+                    self.count_identifier_uses_in_statement(decl, uses);
+                }
+            }
             Stmt::Function(_)
             | Stmt::AsyncFunction(_)
             | Stmt::Struct(_)
@@ -2666,7 +2675,6 @@ impl BorrowChecker {
             | Stmt::Enum(_)
             | Stmt::Module(_)
             | Stmt::Import(_)
-            | Stmt::Export(_)
             | Stmt::Break(_)
             | Stmt::Continue(_)
             | Stmt::Empty(_)
@@ -2993,7 +3001,12 @@ impl BorrowChecker {
             Stmt::Switch(s) => {
                 self.check_switch(s)?;
             }
-            Stmt::Import(_) | Stmt::Export(_) => {}
+            Stmt::Import(_) => {}
+            Stmt::Export(e) => {
+                if let Some(ref decl) = e.declaration {
+                    self.check_statement(decl)?;
+                }
+            }
             Stmt::With(w) => {
                 self.check_with(w)?;
             }
