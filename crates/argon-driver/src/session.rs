@@ -165,6 +165,27 @@ impl CompilationSession {
         })
     }
 
+    /// Check the entry file and all its transitive `.arg` dependencies.
+    /// Returns the checked entry file after validating the entire project graph.
+    pub fn check_project(&self, entry: &Path) -> Result<CheckedFile, DriverError> {
+        // Resolving the project graph loads and checks (parse + type check +
+        // borrow check) every reachable file. If any file fails, the error
+        // propagates here. `normalized_file_deps` now errors on missing files.
+        let graph = self.resolve_project_graph(entry)?;
+
+        // Build per-module export tables and validate imports against them.
+        self.validate_cross_module_imports(&graph)?;
+
+        // Return the entry file's checked output
+        let canonical = std::fs::canonicalize(entry).map_err(io_driver_error)?;
+        let module = self.load_file_module(&canonical)?;
+        Ok(CheckedFile {
+            source_name: module.source_name.clone(),
+            ast: Arc::clone(&module.ast),
+            deps: module.deps.clone(),
+        })
+    }
+
     pub fn project_files(&self, entry: &Path) -> Result<Vec<PathBuf>, DriverError> {
         Ok(self.resolve_project_graph(entry)?.ordered_files.clone())
     }
@@ -512,7 +533,7 @@ impl CompilationSession {
                 return Ok(false);
             }
 
-            if self.normalized_file_deps(&module) != *deps {
+            if self.normalized_file_deps(&module)? != *deps {
                 return Ok(false);
             }
         }
@@ -532,7 +553,7 @@ impl CompilationSession {
             }
 
             let module = self.load_file_module(&path)?;
-            let normalized = self.normalized_file_deps(&module);
+            let normalized = self.normalized_file_deps(&module)?;
 
             file_hashes.insert(path.clone(), module.key.content_hash);
             deps.insert(path.clone(), normalized.clone());
@@ -554,23 +575,168 @@ impl CompilationSession {
         })
     }
 
-    fn normalized_file_deps(&self, module: &CachedModule) -> Vec<PathBuf> {
-        let mut deps: Vec<PathBuf> = module
-            .deps
-            .iter()
-            .filter_map(|dep| {
-                if dep.exists() {
-                    std::fs::canonicalize(dep)
-                        .ok()
-                        .or_else(|| Some(dep.clone()))
-                } else {
-                    None
+    /// Collect exported symbol names from a module's AST.
+    fn collect_exports(ast: &argon_ast::SourceFile) -> HashSet<String> {
+        use argon_ast::Stmt;
+
+        let mut exports = HashSet::new();
+        for stmt in &ast.statements {
+            if let Stmt::Export(e) = stmt {
+                // Explicit export specifiers: export { x, y as z }
+                for spec in &e.specifiers {
+                    let name = spec.exported.as_ref().unwrap_or(&spec.orig).sym.clone();
+                    exports.insert(name);
                 }
-            })
-            .collect();
+
+                // Inline declaration: export function foo() {} / export const x = ...
+                if let Some(ref decl) = e.declaration {
+                    match decl.as_ref() {
+                        Stmt::Function(f) | Stmt::AsyncFunction(f) => {
+                            if let Some(id) = &f.id {
+                                exports.insert(id.sym.clone());
+                            }
+                        }
+                        Stmt::Variable(v) => {
+                            for d in &v.declarations {
+                                if let argon_ast::Pattern::Identifier(id) = &d.id {
+                                    exports.insert(id.name.sym.clone());
+                                }
+                            }
+                        }
+                        Stmt::Struct(s) => {
+                            exports.insert(s.id.sym.clone());
+                        }
+                        Stmt::Enum(e) => {
+                            exports.insert(e.id.sym.clone());
+                        }
+                        Stmt::TypeAlias(a) => {
+                            exports.insert(a.id.sym.clone());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        exports
+    }
+
+    /// Validate that every named import from a relative `.arg` module references
+    /// a symbol that the target module actually exports.
+    fn validate_cross_module_imports(&self, graph: &CachedProjectGraph) -> Result<(), DriverError> {
+        use argon_ast::{ImportSpecifier, Stmt};
+
+        let modules = self.modules.lock().unwrap();
+
+        // Build export tables for every module in the graph.
+        let mut export_tables: HashMap<PathBuf, HashSet<String>> = HashMap::new();
+        for path in graph.deps.keys() {
+            let identity = SourceIdentity::File(path.clone());
+            if let Some(module) = modules.get(&identity) {
+                export_tables.insert(path.clone(), Self::collect_exports(&module.ast));
+            }
+        }
+
+        // Check each module's imports against its dependency's export table.
+        for (path, dep_paths) in &graph.deps {
+            let identity = SourceIdentity::File(path.clone());
+            let module = match modules.get(&identity) {
+                Some(m) => m,
+                None => continue,
+            };
+
+            for stmt in &module.ast.statements {
+                if let Stmt::Import(import) = stmt {
+                    let raw = import.source.value.trim();
+                    let spec = raw
+                        .trim_start_matches('"')
+                        .trim_end_matches('"')
+                        .trim_start_matches('\'')
+                        .trim_end_matches('\'');
+
+                    // Only validate relative .arg imports (not std:*, not .js)
+                    if !(spec.starts_with("./") || spec.starts_with("../")) {
+                        continue;
+                    }
+
+                    let base_dir = path.parent().unwrap_or(Path::new("."));
+                    let dep_path = base_dir.join(spec);
+                    let dep_path = if dep_path.extension().is_none() {
+                        dep_path.with_extension("arg")
+                    } else if dep_path.extension().and_then(|e| e.to_str()) == Some("arg") {
+                        dep_path
+                    } else {
+                        continue; // external JS dep
+                    };
+                    let dep_canonical = match std::fs::canonicalize(&dep_path) {
+                        Ok(p) => p,
+                        Err(_) => continue, // missing file already caught
+                    };
+
+                    if !dep_paths.contains(&dep_canonical) {
+                        continue;
+                    }
+
+                    let dep_exports = match export_tables.get(&dep_canonical) {
+                        Some(e) => e,
+                        None => continue,
+                    };
+
+                    for specifier in &import.specifiers {
+                        if let ImportSpecifier::Named(named) = specifier {
+                            let imported_name = &named.imported.sym;
+                            if !dep_exports.contains(imported_name.as_str()) {
+                                return Err(DriverError::WithDiagnostics {
+                                    message: format!(
+                                        "'{}' is not exported from '{}'",
+                                        imported_name, spec
+                                    ),
+                                    diagnostics: crate::Diagnostics {
+                                        bag: argon_diagnostics::DiagnosticBag::new(),
+                                        rendered: format!(
+                                            "error: '{}' is not exported from '{}'\n  --> {}",
+                                            imported_name, spec, module.source_name
+                                        ),
+                                    },
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn normalized_file_deps(&self, module: &CachedModule) -> Result<Vec<PathBuf>, DriverError> {
+        let mut deps = Vec::new();
+        for dep in &module.deps {
+            if dep.exists() {
+                let canonical = std::fs::canonicalize(dep)
+                    .ok()
+                    .unwrap_or_else(|| dep.clone());
+                deps.push(canonical);
+            } else {
+                return Err(DriverError::WithDiagnostics {
+                    message: format!(
+                        "imported module '{}' not found (referenced from '{}')",
+                        dep.display(),
+                        module.source_name
+                    ),
+                    diagnostics: crate::Diagnostics {
+                        bag: argon_diagnostics::DiagnosticBag::new(),
+                        rendered: format!(
+                            "error: imported module '{}' not found\n  --> referenced from '{}'",
+                            dep.display(),
+                            module.source_name
+                        ),
+                    },
+                });
+            }
+        }
         deps.sort();
         deps.dedup();
-        deps
+        Ok(deps)
     }
 }
 
