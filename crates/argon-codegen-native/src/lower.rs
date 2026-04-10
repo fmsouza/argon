@@ -731,12 +731,10 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                                 .load(types::F64, MemFlags::new(), obj_ptr, offset);
                         self.values.insert(*dest, val);
                     } else {
-                        return Err(CodegenError::Unsupported(
-                            format!(
-                                "unknown field '{}' on struct in native codegen",
-                                property
-                            ),
-                        ));
+                        return Err(CodegenError::Unsupported(format!(
+                            "unknown field '{}' on struct in native codegen",
+                            property
+                        )));
                     }
                 } else {
                     return Err(CodegenError::Unsupported(
@@ -1022,12 +1020,10 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                     | "wsConnectAsync"
                     | "serveAsync"
             ) {
-                return Err(CodegenError::Unsupported(
-                    format!(
-                        "async intrinsic '{}' is not supported for the native target",
-                        name
-                    ),
-                ));
+                return Err(CodegenError::Unsupported(format!(
+                    "async intrinsic '{}' is not supported for the native target",
+                    name
+                )));
             }
 
             // Regular function call
@@ -1049,13 +1045,11 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
             }
         }
 
-        Err(CodegenError::Unsupported(
-            format!(
-                "unresolved function call '{}' in native codegen",
-                self.find_callee_name(callee)
-                    .unwrap_or_else(|| format!("<unknown v{}>", callee))
-            ),
-        ))
+        Err(CodegenError::Unsupported(format!(
+            "unresolved function call '{}' in native codegen",
+            self.find_callee_name(callee)
+                .unwrap_or_else(|| format!("<unknown v{}>", callee))
+        )))
     }
 
     fn find_callee_name(&self, callee_id: ValueId) -> Option<String> {

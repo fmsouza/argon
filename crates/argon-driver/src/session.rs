@@ -584,12 +584,7 @@ impl CompilationSession {
             if let Stmt::Export(e) = stmt {
                 // Explicit export specifiers: export { x, y as z }
                 for spec in &e.specifiers {
-                    let name = spec
-                        .exported
-                        .as_ref()
-                        .unwrap_or(&spec.orig)
-                        .sym
-                        .clone();
+                    let name = spec.exported.as_ref().unwrap_or(&spec.orig).sym.clone();
                     exports.insert(name);
                 }
 
@@ -627,10 +622,7 @@ impl CompilationSession {
 
     /// Validate that every named import from a relative `.arg` module references
     /// a symbol that the target module actually exports.
-    fn validate_cross_module_imports(
-        &self,
-        graph: &CachedProjectGraph,
-    ) -> Result<(), DriverError> {
+    fn validate_cross_module_imports(&self, graph: &CachedProjectGraph) -> Result<(), DriverError> {
         use argon_ast::{ImportSpecifier, Stmt};
 
         let modules = self.modules.lock().unwrap();
@@ -702,9 +694,7 @@ impl CompilationSession {
                                         bag: argon_diagnostics::DiagnosticBag::new(),
                                         rendered: format!(
                                             "error: '{}' is not exported from '{}'\n  --> {}",
-                                            imported_name,
-                                            spec,
-                                            module.source_name
+                                            imported_name, spec, module.source_name
                                         ),
                                     },
                                 });

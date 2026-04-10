@@ -1505,11 +1505,7 @@ fn test_js_multifile_emits_all_modules() {
     let out_dir = temp_dir.path().join("out");
 
     let dep_file = temp_dir.path().join("utils.arg");
-    fs::write(
-        &dep_file,
-        "export function helper(): i32 { return 42; }\n",
-    )
-    .unwrap();
+    fs::write(&dep_file, "export function helper(): i32 { return 42; }\n").unwrap();
 
     let source_file = temp_dir.path().join("main.arg");
     fs::write(

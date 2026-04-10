@@ -261,11 +261,10 @@ impl Compiler {
         for stmt in &ast.statements {
             match stmt {
                 Stmt::AsyncFunction(f) => {
-                    let name = f
-                        .id
-                        .as_ref()
-                        .map(|id| id.sym.as_str())
-                        .unwrap_or("<anonymous>");
+                    let name =
+                        f.id.as_ref()
+                            .map(|id| id.sym.as_str())
+                            .unwrap_or("<anonymous>");
                     return Err(DriverError::WithDiagnostics {
                         message: format!(
                             "async function '{}' cannot be executed with `argon run`. \
@@ -300,11 +299,10 @@ impl Compiler {
                                 .to_string(),
                             diagnostics: Diagnostics {
                                 bag: DiagnosticBag::new(),
-                                rendered:
-                                    "error: 'std:async' is not supported by `argon run`\n\
+                                rendered: "error: 'std:async' is not supported by `argon run`\n\
                                      note: the Argon interpreter is synchronous-only; \
                                      compile with `argon compile` and execute the output instead"
-                                        .to_string(),
+                                    .to_string(),
                             },
                         });
                     }

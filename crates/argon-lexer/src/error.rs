@@ -68,8 +68,7 @@ impl LexerError {
                 )
                 .with_code("E004".to_string())
                 .with_label(
-                    DiagnosticLabel::new(*pos..end)
-                        .with_message("invalid number".to_string()),
+                    DiagnosticLabel::new(*pos..end).with_message("invalid number".to_string()),
                 )
             }
             LexerError::InvalidUnicodeEscape(pos) => Diagnostic::new(
@@ -82,15 +81,15 @@ impl LexerError {
                 DiagnosticLabel::new(*pos..*pos + 6)
                     .with_message("invalid escape sequence".to_string()),
             ),
-            LexerError::Io(msg) => {
-                Diagnostic::new(
-                    source_id.to_string(),
-                    0..source.len().max(1),
-                    format!("IO error: {}", msg),
-                )
-                .with_code("E006".to_string())
-                .with_note("this is a file-level error, not associated with a specific line".to_string())
-            }
+            LexerError::Io(msg) => Diagnostic::new(
+                source_id.to_string(),
+                0..source.len().max(1),
+                format!("IO error: {}", msg),
+            )
+            .with_code("E006".to_string())
+            .with_note(
+                "this is a file-level error, not associated with a specific line".to_string(),
+            ),
         }
     }
 

@@ -511,12 +511,9 @@ impl TypeChecker {
                 }
                 Stmt::Export(e) => {
                     if let Some(ref decl) = e.declaration {
-                        let tmp = SourceFile::new(
-                        String::new(),
-                        vec![*decl.clone()],
-                        e.span.clone(),
-                    );
-                    self.collect_declarations(&tmp);
+                        let tmp =
+                            SourceFile::new(String::new(), vec![*decl.clone()], e.span.clone());
+                        self.collect_declarations(&tmp);
                     }
                 }
                 _ => {}
