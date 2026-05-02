@@ -118,7 +118,7 @@ The REPL supports multi-line input and has built-in commands: `:load <file>`, `:
 | `argon compile <file.arg>` | Compile to JS, WASM, or native binary |
 | `argon check <file.arg>` | Type-check and borrow-check without emitting code |
 | `argon run <file.arg>` | Execute on the built-in AST runtime |
-| `argon test [--input file] [--directory path]` | Run test suites |
+| `argon test [--input file] [--directory path] [--filter pattern] [--format fmt]` | Run .test.arg test suites |
 | `argon format <file.arg>` | Format source code |
 | `argon init <project-name>` | Scaffold a new project |
 | `argon watch <file.arg>` | Rebuild on file changes |
@@ -576,6 +576,122 @@ await sleep(1000);  // sleep 1 second
 ### Prelude types
 
 These types are available without an import: `Vec<T>`, `Some<T>`, `None`, `Ok<T,E>`, `Err<T,E>`, `Shared<T>`, `Map<K,V>`, `Set<T>`, `Future<T>`, `Task<T>`, `Waker`.
+
+## Testing
+
+Argon has a built-in testing framework modeled after Jasmine. Test files use the `.test.arg` extension and are executed via the runtime interpreter — no external test runner or Node.js required. The `test` stdlib module is automatically available in `.test.arg` files, so no explicit import is needed.
+
+### Writing tests
+
+A test file consists of one or more `case()` blocks. Each case defines a suite with setup hooks, test cases, and teardown hooks:
+
+```ts
+case("arithmetic", function(runner: Runner): void {
+  runner.beforeAll(function(): void {
+    // Suite-level setup, runs once before all tests
+  });
+
+  runner.beforeEach(function(): void {
+    // Per-test setup, runs before each test
+  });
+
+  runner.afterEach(function(): void {
+    // Per-test teardown, runs after each test
+  });
+
+  runner.afterAll(function(): void {
+    // Suite-level teardown, runs once after all tests
+  });
+
+  runner.when("adds two positive numbers", function(assert: Assert): void {
+    assert.equals(1 + 2, 3);
+  });
+
+  runner.when("divides by zero", function(assert: Assert): void {
+    assert.throws(function(): void {
+      throw "division by zero";
+    });
+  });
+
+  runner.skip("floating point comparison", function(assert: Assert): void {
+    assert.approximately(0.1 + 0.2, 0.3, 0.0001);
+  });
+});
+```
+
+### Lifecycle ordering
+
+For each test in a suite, the engine runs:
+
+```
+beforeAll()
+  beforeEach() -> test callback -> afterEach()
+  beforeEach() -> test callback -> afterEach()
+  ...
+afterAll()
+```
+
+Key rules:
+- An assertion failure throws — the engine catches it, records the failure, and still runs `afterEach`
+- A `beforeEach` failure skips that test but still runs `afterEach`
+- A `beforeAll` failure skips all tests in the suite
+- `afterAll` always runs, even if `beforeAll` or any test failed
+- `runner.skip()` registers a skipped test — its callback and `beforeEach`/`afterEach` hooks never execute
+
+### Assert methods
+
+All assert methods accept an optional message string as the last parameter:
+
+| Category | Methods |
+|----------|---------|
+| Equality | `equals(actual: any, expected: any, message?: string)`, `notEquals(actual: any, expected: any, message?: string)`, `deepEquals(actual: any, expected: any, message?: string)` |
+| Truthiness | `truthy(value: any, message?: string)`, `falsy(value: any, message?: string)` |
+| Exceptions | `throws(callback: fn() -> void, message?: string)`, `notThrows(callback: fn() -> void, message?: string)` |
+| Types | `isString(value: any, message?: string)`, `isNumber(value: any, message?: string)`, `isBoolean(value: any, message?: string)`, `isArray(value: any, message?: string)`, `isObject(value: any, message?: string)`, `isNull(value: any, message?: string)`, `isUndefined(value: any, message?: string)` |
+| Comparisons | `greaterThan(actual: f64, expected: f64, message?: string)`, `lessThan(actual: f64, expected: f64, message?: string)`, `approximately(actual: f64, expected: f64, delta: f64, message?: string)` |
+| Collections | `contains(array: any[], element: any, message?: string)`, `hasKey(object: any, key: string, message?: string)` |
+
+### CLI
+
+```bash
+# Run all .test.arg files in the tests/ directory
+argon test
+
+# Run a single test file
+argon test --input tests/fixtures/test-framework/basic.test.arg
+
+# Run all .test.arg files in a specific directory
+argon test --directory path/to/tests/
+
+# Filter by test name (case-insensitive substring match)
+argon test --filter "adds"
+
+# CI-friendly TAP output
+argon test --format tap
+
+# Machine-readable JSON output
+argon test --format json
+
+# Verbose output showing file count
+argon test --verbose
+```
+
+Output formats:
+
+- **`pretty`** (default): Colored hierarchical output with suite names, test status, timing, and summary
+- **`tap`**: TAP version 14 output for CI/CD tooling (e.g. Jenkins, GitHub Actions)
+- **`json`**: Structured JSON with per-test status, duration, and aggregate summary
+
+### Test fixtures
+
+Example test fixtures are available in `tests/fixtures/test-framework/`:
+
+| Fixture | What it covers |
+|---------|---------------|
+| `basic.test.arg` | Suite registration, passing tests, skipped tests |
+| `lifecycle.test.arg` | `beforeAll`/`beforeEach`/`afterEach`/`afterAll` hooks |
+| `assertions.test.arg` | All 18 assertion methods across 6 categories |
+| `filtering.test.arg` | `runner.skip()` and CLI `--filter` behavior |
 
 ## Compilation Targets
 

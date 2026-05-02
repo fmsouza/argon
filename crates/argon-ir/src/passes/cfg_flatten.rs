@@ -309,11 +309,10 @@ impl CfgFlattener {
     fn fixup_block_id(&mut self, placeholder: BlockId, real: BlockId) {
         for block in &mut self.blocks {
             match &mut block.terminator {
-                Terminator::Jump(t) => {
-                    if *t == placeholder {
-                        *t = real;
-                    }
+                Terminator::Jump(t) if *t == placeholder => {
+                    *t = real;
                 }
+                Terminator::Jump(_) => {}
                 Terminator::Branch { then, else_, .. } => {
                     if *then == placeholder {
                         *then = real;

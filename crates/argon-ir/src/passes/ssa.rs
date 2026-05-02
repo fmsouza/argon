@@ -67,11 +67,14 @@ pub fn build(func: &Function) -> Result<SsaFunction, SsaError> {
     for b in &func.body {
         for inst in &b.instructions {
             match inst {
-                Instruction::VarDecl { name, init, .. } => {
-                    if init.is_some() {
-                        def_blocks.entry(name.clone()).or_default().insert(b.id);
-                    }
+                Instruction::VarDecl {
+                    name,
+                    init: Some(_),
+                    ..
+                } => {
+                    def_blocks.entry(name.clone()).or_default().insert(b.id);
                 }
+                Instruction::VarDecl { .. } => {}
                 Instruction::AssignVar { name, .. } => {
                     def_blocks.entry(name.clone()).or_default().insert(b.id);
                 }

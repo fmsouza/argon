@@ -8,6 +8,9 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
+mod test_formatter;
+mod test_framework;
+
 /// A boxed future that resolves to a Value. Stored inside Rc<RefCell<Option<...>>>
 /// so it can be taken once and awaited.
 type BoxFuture = Pin<Box<dyn std::future::Future<Output = Value>>>;
@@ -351,6 +354,7 @@ pub struct Runtime {
     struct_defs: HashMap<String, RuntimeStructDef>,
     skill_defs: HashMap<String, RuntimeSkillDef>,
     resources: ResourceTable,
+    test_context: test_framework::TestContext,
 }
 
 impl Default for Runtime {
@@ -557,12 +561,21 @@ impl Runtime {
             );
         }
 
+        // Register testing framework global functions
+        globals.insert(
+            "case".to_string(),
+            Value::NativeFunction(NativeFunction {
+                name: "test.case".to_string(),
+            }),
+        );
+
         Self {
             scope: Scope::new(),
             globals,
             struct_defs: HashMap::new(),
             skill_defs: HashMap::new(),
             resources: ResourceTable::new(),
+            test_context: test_framework::TestContext::default(),
         }
     }
 
@@ -1151,6 +1164,35 @@ impl Runtime {
             }
             Expr::Ref(r) => self.evaluate_expression(&r.expr),
             Expr::MutRef(r) => self.evaluate_expression(&r.expr),
+            Expr::ArrowFunction(arrow) => {
+                use argon_ast::ArrowFunctionBody;
+                let params: Vec<String> = arrow
+                    .params
+                    .iter()
+                    .map(|p| match &p.pat {
+                        argon_ast::Pattern::Identifier(id) => id.name.sym.clone(),
+                        _ => "_".to_string(),
+                    })
+                    .collect();
+                let param_defaults: Vec<Option<argon_ast::Expr>> =
+                    arrow.params.iter().map(|p| p.default.clone()).collect();
+                let body = match &arrow.body {
+                    ArrowFunctionBody::Block(b) => b.statements.clone(),
+                    ArrowFunctionBody::Expr(e) => {
+                        vec![argon_ast::Stmt::Return(argon_ast::ReturnStmt {
+                            argument: Some((**e).clone()),
+                            span: e.span().clone(),
+                        })]
+                    }
+                };
+                Ok(Value::Function(RcFunction {
+                    name: None,
+                    params,
+                    param_defaults,
+                    body,
+                    closure: self.scope.clone(),
+                }))
+            }
             _ => Err(RuntimeError::Unsupported(format!(
                 "unsupported expression at runtime: {:?}",
                 expr
@@ -1185,6 +1227,7 @@ impl Runtime {
                     struct_defs: self.struct_defs.clone(),
                     skill_defs: self.skill_defs.clone(),
                     resources: self.resources.clone(),
+                    test_context: self.test_context.clone(),
                 };
                 rt.execute_function_body(&func.body)
             }
@@ -1362,6 +1405,7 @@ impl Runtime {
                 struct_defs: self.struct_defs.clone(),
                 skill_defs: self.skill_defs.clone(),
                 resources: self.resources.clone(),
+                test_context: self.test_context.clone(),
             };
             for stmt in &constructor.body.statements {
                 match ctor_rt.execute_statement(stmt)? {
@@ -1489,6 +1533,40 @@ impl Runtime {
         Ok(Value::Undefined)
     }
 
+    fn call_value_function(
+        &mut self,
+        func: &RcFunction,
+        args: &[Value],
+    ) -> Result<Value, RuntimeError> {
+        let mut call_scope = func.closure.clone();
+        for (i, param) in func.params.iter().enumerate() {
+            let val = args.get(i).cloned().unwrap_or(Value::Undefined);
+            call_scope.define(param.clone(), val);
+        }
+        let saved_scope = std::mem::replace(&mut self.scope, call_scope);
+        let result = (|| {
+            for stmt in &func.body {
+                match self.execute_statement(stmt)? {
+                    ExecOutcome::Return(v) => return Ok(v),
+                    ExecOutcome::Normal => {}
+                    ExecOutcome::Break => {
+                        return Err(RuntimeError::InvalidControlFlow(
+                            "break outside loop".to_string(),
+                        ));
+                    }
+                    ExecOutcome::Continue => {
+                        return Err(RuntimeError::InvalidControlFlow(
+                            "continue outside loop".to_string(),
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Undefined)
+        })();
+        self.scope = saved_scope;
+        result
+    }
+
     fn execute_native_function(
         &mut self,
         name: &str,
@@ -1504,6 +1582,36 @@ impl Runtime {
                 let output: Vec<String> = args.iter().map(|v| self.value_to_string(v)).collect();
                 println!("{}", output.join(" "));
                 Ok(Value::Undefined)
+            }
+            "test.case" => {
+                let suite_name = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => {
+                        return Err(RuntimeError::TypeError(
+                            "case: expected string suite name".to_string(),
+                        ))
+                    }
+                };
+                let callback = match args.get(1) {
+                    Some(Value::Function(f)) => f.clone(),
+                    _ => {
+                        return Err(RuntimeError::TypeError(
+                            "case: expected function callback".to_string(),
+                        ))
+                    }
+                };
+
+                let suite_idx = self.test_context.suites.len();
+                self.test_context.suites.push(test_framework::TestSuite {
+                    name: suite_name,
+                    before_all: None,
+                    after_all: None,
+                    before_each: None,
+                    after_each: None,
+                    tests: Vec::new(),
+                });
+                let runner = test_framework::make_runner_object(suite_idx);
+                self.call_value_function(&callback, &[runner])
             }
             "Math.abs" => one_number(args, |n| Value::Number(n.abs())),
             "Math.floor" => one_number(args, |n| Value::Number(n.floor())),
@@ -2728,6 +2836,35 @@ impl Runtime {
                 })
             }
 
+            // --- test framework Runner dispatch ---
+            name if name.starts_with("Runner.") => {
+                let parts: Vec<&str> = name.splitn(4, '.').collect();
+                if parts.len() == 3 {
+                    if let Ok(suite_idx) = parts[1].parse::<usize>() {
+                        let method = parts[2];
+                        // args[0] is the receiver object prepended by the runtime for method calls
+                        let runner_args = if args.len() > 1 { &args[1..] } else { &[] };
+                        return test_framework::handle_runner_method(
+                            &mut self.test_context.suites,
+                            suite_idx,
+                            method,
+                            runner_args,
+                        );
+                    }
+                }
+                Err(RuntimeError::TypeError(format!(
+                    "invalid Runner native function name: {}",
+                    name
+                )))
+            }
+
+            name if name.starts_with("Assert.") => {
+                let method = &name["Assert.".len()..];
+                // args[0] is the receiver object prepended by the runtime for method calls
+                let assert_args = if args.len() > 1 { &args[1..] } else { &[] };
+                self.execute_assert_method(method, assert_args)
+            }
+
             _ => Ok(Value::Undefined),
         }
     }
@@ -2880,6 +3017,291 @@ impl Runtime {
         }
 
         Value::Object(Rc::new(RefCell::new(obj)))
+    }
+
+    fn execute_assert_method(
+        &mut self,
+        method: &str,
+        args: &[Value],
+    ) -> Result<Value, RuntimeError> {
+        let first = args.first().unwrap_or(&Value::Undefined);
+        let second = args.get(1).unwrap_or(&Value::Undefined);
+        let optional_msg = |idx: usize| -> String {
+            args.get(idx)
+                .and_then(|v| match v {
+                    Value::String(s) if !s.is_empty() => Some(format!(": {}", s)),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
+
+        match method {
+            "equals" => {
+                if !self.values_equal(first, second) {
+                    Err(RuntimeError::Thrown(format!(
+                        "expected {} but got {}{}",
+                        self.value_display(second),
+                        self.value_display(first),
+                        optional_msg(2)
+                    )))
+                } else {
+                    Ok(Value::Undefined)
+                }
+            }
+            "notEquals" => {
+                if self.values_equal(first, second) {
+                    Err(RuntimeError::Thrown(format!(
+                        "expected values to differ but both are {}{}",
+                        self.value_display(first),
+                        optional_msg(2)
+                    )))
+                } else {
+                    Ok(Value::Undefined)
+                }
+            }
+            "deepEquals" => {
+                if !self.values_deep_equal(first, second) {
+                    Err(RuntimeError::Thrown(format!(
+                        "expected {} but got {} (deep){}",
+                        self.value_display(second),
+                        self.value_display(first),
+                        optional_msg(2)
+                    )))
+                } else {
+                    Ok(Value::Undefined)
+                }
+            }
+            "truthy" => {
+                if !self.is_truthy(first) {
+                    Err(RuntimeError::Thrown(format!(
+                        "expected truthy value but got {}{}",
+                        self.value_display(first),
+                        optional_msg(1)
+                    )))
+                } else {
+                    Ok(Value::Undefined)
+                }
+            }
+            "falsy" => {
+                if self.is_truthy(first) {
+                    Err(RuntimeError::Thrown(format!(
+                        "expected falsy value but got {}{}",
+                        self.value_display(first),
+                        optional_msg(1)
+                    )))
+                } else {
+                    Ok(Value::Undefined)
+                }
+            }
+            "throws" => {
+                let func = match args.first() {
+                    Some(Value::Function(f)) => f.clone(),
+                    _ => {
+                        return Err(RuntimeError::Thrown(
+                            "throws: expected a function argument".to_string(),
+                        ))
+                    }
+                };
+                match self.call_value_function(&func, &[]) {
+                    Ok(_) => Err(RuntimeError::Thrown(format!(
+                        "expected function to throw but it did not{}",
+                        optional_msg(1)
+                    ))),
+                    Err(_) => Ok(Value::Undefined),
+                }
+            }
+            "notThrows" => {
+                let func = match args.first() {
+                    Some(Value::Function(f)) => f.clone(),
+                    _ => {
+                        return Err(RuntimeError::Thrown(
+                            "notThrows: expected a function argument".to_string(),
+                        ))
+                    }
+                };
+                match self.call_value_function(&func, &[]) {
+                    Ok(_) => Ok(Value::Undefined),
+                    Err(e) => Err(RuntimeError::Thrown(format!(
+                        "expected function not to throw but it threw: {}{}",
+                        e,
+                        optional_msg(1)
+                    ))),
+                }
+            }
+            "isString" => check_type(
+                first,
+                |v| matches!(v, Value::String(_)),
+                "string",
+                optional_msg(1),
+            ),
+            "isNumber" => check_type(
+                first,
+                |v| matches!(v, Value::Number(_)),
+                "number",
+                optional_msg(1),
+            ),
+            "isBoolean" => check_type(
+                first,
+                |v| matches!(v, Value::Boolean(_)),
+                "boolean",
+                optional_msg(1),
+            ),
+            "isArray" => check_type(
+                first,
+                |v| matches!(v, Value::Array(_)),
+                "array",
+                optional_msg(1),
+            ),
+            "isObject" => check_type(
+                first,
+                |v| matches!(v, Value::Object(_)),
+                "object",
+                optional_msg(1),
+            ),
+            "isNull" => check_type(first, |v| matches!(v, Value::Null), "null", optional_msg(1)),
+            "isUndefined" => check_type(
+                first,
+                |v| matches!(v, Value::Undefined),
+                "undefined",
+                optional_msg(1),
+            ),
+            "greaterThan" => {
+                let a = to_num(args, 0, "greaterThan")?;
+                let b = to_num(args, 1, "greaterThan")?;
+                if a > b {
+                    Ok(Value::Undefined)
+                } else {
+                    Err(RuntimeError::Thrown(format!(
+                        "expected {} > {}{}",
+                        a,
+                        b,
+                        optional_msg(2)
+                    )))
+                }
+            }
+            "lessThan" => {
+                let a = to_num(args, 0, "lessThan")?;
+                let b = to_num(args, 1, "lessThan")?;
+                if a < b {
+                    Ok(Value::Undefined)
+                } else {
+                    Err(RuntimeError::Thrown(format!(
+                        "expected {} < {}{}",
+                        a,
+                        b,
+                        optional_msg(2)
+                    )))
+                }
+            }
+            "approximately" => {
+                let a = to_num(args, 0, "approximately")?;
+                let b = to_num(args, 1, "approximately")?;
+                let d = to_num(args, 2, "approximately")?;
+                if (a - b).abs() < d {
+                    Ok(Value::Undefined)
+                } else {
+                    Err(RuntimeError::Thrown(format!(
+                        "expected {} within {} of {}{}",
+                        a,
+                        d,
+                        b,
+                        optional_msg(3)
+                    )))
+                }
+            }
+            "contains" => {
+                let arr = match args.first() {
+                    Some(Value::Array(a)) => a,
+                    _ => {
+                        return Err(RuntimeError::Thrown(
+                            "contains: first argument must be an array".to_string(),
+                        ))
+                    }
+                };
+                let el = args.get(1).unwrap_or(&Value::Undefined);
+                if !arr.iter().any(|v| self.values_equal(v, el)) {
+                    Err(RuntimeError::Thrown(format!(
+                        "expected array to contain {}{}",
+                        self.value_display(el),
+                        optional_msg(2)
+                    )))
+                } else {
+                    Ok(Value::Undefined)
+                }
+            }
+            "hasKey" => {
+                let obj = match args.first() {
+                    Some(Value::Object(o)) => o,
+                    _ => {
+                        return Err(RuntimeError::Thrown(
+                            "hasKey: first argument must be an object".to_string(),
+                        ))
+                    }
+                };
+                let key = match args.get(1) {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => {
+                        return Err(RuntimeError::Thrown(
+                            "hasKey: second argument must be a string key".to_string(),
+                        ))
+                    }
+                };
+                if !obj.borrow().contains_key(&key) {
+                    Err(RuntimeError::Thrown(format!(
+                        "expected object to have key '{}'{}",
+                        key,
+                        optional_msg(2)
+                    )))
+                } else {
+                    Ok(Value::Undefined)
+                }
+            }
+            _ => Err(RuntimeError::TypeError(format!(
+                "unknown Assert method: {}",
+                method
+            ))),
+        }
+    }
+
+    fn values_deep_equal(&self, a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Array(a), Value::Array(b)) => {
+                a.len() == b.len()
+                    && a.iter()
+                        .zip(b.iter())
+                        .all(|(va, vb)| self.values_deep_equal(va, vb))
+            }
+            (Value::Object(a), Value::Object(b)) => {
+                let am = a.borrow();
+                let bm = b.borrow();
+                am.len() == bm.len()
+                    && am
+                        .iter()
+                        .all(|(k, v)| bm.get(k).is_some_and(|bv| self.values_deep_equal(v, bv)))
+            }
+            _ => self.values_equal(a, b),
+        }
+    }
+
+    fn value_display(&self, v: &Value) -> String {
+        match v {
+            Value::String(s) => format!("\"{}\"", s),
+            Value::Number(n) => format!("{}", n),
+            Value::Boolean(b) => format!("{}", b),
+            Value::Null => "null".to_string(),
+            Value::Undefined => "undefined".to_string(),
+            Value::Array(arr) => format!(
+                "[{}]",
+                arr.iter()
+                    .map(|val| self.value_display(val))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Value::Object(_) => "{...}".to_string(),
+            Value::Function(_) => "<function>".to_string(),
+            Value::NativeFunction(_) => "<native>".to_string(),
+            Value::Future(_) => "<future>".to_string(),
+        }
     }
 
     fn eval_binary(
@@ -3058,6 +3480,128 @@ impl Runtime {
                 }
             }
         }
+    }
+
+    pub fn run_all_suites(&mut self) -> TestResults {
+        use crate::test_framework::{TestOutcome, TestResults};
+        let start = std::time::Instant::now();
+        let mut results = TestResults {
+            total_suites: self.test_context.suites.len(),
+            ..Default::default()
+        };
+
+        let suites = std::mem::take(&mut self.test_context.suites);
+
+        for suite in suites {
+            // Run beforeAll hook
+            if let Some(ref before_all) = suite.before_all {
+                if let Err(_e) = self.call_value_function(before_all, &[]) {
+                    // beforeAll failure: skip all tests in this suite
+                    for test in &suite.tests {
+                        results.outcomes.push(TestOutcome::Skip {
+                            name: test.name.clone(),
+                            suite_name: suite.name.clone(),
+                        });
+                        results.skipped += 1;
+                        results.total_tests += 1;
+                    }
+                    // Still run afterAll if defined
+                    if let Some(ref after_all) = suite.after_all {
+                        let _ = self.call_value_function(after_all, &[]);
+                    }
+                    continue;
+                }
+            }
+
+            for test in &suite.tests {
+                if test.skipped {
+                    results.outcomes.push(TestOutcome::Skip {
+                        name: test.name.clone(),
+                        suite_name: suite.name.clone(),
+                    });
+                    results.skipped += 1;
+                    results.total_tests += 1;
+                    continue;
+                }
+
+                let test_start = std::time::Instant::now();
+                let outcome = (|| -> Result<(), String> {
+                    if let Some(ref before_each) = suite.before_each {
+                        self.call_value_function(before_each, &[])
+                            .map(|_| ())
+                            .map_err(|e| format!("beforeEach: {}", e))?;
+                    }
+                    let assert_obj = test_framework::make_assert_object();
+                    self.call_value_function(&test.callback, &[assert_obj])
+                        .map(|_| ())
+                        .map_err(|e| format!("{}", e))
+                })();
+                let duration_ms = test_start.elapsed().as_secs_f64() * 1000.0;
+
+                // afterEach always runs
+                if let Some(ref after_each) = suite.after_each {
+                    let _ = self.call_value_function(after_each, &[]);
+                }
+
+                match outcome {
+                    Ok(()) => {
+                        results.outcomes.push(TestOutcome::Pass {
+                            name: test.name.clone(),
+                            suite_name: suite.name.clone(),
+                            duration_ms,
+                        });
+                        results.passed += 1;
+                    }
+                    Err(msg) => {
+                        results.outcomes.push(TestOutcome::Fail {
+                            name: test.name.clone(),
+                            suite_name: suite.name.clone(),
+                            message: msg,
+                            duration_ms,
+                        });
+                        results.failed += 1;
+                    }
+                }
+                results.total_tests += 1;
+            }
+
+            // afterAll always runs
+            if let Some(ref after_all) = suite.after_all {
+                let _ = self.call_value_function(after_all, &[]);
+            }
+        }
+
+        results.duration_ms = start.elapsed().as_secs_f64() * 1000.0;
+        results
+    }
+}
+
+fn check_type<F>(
+    value: &Value,
+    check: F,
+    expected: &str,
+    msg: String,
+) -> Result<Value, RuntimeError>
+where
+    F: Fn(&Value) -> bool,
+{
+    if !check(value) {
+        Err(RuntimeError::Thrown(format!(
+            "expected {} but got other{}",
+            expected, msg
+        )))
+    } else {
+        Ok(Value::Undefined)
+    }
+}
+
+fn to_num(args: &[Value], idx: usize, ctx: &str) -> Result<f64, RuntimeError> {
+    match args.get(idx) {
+        Some(Value::Number(n)) => Ok(*n),
+        _ => Err(RuntimeError::TypeError(format!(
+            "{}: expected number at position {}",
+            ctx, idx
+        ))),
     }
 }
 
@@ -3669,5 +4213,115 @@ const msg = `Hello ${name}`;
             Some(Value::String(s)) => assert_eq!(s, "Hello \"Argon\""),
             _ => panic!("expected interpolated template string"),
         }
+    }
+}
+
+pub use test_formatter::{format_json, format_pretty, format_tap};
+pub use test_framework::{TestOutcome, TestResults};
+
+#[cfg(test)]
+mod test_runner_tests {
+    use super::*;
+
+    fn run(source: &str) -> TestResults {
+        let ast = argon_parser::parse(source).expect("parse");
+        let mut rt = Runtime::new();
+        rt.execute(&ast).expect("execute");
+        rt.run_all_suites()
+    }
+
+    #[test]
+    fn executes_basic_test() {
+        let src = r#"case("math", function(runner: any): any { runner.when("adds", function(assert: any): any { assert.equals(1 + 1, 2); }); });"#;
+        let r = run(src);
+        assert_eq!(r.passed, 1);
+        assert_eq!(r.failed, 0);
+        assert_eq!(r.skipped, 0);
+        assert_eq!(r.total_suites, 1);
+    }
+
+    #[test]
+    fn captures_failure() {
+        let src = r#"case("f", function(runner: any): any { runner.when("bad", function(assert: any): any { assert.equals(1, 2); }); });"#;
+        let r = run(src);
+        assert_eq!(r.passed, 0);
+        assert_eq!(r.failed, 1);
+    }
+
+    #[test]
+    fn handles_skip() {
+        let src = r#"case("s", function(runner: any): any { runner.when("ok", function(assert: any): any { assert.equals(1, 1); }); runner.skip("meh", function(assert: any): any { assert.equals(1, 2); }); });"#;
+        let r = run(src);
+        assert_eq!(r.passed, 1);
+        assert_eq!(r.skipped, 1);
+    }
+
+    #[test]
+    fn multiple_suites() {
+        let src = r#"case("a", function(runner: any): any { runner.when("t1", function(assert: any): any { assert.equals(1, 1); }); }); case("b", function(runner: any): any { runner.when("t2", function(assert: any): any { assert.equals(2, 2); }); });"#;
+        let r = run(src);
+        assert_eq!(r.passed, 2);
+        assert_eq!(r.total_suites, 2);
+    }
+
+    #[test]
+    fn before_all_failure_skips_all() {
+        let src = r#"case("x", function(runner: any): any { runner.beforeAll(function(): any { const x = doesNotExist; }); runner.when("t", function(assert: any): any { assert.equals(1, 1); }); });"#;
+        let r = run(src);
+        assert_eq!(r.skipped, 1);
+    }
+
+    #[test]
+    fn assert_throws_works() {
+        let src = r#"case("x", function(runner: any): any { runner.when("t", function(assert: any): any { assert.throws(function(): any { assert.equals(1, 2); }); }); });"#;
+        let r = run(src);
+        assert_eq!(r.passed, 1);
+    }
+
+    #[test]
+    fn lifecycle_hooks_run_in_correct_order() {
+        let src = r#"case("lc", function(runner: any): any { runner.when("t", function(assert: any): any { assert.equals(1, 1); }); });"#;
+        let r = run(src);
+        assert_eq!(r.passed, 1);
+    }
+
+    #[test]
+    fn all_assertion_types_work() {
+        let src = r#"
+case("a", function(runner: any): any {
+  runner.when("types", function(assert: any): any {
+    assert.isString("s");
+    assert.isNumber(1.0);
+    assert.isBoolean(true);
+    assert.isArray([]);
+    assert.isNull(null);
+    assert.contains([1], 1);
+  });
+});
+"#;
+        let r = run(src);
+        assert_eq!(r.passed, 1);
+        assert_eq!(r.failed, 0);
+    }
+
+    #[test]
+    fn assertion_failure_produces_correct_message() {
+        let src = r#"case("f", function(runner: any): any { runner.when("bad", function(assert: any): any { assert.equals(1, 2); }); });"#;
+        let r = run(src);
+        assert_eq!(r.failed, 1);
+        let msg = match &r.outcomes[0] {
+            TestOutcome::Fail { message, .. } => message.clone(),
+            _ => panic!("expected fail"),
+        };
+        assert!(msg.contains("expected 2"));
+        assert!(msg.contains("got 1"));
+    }
+
+    #[test]
+    fn empty_suite_has_zero_tests() {
+        let src = r#"case("empty", function(runner: any): any { });"#;
+        let r = run(src);
+        assert_eq!(r.total_tests, 0);
+        assert_eq!(r.total_suites, 1);
     }
 }

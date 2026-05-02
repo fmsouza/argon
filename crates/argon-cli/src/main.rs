@@ -3,8 +3,10 @@
 use argon_driver::{
     CompilationSession, CompileOptions, Compiler, EmitKind, NativeOptLevel, Pipeline, Target,
 };
-#[cfg(feature = "runtime")]
-use argon_runtime::execute_ast;
+use argon_runtime::{
+    execute_ast, format_json, format_pretty, format_tap, Runtime, TestOutcome, TestResults,
+};
+use argon_types::desugar::desugar_named_args;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -60,8 +62,10 @@ enum Commands {
         directory: Option<PathBuf>,
         #[arg(short, long)]
         verbose: bool,
-        #[arg(long, default_value = "ir")]
-        pipeline: String,
+        #[arg(long)]
+        filter: Option<String>,
+        #[arg(long, default_value = "pretty")]
+        format: String,
     },
     Format {
         input: PathBuf,
@@ -135,9 +139,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             input,
             directory,
             verbose,
-            pipeline,
+            filter,
+            format,
         } => {
-            test(input.as_ref(), directory.as_ref(), verbose, &pipeline)?;
+            test(
+                input.as_ref(),
+                directory.as_ref(),
+                verbose,
+                filter.as_ref(),
+                &format,
+            )?;
         }
         Commands::Format { input, output } => {
             format_file(&input, output.as_ref())?;
@@ -622,7 +633,6 @@ fn run_with_session(
     execute_checked_ast(&checked.ast)
 }
 
-#[cfg(feature = "runtime")]
 fn execute_checked_ast(ast: &argon_ast::SourceFile) -> Result<(), Box<dyn std::error::Error>> {
     println!("Executing...\n");
     match execute_ast(ast) {
@@ -637,16 +647,12 @@ fn execute_checked_ast(ast: &argon_ast::SourceFile) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-#[cfg(not(feature = "runtime"))]
-fn execute_checked_ast(_ast: &argon_ast::SourceFile) -> Result<(), Box<dyn std::error::Error>> {
-    Err("argon run requires the `runtime` feature; rebuild with default features enabled".into())
-}
-
 fn test(
     input: Option<&PathBuf>,
     directory: Option<&PathBuf>,
     verbose: bool,
-    pipeline: &str,
+    filter: Option<&String>,
+    format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut test_files: Vec<PathBuf> = Vec::new();
 
@@ -655,88 +661,141 @@ fn test(
             test_files.push(input_path.clone());
         }
     }
-
     if let Some(dir) = directory {
         if dir.is_dir() {
             collect_test_files(dir, &mut test_files)?;
         }
     }
-
     if test_files.is_empty() {
         let tests_dir = PathBuf::from("tests");
         if tests_dir.is_dir() {
             collect_test_files(&tests_dir, &mut test_files)?;
         }
     }
-
     if test_files.is_empty() {
         let fixtures_dir = PathBuf::from("tests/fixtures");
         if fixtures_dir.is_dir() {
             collect_test_files(&fixtures_dir, &mut test_files)?;
         }
     }
-
     if test_files.is_empty() {
-        return Err(
-            "No test files found. Use --input or --directory to specify test files.".into(),
-        );
+        return Err("No .test.arg files found. Use --input or --directory.".into());
     }
 
-    println!("Running Argon tests...\n");
+    if verbose {
+        println!("Found {} test file(s)\n", test_files.len());
+    }
 
-    let mut passed = 0;
-    let mut failed = 0;
-    let mut skipped = 0;
+    let compiler = Compiler::new();
+    let mut all_outcomes: Vec<TestOutcome> = Vec::new();
+    let mut total_suites = 0;
+    let mut total_passed = 0usize;
+    let mut total_failed = 0usize;
+    let mut total_skipped = 0usize;
+    let mut total_duration = 0f64;
 
     for test_file in &test_files {
         let file_name = test_file
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
+        let source = fs::read_to_string(test_file)?;
+        let source_name = test_file.display().to_string();
 
-        if !is_test_file(file_name) {
-            skipped += 1;
-            if verbose {
-                println!("  Skipping {} (not a test file)", file_name);
+        let mut ast = compiler.parse(&source, &source_name).map_err(|e| {
+            if let Some(diag) = e.diagnostics() {
+                format!("Parse error in {}: {}", file_name, diag.rendered)
+            } else {
+                format!("Parse error in {}: {}", file_name, e)
             }
-            continue;
+        })?;
+
+        let tc_output = compiler
+            .type_check_output(&source, &source_name, &ast)
+            .map_err(|e| {
+                if let Some(diag) = e.diagnostics() {
+                    format!("Type error in {}: {}", file_name, diag.rendered)
+                } else {
+                    format!("Type error in {}: {}", file_name, e)
+                }
+            })?;
+
+        // Desugar named args (mutates ast in-place)
+        desugar_named_args(&mut ast, &tc_output.env);
+
+        let mut runtime = Runtime::new();
+        runtime
+            .execute(&ast)
+            .map_err(|e| format!("Runtime error in {}: {}", file_name, e))?;
+
+        let mut results = runtime.run_all_suites();
+
+        // Apply filter
+        if let Some(pattern) = filter {
+            let p = pattern.to_lowercase();
+            results.outcomes.retain(|o| {
+                format!("{} > {}", o.suite_name(), o.test_name())
+                    .to_lowercase()
+                    .contains(&p)
+            });
+            // Recompute counts after filtering
+            results.total_tests = results.outcomes.len();
+            results.passed = results
+                .outcomes
+                .iter()
+                .filter(|o| matches!(o, TestOutcome::Pass { .. }))
+                .count();
+            results.failed = results
+                .outcomes
+                .iter()
+                .filter(|o| matches!(o, TestOutcome::Fail { .. }))
+                .count();
+            results.skipped = results
+                .outcomes
+                .iter()
+                .filter(|o| matches!(o, TestOutcome::Skip { .. }))
+                .count();
+            results.total_suites = results
+                .outcomes
+                .iter()
+                .map(|o| o.suite_name())
+                .collect::<std::collections::HashSet<_>>()
+                .len();
         }
 
-        print!("  {} ... ", file_name);
-
-        match run_test_file_with_pipeline(test_file, verbose, pipeline) {
-            Ok(true) => {
-                println!("ok");
-                passed += 1;
-            }
-            Ok(false) => {
-                println!("FAILED");
-                failed += 1;
-            }
-            Err(e) => {
-                println!("ERROR: {}", e);
-                failed += 1;
-            }
+        if verbose && results.total_suites == 0 {
+            println!("  {} — no suites found (warning)", file_name);
         }
+
+        total_suites += results.total_suites;
+        total_passed += results.passed;
+        total_failed += results.failed;
+        total_skipped += results.skipped;
+        total_duration += results.duration_ms;
+        all_outcomes.append(&mut results.outcomes);
     }
 
-    println!("\n========================================");
-    println!("Test Summary:");
-    println!("  Passed:  {}", passed);
-    println!("  Failed:  {}", failed);
-    println!("  Skipped: {}", skipped);
-    println!("========================================");
+    let summary = TestResults {
+        outcomes: all_outcomes,
+        total_suites,
+        total_tests: total_passed + total_failed + total_skipped,
+        passed: total_passed,
+        failed: total_failed,
+        skipped: total_skipped,
+        duration_ms: total_duration,
+    };
 
-    if failed > 0 {
+    let output = match format {
+        "tap" => format_tap(&summary),
+        "json" => format_json(&summary),
+        _ => format_pretty(&summary),
+    };
+    println!("{}", output);
+
+    if total_failed > 0 {
         std::process::exit(1);
     }
-
     Ok(())
-}
-
-fn is_test_file(name: &str) -> bool {
-    // Minimal convention: any `.arg` file is runnable as a test; naming can be layered on later.
-    name.ends_with(".arg")
 }
 
 fn collect_test_files(
@@ -747,8 +806,8 @@ fn collect_test_files(
         let entry = entry?;
         let path = entry.path();
         if path.is_file() {
-            if let Some(ext) = path.extension() {
-                if ext == "arg" || ext == "ss" {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.ends_with(".test.arg") {
                     files.push(path);
                 }
             }
@@ -757,79 +816,6 @@ fn collect_test_files(
         }
     }
     Ok(())
-}
-
-fn run_test_file_with_pipeline(
-    test_file: &PathBuf,
-    verbose: bool,
-    pipeline: &str,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    let source = fs::read_to_string(test_file)?;
-    let compiler = Compiler::new();
-    let options = CompileOptions {
-        target: Target::Js,
-        pipeline: if pipeline == "ast" {
-            Pipeline::Ast
-        } else {
-            Pipeline::Ir
-        },
-        optimize: false,
-        source_map: false,
-        declarations: false,
-        ..Default::default()
-    };
-
-    let source_name = test_file.display().to_string();
-    let artifacts = compiler
-        .compile(&source, &source_name, &options)
-        .map_err(|e| {
-            if let Some(diag) = e.diagnostics() {
-                diag.rendered.to_string()
-            } else {
-                format!("{}", e)
-            }
-        })?;
-
-    let js = artifacts.js.unwrap_or_default();
-
-    let is_esm = js.contains("\nexport ")
-        || js.starts_with("export ")
-        || js.contains("\nimport ")
-        || js.starts_with("import ");
-    let ext = if is_esm { "mjs" } else { "js" };
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let temp_file = std::env::temp_dir().join(format!(
-        "argon_test_{}_{}.{}",
-        std::process::id(),
-        unique,
-        ext
-    ));
-    fs::write(&temp_file, &js)?;
-
-    let output = std::process::Command::new("node")
-        .arg(&temp_file)
-        .output()
-        .map_err(|e| format!("Failed to run test: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if verbose {
-            println!("\n    Error output: {}", stderr);
-        }
-        return Ok(false);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    if verbose {
-        print!("\n    Output: {}", stdout);
-    }
-
-    let _ = fs::remove_file(&temp_file);
-
-    Ok(true)
 }
 
 fn format_file(

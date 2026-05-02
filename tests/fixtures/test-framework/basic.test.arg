@@ -1,0 +1,19 @@
+case("math", function(runner: any): any {
+  runner.when("adds correctly", function(assert: any): any {
+    assert.equals(1 + 1, 2);
+  });
+
+  runner.when("passes truth check", function(assert: any): any {
+    assert.truthy(true);
+  });
+});
+
+case("strings", function(runner: any): any {
+  runner.when("string equality", function(assert: any): any {
+    assert.equals("argon", "argon");
+  });
+
+  runner.skip("unicode handling", function(assert: any): any {
+    assert.equals("cafe", "café");
+  });
+});
