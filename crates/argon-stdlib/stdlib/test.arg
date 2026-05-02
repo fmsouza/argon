@@ -1,0 +1,37 @@
+// Argon Standard Library - Test Framework
+// Automatically available in .test.arg files.
+
+@intrinsic
+export struct Runner {
+    when(name: string, callback: fn(Assert) -> void): void with &this;
+    skip(name: string, callback: fn(Assert) -> void): void with &this;
+    beforeEach(callback: fn(Assert) -> void): void with &this;
+    afterEach(callback: fn(Assert) -> void): void with &this;
+    beforeAll(callback: fn(Assert) -> void): void with &this;
+    afterAll(callback: fn(Assert) -> void): void with &this;
+}
+
+@intrinsic
+export struct Assert {
+    equals(actual: any, expected: any, message: string?): void with &this;
+    notEquals(actual: any, expected: any, message: string?): void with &this;
+    deepEquals(actual: any, expected: any, message: string?): void with &this;
+    truthy(value: any, message: string?): void with &this;
+    falsy(value: any, message: string?): void with &this;
+    throws(callback: fn() -> void, message: string?): void with &this;
+    notThrows(callback: fn() -> void, message: string?): void with &this;
+    isString(value: any, message: string?): void with &this;
+    isNumber(value: any, message: string?): void with &this;
+    isBoolean(value: any, message: string?): void with &this;
+    isArray(value: any, message: string?): void with &this;
+    isObject(value: any, message: string?): void with &this;
+    isNull(value: any, message: string?): void with &this;
+    isUndefined(value: any, message: string?): void with &this;
+    greaterThan(actual: f64, expected: f64, message: string?): void with &this;
+    lessThan(actual: f64, expected: f64, message: string?): void with &this;
+    approximately(actual: f64, expected: f64, delta: f64, message: string?): void with &this;
+    contains(array: any[], element: any, message: string?): void with &this;
+    hasKey(object: any, key: string, message: string?): void with &this;
+}
+
+export fn case(name: string, callback: fn(Runner) -> void): void;
