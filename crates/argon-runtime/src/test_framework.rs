@@ -1,5 +1,8 @@
 //! Test framework native types and execution engine.
 
+// TODO: types and helpers will be used in Tasks 3-5 (case dispatch, assertion impl, execution engine)
+#![allow(dead_code)]
+
 use crate::{NativeFunction, RcFunction, RuntimeError, Value};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -28,7 +31,7 @@ pub(crate) struct TestContext {
 }
 
 #[derive(Debug, Clone)]
-pub enum TestOutcome {
+pub(crate) enum TestOutcome {
     Pass {
         name: String,
         suite_name: String,
@@ -47,7 +50,7 @@ pub enum TestOutcome {
 }
 
 impl TestOutcome {
-    pub fn suite_name(&self) -> &str {
+    pub(crate) fn suite_name(&self) -> &str {
         match self {
             TestOutcome::Pass { suite_name, .. }
             | TestOutcome::Fail { suite_name, .. }
@@ -55,7 +58,7 @@ impl TestOutcome {
         }
     }
 
-    pub fn test_name(&self) -> &str {
+    pub(crate) fn test_name(&self) -> &str {
         match self {
             TestOutcome::Pass { name, .. }
             | TestOutcome::Fail { name, .. }
@@ -65,7 +68,7 @@ impl TestOutcome {
 }
 
 #[derive(Debug, Default)]
-pub struct TestResults {
+pub(crate) struct TestResults {
     pub outcomes: Vec<TestOutcome>,
     pub total_suites: usize,
     pub total_tests: usize,
