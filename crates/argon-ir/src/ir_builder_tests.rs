@@ -334,19 +334,19 @@ mod jsx_translation {
                     Instruction::Member { property, .. } if property == "createElement" => {
                         saw_create_element = true
                     }
-                    Instruction::ObjectLit { props, .. } => {
-                        if props.iter().any(|p| p.key == "className") {
-                            saw_class_name_prop = true;
-                        }
+                    Instruction::ObjectLit { props, .. }
+                        if props.iter().any(|p| p.key == "className") =>
+                    {
+                        saw_class_name_prop = true;
                     }
+                    Instruction::ObjectLit { .. } => {}
                     Instruction::Const {
                         value: crate::ConstValue::String(s),
                         ..
-                    } => {
-                        if s.contains("Hello") {
-                            saw_hello = true;
-                        }
+                    } if s.contains("Hello") => {
+                        saw_hello = true;
                     }
+                    Instruction::Const { .. } => {}
                     _ => {}
                 }
             }

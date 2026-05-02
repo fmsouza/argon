@@ -1551,8 +1551,7 @@ impl BorrowChecker {
                                 known_summaries,
                                 &mut nested_state,
                             );
-                            thread_captured_params
-                                .extend(nested_state.thread_captured_params.into_iter());
+                            thread_captured_params.extend(nested_state.thread_captured_params);
                         }
                         _ => {}
                     }
@@ -2945,16 +2944,14 @@ impl BorrowChecker {
             Stmt::Variable(v) => {
                 self.check_variable(v)?;
             }
-            Stmt::Function(f) => {
-                if !f.is_intrinsic {
-                    self.check_function(f)?;
-                }
+            Stmt::Function(f) if !f.is_intrinsic => {
+                self.check_function(f)?;
             }
-            Stmt::AsyncFunction(f) => {
-                if !f.is_intrinsic {
-                    self.check_function(f)?;
-                }
+            Stmt::Function(_) => {}
+            Stmt::AsyncFunction(f) if !f.is_intrinsic => {
+                self.check_function(f)?;
             }
+            Stmt::AsyncFunction(_) => {}
             Stmt::Block(b) => {
                 self.check_block(b)?;
             }
@@ -2983,18 +2980,17 @@ impl BorrowChecker {
             Stmt::Match(m) => {
                 self.check_match(m)?;
             }
-            Stmt::Struct(s) => {
-                if !s.is_intrinsic {
-                    for method in &s.methods {
-                        self.check_function(&method.value)?;
-                    }
-                    if let Some(constructor) = &s.constructor {
-                        for stmt in &constructor.body.statements {
-                            self.check_statement(stmt)?;
-                        }
+            Stmt::Struct(s) if !s.is_intrinsic => {
+                for method in &s.methods {
+                    self.check_function(&method.value)?;
+                }
+                if let Some(constructor) = &s.constructor {
+                    for stmt in &constructor.body.statements {
+                        self.check_statement(stmt)?;
                     }
                 }
             }
+            Stmt::Struct(_) => {}
             Stmt::DoWhile(d) => {
                 self.check_do_while(d)?;
             }
