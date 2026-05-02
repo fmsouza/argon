@@ -111,7 +111,7 @@ mod tests {
         let src = resolve_std_module("test").expect("test module should exist");
         assert!(src.contains("struct Runner"));
         assert!(src.contains("struct Assert"));
-        assert!(src.contains("fn case("));
+        assert!(src.contains("function case("));
         assert!(src.contains("when(name:"));
         assert!(src.contains("beforeEach"));
     }
