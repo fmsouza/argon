@@ -3,7 +3,9 @@
 use argon_driver::{
     CompilationSession, CompileOptions, Compiler, EmitKind, NativeOptLevel, Pipeline, Target,
 };
-use argon_runtime::{execute_ast, format_json, format_pretty, format_tap, Runtime, TestOutcome, TestResults};
+use argon_runtime::{
+    execute_ast, format_json, format_pretty, format_tap, Runtime, TestOutcome, TestResults,
+};
 use argon_types::desugar::desugar_named_args;
 use std::collections::HashSet;
 use std::fs;
@@ -140,7 +142,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             filter,
             format,
         } => {
-            test(input.as_ref(), directory.as_ref(), verbose, filter.as_ref(), &format)?;
+            test(
+                input.as_ref(),
+                directory.as_ref(),
+                verbose,
+                filter.as_ref(),
+                &format,
+            )?;
         }
         Commands::Format { input, output } => {
             format_file(&input, output.as_ref())?;
@@ -687,20 +695,23 @@ fn test(
     let mut total_duration = 0f64;
 
     for test_file in &test_files {
-        let file_name = test_file.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+        let file_name = test_file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
         let source = fs::read_to_string(test_file)?;
         let source_name = test_file.display().to_string();
 
-        let mut ast = compiler.parse(&source, &source_name)
-            .map_err(|e| {
-                if let Some(diag) = e.diagnostics() {
-                    format!("Parse error in {}: {}", file_name, diag.rendered)
-                } else {
-                    format!("Parse error in {}: {}", file_name, e)
-                }
-            })?;
+        let mut ast = compiler.parse(&source, &source_name).map_err(|e| {
+            if let Some(diag) = e.diagnostics() {
+                format!("Parse error in {}: {}", file_name, diag.rendered)
+            } else {
+                format!("Parse error in {}: {}", file_name, e)
+            }
+        })?;
 
-        let tc_output = compiler.type_check_output(&source, &source_name, &ast)
+        let tc_output = compiler
+            .type_check_output(&source, &source_name, &ast)
             .map_err(|e| {
                 if let Some(diag) = e.diagnostics() {
                     format!("Type error in {}: {}", file_name, diag.rendered)
@@ -713,7 +724,8 @@ fn test(
         desugar_named_args(&mut ast, &tc_output.env);
 
         let mut runtime = Runtime::new();
-        runtime.execute(&ast)
+        runtime
+            .execute(&ast)
             .map_err(|e| format!("Runtime error in {}: {}", file_name, e))?;
 
         let mut results = runtime.run_all_suites();
@@ -728,10 +740,24 @@ fn test(
             });
             // Recompute counts after filtering
             results.total_tests = results.outcomes.len();
-            results.passed = results.outcomes.iter().filter(|o| matches!(o, TestOutcome::Pass { .. })).count();
-            results.failed = results.outcomes.iter().filter(|o| matches!(o, TestOutcome::Fail { .. })).count();
-            results.skipped = results.outcomes.iter().filter(|o| matches!(o, TestOutcome::Skip { .. })).count();
-            results.total_suites = results.outcomes.iter()
+            results.passed = results
+                .outcomes
+                .iter()
+                .filter(|o| matches!(o, TestOutcome::Pass { .. }))
+                .count();
+            results.failed = results
+                .outcomes
+                .iter()
+                .filter(|o| matches!(o, TestOutcome::Fail { .. }))
+                .count();
+            results.skipped = results
+                .outcomes
+                .iter()
+                .filter(|o| matches!(o, TestOutcome::Skip { .. }))
+                .count();
+            results.total_suites = results
+                .outcomes
+                .iter()
                 .map(|o| o.suite_name())
                 .collect::<std::collections::HashSet<_>>()
                 .len();

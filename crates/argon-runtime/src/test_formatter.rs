@@ -102,10 +102,7 @@ pub fn format_json(results: &TestResults) -> String {
             TestOutcome::Skip {
                 name,
                 suite_name: _,
-            } => format!(
-                r#"    {{ "status": "skip", "name": "{}" }}"#,
-                name
-            ),
+            } => format!(r#"    {{ "status": "skip", "name": "{}" }}"#, name),
         };
         items.push(entry);
     }
@@ -114,11 +111,7 @@ pub fn format_json(results: &TestResults) -> String {
     let _ = writeln!(
         out,
         r#"  "summary": {{ "passed": {}, "failed": {}, "skipped": {}, "total": {}, "duration_ms": {:.1} }}"#,
-        results.passed,
-        results.failed,
-        results.skipped,
-        results.total_tests,
-        results.duration_ms
+        results.passed, results.failed, results.skipped, results.total_tests, results.duration_ms
     );
     let _ = writeln!(out, "}}");
     out

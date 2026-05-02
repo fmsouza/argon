@@ -8,8 +8,8 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
-mod test_framework;
 mod test_formatter;
+mod test_framework;
 
 /// A boxed future that resolves to a Value. Stored inside Rc<RefCell<Option<...>>>
 /// so it can be taken once and awaited.
@@ -4216,8 +4216,8 @@ const msg = `Hello ${name}`;
     }
 }
 
-pub use test_framework::{TestOutcome, TestResults};
 pub use test_formatter::{format_json, format_pretty, format_tap};
+pub use test_framework::{TestOutcome, TestResults};
 
 #[cfg(test)]
 mod test_runner_tests {
