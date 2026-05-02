@@ -586,34 +586,34 @@ Argon has a built-in testing framework modeled after Jasmine. Test files use the
 A test file consists of one or more `case()` blocks. Each case defines a suite with setup hooks, test cases, and teardown hooks:
 
 ```ts
-case("arithmetic", function(runner: any): any {
-  runner.beforeAll(function(assert: any): any {
+case("arithmetic", function(runner: Runner): void {
+  runner.beforeAll(function(assert: Assert): void {
     // Suite-level setup, runs once before all tests
   });
 
-  runner.beforeEach(function(assert: any): any {
+  runner.beforeEach(function(assert: Assert): void {
     // Per-test setup, runs before each test
   });
 
-  runner.afterEach(function(assert: any): any {
+  runner.afterEach(function(assert: Assert): void {
     // Per-test teardown, runs after each test
   });
 
-  runner.afterAll(function(assert: any): any {
+  runner.afterAll(function(assert: Assert): void {
     // Suite-level teardown, runs once after all tests
   });
 
-  runner.when("adds two positive numbers", function(assert: any): any {
+  runner.when("adds two positive numbers", function(assert: Assert): void {
     assert.equals(1 + 2, 3);
   });
 
-  runner.when("divides by zero", function(assert: any): any {
-    assert.throws(function(): any {
+  runner.when("divides by zero", function(assert: Assert): void {
+    assert.throws(function(): void {
       throw "division by zero";
     });
   });
 
-  runner.skip("floating point comparison", function(assert: any): any {
+  runner.skip("floating point comparison", function(assert: Assert): void {
     assert.approximately(0.1 + 0.2, 0.3, 0.0001);
   });
 });
@@ -644,12 +644,12 @@ All assert methods accept an optional message string as the last parameter:
 
 | Category | Methods |
 |----------|---------|
-| Equality | `equals(actual, expected)`, `notEquals(actual, expected)`, `deepEquals(actual, expected)` |
-| Truthiness | `truthy(value)`, `falsy(value)` |
-| Exceptions | `throws(callback)`, `notThrows(callback)` |
-| Types | `isString(value)`, `isNumber(value)`, `isBoolean(value)`, `isArray(value)`, `isObject(value)`, `isNull(value)`, `isUndefined(value)` |
-| Comparisons | `greaterThan(actual, expected)`, `lessThan(actual, expected)`, `approximately(actual, expected, delta)` |
-| Collections | `contains(array, element)`, `hasKey(object, key)` |
+| Equality | `equals(actual: any, expected: any, message?: string)`, `notEquals(actual: any, expected: any, message?: string)`, `deepEquals(actual: any, expected: any, message?: string)` |
+| Truthiness | `truthy(value: any, message?: string)`, `falsy(value: any, message?: string)` |
+| Exceptions | `throws(callback: fn() -> void, message?: string)`, `notThrows(callback: fn() -> void, message?: string)` |
+| Types | `isString(value: any, message?: string)`, `isNumber(value: any, message?: string)`, `isBoolean(value: any, message?: string)`, `isArray(value: any, message?: string)`, `isObject(value: any, message?: string)`, `isNull(value: any, message?: string)`, `isUndefined(value: any, message?: string)` |
+| Comparisons | `greaterThan(actual: f64, expected: f64, message?: string)`, `lessThan(actual: f64, expected: f64, message?: string)`, `approximately(actual: f64, expected: f64, delta: f64, message?: string)` |
+| Collections | `contains(array: any[], element: any, message?: string)`, `hasKey(object: any, key: string, message?: string)` |
 
 ### CLI
 
