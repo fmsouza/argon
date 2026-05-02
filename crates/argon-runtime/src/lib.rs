@@ -8,6 +8,8 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
+mod test_framework;
+
 /// A boxed future that resolves to a Value. Stored inside Rc<RefCell<Option<...>>>
 /// so it can be taken once and awaited.
 type BoxFuture = Pin<Box<dyn std::future::Future<Output = Value>>>;
@@ -351,6 +353,7 @@ pub struct Runtime {
     struct_defs: HashMap<String, RuntimeStructDef>,
     skill_defs: HashMap<String, RuntimeSkillDef>,
     resources: ResourceTable,
+    test_context: test_framework::TestContext,
 }
 
 impl Default for Runtime {
@@ -557,12 +560,21 @@ impl Runtime {
             );
         }
 
+        // Register testing framework global functions
+        globals.insert(
+            "case".to_string(),
+            Value::NativeFunction(NativeFunction {
+                name: "test.case".to_string(),
+            }),
+        );
+
         Self {
             scope: Scope::new(),
             globals,
             struct_defs: HashMap::new(),
             skill_defs: HashMap::new(),
             resources: ResourceTable::new(),
+            test_context: test_framework::TestContext::default(),
         }
     }
 
@@ -1185,6 +1197,7 @@ impl Runtime {
                     struct_defs: self.struct_defs.clone(),
                     skill_defs: self.skill_defs.clone(),
                     resources: self.resources.clone(),
+                    test_context: self.test_context.clone(),
                 };
                 rt.execute_function_body(&func.body)
             }
@@ -1362,6 +1375,7 @@ impl Runtime {
                 struct_defs: self.struct_defs.clone(),
                 skill_defs: self.skill_defs.clone(),
                 resources: self.resources.clone(),
+                test_context: self.test_context.clone(),
             };
             for stmt in &constructor.body.statements {
                 match ctor_rt.execute_statement(stmt)? {
