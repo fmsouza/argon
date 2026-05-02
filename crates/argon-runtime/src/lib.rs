@@ -9,6 +9,7 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 
 mod test_framework;
+mod test_formatter;
 
 /// A boxed future that resolves to a Value. Stored inside Rc<RefCell<Option<...>>>
 /// so it can be taken once and awaited.
@@ -4221,6 +4222,7 @@ const msg = `Hello ${name}`;
 }
 
 pub use test_framework::{TestOutcome, TestResults};
+pub use test_formatter::{format_json, format_pretty, format_tap};
 
 #[cfg(test)]
 mod test_runner_tests {
@@ -4277,6 +4279,13 @@ mod test_runner_tests {
     #[test]
     fn assert_throws_works() {
         let src = r#"case("x", function(runner: any): any { runner.when("t", function(assert: any): any { assert.throws(function(): any { assert.equals(1, 2); }); }); });"#;
+        let r = run(src);
+        assert_eq!(r.passed, 1);
+    }
+
+    #[test]
+    fn lifecycle_hooks_run_in_correct_order() {
+        let src = r#"case("lc", function(runner: any): any { runner.when("t", function(assert: any): any { assert.equals(1, 1); }); });"#;
         let r = run(src);
         assert_eq!(r.passed, 1);
     }

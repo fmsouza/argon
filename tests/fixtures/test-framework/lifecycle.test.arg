@@ -1,0 +1,21 @@
+case("lifecycle", (runner: Runner) => {
+  runner.beforeAll((assert: Assert) => {
+  });
+
+  runner.beforeEach((assert: Assert) => {
+  });
+
+  runner.afterEach((assert: Assert) => {
+  });
+
+  runner.afterAll((assert: Assert) => {
+  });
+
+  runner.when("first test", (assert: Assert) => {
+    assert.equals(1, 1);
+  });
+
+  runner.when("second test", (assert: Assert) => {
+    assert.equals(2, 2);
+  });
+});
