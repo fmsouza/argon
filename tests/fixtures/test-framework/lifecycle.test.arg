@@ -1,21 +1,21 @@
-case("lifecycle", (runner: Runner) => {
-  runner.beforeAll((assert: Assert) => {
+case("lifecycle", function(runner: any): any {
+  runner.beforeAll(function(assert: any): any {
   });
 
-  runner.beforeEach((assert: Assert) => {
+  runner.beforeEach(function(assert: any): any {
   });
 
-  runner.afterEach((assert: Assert) => {
+  runner.afterEach(function(assert: any): any {
   });
 
-  runner.afterAll((assert: Assert) => {
+  runner.afterAll(function(assert: any): any {
   });
 
-  runner.when("first test", (assert: Assert) => {
+  runner.when("first test", function(assert: any): any {
     assert.equals(1, 1);
   });
 
-  runner.when("second test", (assert: Assert) => {
+  runner.when("second test", function(assert: any): any {
     assert.equals(2, 2);
   });
 });

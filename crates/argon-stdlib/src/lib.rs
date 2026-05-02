@@ -27,7 +27,9 @@ pub fn resolve_std_module(name: &str) -> Option<&'static str> {
 
 /// List all available `std:*` module names.
 pub fn available_modules() -> &'static [&'static str] {
-    &["io", "math", "error", "fs", "net", "http", "ws", "async", "test"]
+    &[
+        "io", "math", "error", "fs", "net", "http", "ws", "async", "test",
+    ]
 }
 
 #[cfg(test)]

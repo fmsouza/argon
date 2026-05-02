@@ -1,13 +1,13 @@
-case("filters", (runner: Runner) => {
-  runner.when("this test runs", (assert: Assert) => {
+case("filters", function(runner: any): any {
+  runner.when("this test runs", function(assert: any): any {
     assert.equals(1, 1);
   });
 
-  runner.skip("this test is skipped", (assert: Assert) => {
+  runner.skip("this test is skipped", function(assert: any): any {
     assert.equals(99, 99);
   });
 
-  runner.when("another passing test", (assert: Assert) => {
+  runner.when("another passing test", function(assert: any): any {
     assert.equals("a", "a");
   });
 });

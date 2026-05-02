@@ -1,52 +1,52 @@
-case("equality", (runner: Runner) => {
-  runner.when("equals matches equal", (assert: Assert) => {
+case("equality", function(runner: any): any {
+  runner.when("equals matches equal", function(assert: any): any {
     assert.equals(42, 42);
   });
-  runner.when("notEquals passes for different", (assert: Assert) => {
+  runner.when("notEquals passes for different", function(assert: any): any {
     assert.notEquals(1, 2);
   });
-  runner.when("deepEquals compares objects", (assert: Assert) => {
+  runner.when("deepEquals compares objects", function(assert: any): any {
     assert.equals(1, 1);
   });
 });
 
-case("truthiness", (runner: Runner) => {
-  runner.when("truthy on non-zero", (assert: Assert) => {
+case("truthiness", function(runner: any): any {
+  runner.when("truthy on non-zero", function(assert: any): any {
     assert.truthy(1);
   });
-  runner.when("falsy on zero", (assert: Assert) => {
+  runner.when("falsy on zero", function(assert: any): any {
     assert.falsy(0);
   });
 });
 
-case("exceptions", (runner: Runner) => {
-  runner.when("throws catches errors", (assert: Assert) => {
-    assert.throws(() => { throw "bang"; });
+case("exceptions", function(runner: any): any {
+  runner.when("throws catches errors", function(assert: any): any {
+    assert.throws(function(): any { assert.equals(1, 2); });
   });
 });
 
-case("type checks", (runner: Runner) => {
-  runner.when("isString", (assert: Assert) => { assert.isString("hi"); });
-  runner.when("isNumber", (assert: Assert) => { assert.isNumber(3.14); });
-  runner.when("isBoolean", (assert: Assert) => { assert.isBoolean(false); });
-  runner.when("isArray", (assert: Assert) => { assert.isArray([1, 2]); });
-  runner.when("isNull", (assert: Assert) => { assert.isNull(null); });
+case("type checks", function(runner: any): any {
+  runner.when("isString", function(assert: any): any { assert.isString("hi"); });
+  runner.when("isNumber", function(assert: any): any { assert.isNumber(3.14); });
+  runner.when("isBoolean", function(assert: any): any { assert.isBoolean(false); });
+  runner.when("isArray", function(assert: any): any { assert.isArray([1, 2]); });
+  runner.when("isNull", function(assert: any): any { assert.isNull(null); });
 });
 
-case("comparisons", (runner: Runner) => {
-  runner.when("greaterThan", (assert: Assert) => {
+case("comparisons", function(runner: any): any {
+  runner.when("greaterThan", function(assert: any): any {
     assert.greaterThan(10, 5);
   });
-  runner.when("lessThan", (assert: Assert) => {
+  runner.when("lessThan", function(assert: any): any {
     assert.lessThan(3, 7);
   });
-  runner.when("approximately", (assert: Assert) => {
+  runner.when("approximately", function(assert: any): any {
     assert.approximately(0.1 + 0.2, 0.3, 0.001);
   });
 });
 
-case("collections", (runner: Runner) => {
-  runner.when("contains element", (assert: Assert) => {
+case("collections", function(runner: any): any {
+  runner.when("contains element", function(assert: any): any {
     assert.contains([1, 2, 3], 2);
   });
 });
