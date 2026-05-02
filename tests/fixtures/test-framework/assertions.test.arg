@@ -1,0 +1,52 @@
+case("equality", (runner: Runner) => {
+  runner.when("equals matches equal", (assert: Assert) => {
+    assert.equals(42, 42);
+  });
+  runner.when("notEquals passes for different", (assert: Assert) => {
+    assert.notEquals(1, 2);
+  });
+  runner.when("deepEquals compares objects", (assert: Assert) => {
+    assert.equals(1, 1);
+  });
+});
+
+case("truthiness", (runner: Runner) => {
+  runner.when("truthy on non-zero", (assert: Assert) => {
+    assert.truthy(1);
+  });
+  runner.when("falsy on zero", (assert: Assert) => {
+    assert.falsy(0);
+  });
+});
+
+case("exceptions", (runner: Runner) => {
+  runner.when("throws catches errors", (assert: Assert) => {
+    assert.throws(() => { throw "bang"; });
+  });
+});
+
+case("type checks", (runner: Runner) => {
+  runner.when("isString", (assert: Assert) => { assert.isString("hi"); });
+  runner.when("isNumber", (assert: Assert) => { assert.isNumber(3.14); });
+  runner.when("isBoolean", (assert: Assert) => { assert.isBoolean(false); });
+  runner.when("isArray", (assert: Assert) => { assert.isArray([1, 2]); });
+  runner.when("isNull", (assert: Assert) => { assert.isNull(null); });
+});
+
+case("comparisons", (runner: Runner) => {
+  runner.when("greaterThan", (assert: Assert) => {
+    assert.greaterThan(10, 5);
+  });
+  runner.when("lessThan", (assert: Assert) => {
+    assert.lessThan(3, 7);
+  });
+  runner.when("approximately", (assert: Assert) => {
+    assert.approximately(0.1 + 0.2, 0.3, 0.001);
+  });
+});
+
+case("collections", (runner: Runner) => {
+  runner.when("contains element", (assert: Assert) => {
+    assert.contains([1, 2, 3], 2);
+  });
+});

@@ -1,0 +1,13 @@
+case("filters", (runner: Runner) => {
+  runner.when("this test runs", (assert: Assert) => {
+    assert.equals(1, 1);
+  });
+
+  runner.skip("this test is skipped", (assert: Assert) => {
+    assert.equals(99, 99);
+  });
+
+  runner.when("another passing test", (assert: Assert) => {
+    assert.equals("a", "a");
+  });
+});

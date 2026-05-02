@@ -4289,4 +4289,44 @@ mod test_runner_tests {
         let r = run(src);
         assert_eq!(r.passed, 1);
     }
+
+    #[test]
+    fn all_assertion_types_work() {
+        let src = r#"
+case("a", function(runner: any): any {
+  runner.when("types", function(assert: any): any {
+    assert.isString("s");
+    assert.isNumber(1.0);
+    assert.isBoolean(true);
+    assert.isArray([]);
+    assert.isNull(null);
+    assert.contains([1], 1);
+  });
+});
+"#;
+        let r = run(src);
+        assert_eq!(r.passed, 1);
+        assert_eq!(r.failed, 0);
+    }
+
+    #[test]
+    fn assertion_failure_produces_correct_message() {
+        let src = r#"case("f", function(runner: any): any { runner.when("bad", function(assert: any): any { assert.equals(1, 2); }); });"#;
+        let r = run(src);
+        assert_eq!(r.failed, 1);
+        let msg = match &r.outcomes[0] {
+            TestOutcome::Fail { message, .. } => message.clone(),
+            _ => panic!("expected fail"),
+        };
+        assert!(msg.contains("expected 2"));
+        assert!(msg.contains("got 1"));
+    }
+
+    #[test]
+    fn empty_suite_has_zero_tests() {
+        let src = r#"case("empty", function(runner: any): any { });"#;
+        let r = run(src);
+        assert_eq!(r.total_tests, 0);
+        assert_eq!(r.total_suites, 1);
+    }
 }
