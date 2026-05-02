@@ -2826,6 +2826,11 @@ impl Runtime {
                 )))
             }
 
+            name if name.starts_with("Assert.") => {
+                let method = &name["Assert.".len()..];
+                self.execute_assert_method(method, args)
+            }
+
             _ => Ok(Value::Undefined),
         }
     }
@@ -2978,6 +2983,251 @@ impl Runtime {
         }
 
         Value::Object(Rc::new(RefCell::new(obj)))
+    }
+
+    fn execute_assert_method(
+        &mut self,
+        method: &str,
+        args: &[Value],
+    ) -> Result<Value, RuntimeError> {
+        let first = args.first().unwrap_or(&Value::Undefined);
+        let second = args.get(1).unwrap_or(&Value::Undefined);
+        let optional_msg = |idx: usize| -> String {
+            args.get(idx)
+                .and_then(|v| match v {
+                    Value::String(s) if !s.is_empty() => Some(format!(": {}", s)),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
+
+        match method {
+            "equals" => {
+                if !self.values_equal(first, second) {
+                    Err(RuntimeError::Thrown(format!(
+                        "expected {} but got {}{}",
+                        self.value_display(second),
+                        self.value_display(first),
+                        optional_msg(2)
+                    )))
+                } else {
+                    Ok(Value::Undefined)
+                }
+            }
+            "notEquals" => {
+                if self.values_equal(first, second) {
+                    Err(RuntimeError::Thrown(format!(
+                        "expected values to differ but both are {}{}",
+                        self.value_display(first),
+                        optional_msg(2)
+                    )))
+                } else {
+                    Ok(Value::Undefined)
+                }
+            }
+            "deepEquals" => {
+                if !self.values_deep_equal(first, second) {
+                    Err(RuntimeError::Thrown(format!(
+                        "expected {} but got {} (deep){}",
+                        self.value_display(second),
+                        self.value_display(first),
+                        optional_msg(2)
+                    )))
+                } else {
+                    Ok(Value::Undefined)
+                }
+            }
+            "truthy" => {
+                if !self.is_truthy(first) {
+                    Err(RuntimeError::Thrown(format!(
+                        "expected truthy value but got {}{}",
+                        self.value_display(first),
+                        optional_msg(1)
+                    )))
+                } else {
+                    Ok(Value::Undefined)
+                }
+            }
+            "falsy" => {
+                if self.is_truthy(first) {
+                    Err(RuntimeError::Thrown(format!(
+                        "expected falsy value but got {}{}",
+                        self.value_display(first),
+                        optional_msg(1)
+                    )))
+                } else {
+                    Ok(Value::Undefined)
+                }
+            }
+            "throws" => {
+                let func = match args.first() {
+                    Some(Value::Function(f)) => f.clone(),
+                    _ => {
+                        return Err(RuntimeError::Thrown(
+                            "throws: expected a function argument".to_string(),
+                        ))
+                    }
+                };
+                match self.call_value_function(&func, &[]) {
+                    Ok(_) => Err(RuntimeError::Thrown(format!(
+                        "expected function to throw but it did not{}",
+                        optional_msg(1)
+                    ))),
+                    Err(_) => Ok(Value::Undefined),
+                }
+            }
+            "notThrows" => {
+                let func = match args.first() {
+                    Some(Value::Function(f)) => f.clone(),
+                    _ => {
+                        return Err(RuntimeError::Thrown(
+                            "notThrows: expected a function argument".to_string(),
+                        ))
+                    }
+                };
+                match self.call_value_function(&func, &[]) {
+                    Ok(_) => Ok(Value::Undefined),
+                    Err(e) => Err(RuntimeError::Thrown(format!(
+                        "expected function not to throw but it threw: {}{}",
+                        e, optional_msg(1)
+                    ))),
+                }
+            }
+            "isString" => check_type(first, |v| matches!(v, Value::String(_)), "string", optional_msg(1)),
+            "isNumber" => check_type(first, |v| matches!(v, Value::Number(_)), "number", optional_msg(1)),
+            "isBoolean" => check_type(first, |v| matches!(v, Value::Boolean(_)), "boolean", optional_msg(1)),
+            "isArray" => check_type(first, |v| matches!(v, Value::Array(_)), "array", optional_msg(1)),
+            "isObject" => check_type(first, |v| matches!(v, Value::Object(_)), "object", optional_msg(1)),
+            "isNull" => check_type(first, |v| matches!(v, Value::Null), "null", optional_msg(1)),
+            "isUndefined" => check_type(first, |v| matches!(v, Value::Undefined), "undefined", optional_msg(1)),
+            "greaterThan" => {
+                let a = to_num(args, 0, "greaterThan")?;
+                let b = to_num(args, 1, "greaterThan")?;
+                if !(a > b) {
+                    Err(RuntimeError::Thrown(format!(
+                        "expected {} > {}{}",
+                        a, b, optional_msg(2)
+                    )))
+                } else {
+                    Ok(Value::Undefined)
+                }
+            }
+            "lessThan" => {
+                let a = to_num(args, 0, "lessThan")?;
+                let b = to_num(args, 1, "lessThan")?;
+                if !(a < b) {
+                    Err(RuntimeError::Thrown(format!(
+                        "expected {} < {}{}",
+                        a, b, optional_msg(2)
+                    )))
+                } else {
+                    Ok(Value::Undefined)
+                }
+            }
+            "approximately" => {
+                let a = to_num(args, 0, "approximately")?;
+                let b = to_num(args, 1, "approximately")?;
+                let d = to_num(args, 2, "approximately")?;
+                if !((a - b).abs() < d) {
+                    Err(RuntimeError::Thrown(format!(
+                        "expected {} within {} of {}{}",
+                        a, d, b, optional_msg(3)
+                    )))
+                } else {
+                    Ok(Value::Undefined)
+                }
+            }
+            "contains" => {
+                let arr = match args.first() {
+                    Some(Value::Array(a)) => a,
+                    _ => {
+                        return Err(RuntimeError::Thrown(
+                            "contains: first argument must be an array".to_string(),
+                        ))
+                    }
+                };
+                let el = args.get(1).unwrap_or(&Value::Undefined);
+                if !arr.iter().any(|v| self.values_equal(v, el)) {
+                    Err(RuntimeError::Thrown(format!(
+                        "expected array to contain {}{}",
+                        self.value_display(el),
+                        optional_msg(2)
+                    )))
+                } else {
+                    Ok(Value::Undefined)
+                }
+            }
+            "hasKey" => {
+                let obj = match args.first() {
+                    Some(Value::Object(o)) => o,
+                    _ => {
+                        return Err(RuntimeError::Thrown(
+                            "hasKey: first argument must be an object".to_string(),
+                        ))
+                    }
+                };
+                let key = match args.get(1) {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => {
+                        return Err(RuntimeError::Thrown(
+                            "hasKey: second argument must be a string key".to_string(),
+                        ))
+                    }
+                };
+                if !obj.borrow().contains_key(&key) {
+                    Err(RuntimeError::Thrown(format!(
+                        "expected object to have key '{}'{}",
+                        key, optional_msg(2)
+                    )))
+                } else {
+                    Ok(Value::Undefined)
+                }
+            }
+            _ => Err(RuntimeError::TypeError(format!(
+                "unknown Assert method: {}",
+                method
+            ))),
+        }
+    }
+
+    fn values_deep_equal(&self, a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Array(a), Value::Array(b)) => {
+                a.len() == b.len()
+                    && a.iter()
+                        .zip(b.iter())
+                        .all(|(va, vb)| self.values_deep_equal(va, vb))
+            }
+            (Value::Object(a), Value::Object(b)) => {
+                let am = a.borrow();
+                let bm = b.borrow();
+                am.len() == bm.len()
+                    && am.iter()
+                        .all(|(k, v)| bm.get(k).is_some_and(|bv| self.values_deep_equal(v, bv)))
+            }
+            _ => self.values_equal(a, b),
+        }
+    }
+
+    fn value_display(&self, v: &Value) -> String {
+        match v {
+            Value::String(s) => format!("\"{}\"", s),
+            Value::Number(n) => format!("{}", n),
+            Value::Boolean(b) => format!("{}", b),
+            Value::Null => "null".to_string(),
+            Value::Undefined => "undefined".to_string(),
+            Value::Array(arr) => format!(
+                "[{}]",
+                arr.iter()
+                    .map(|val| self.value_display(val))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Value::Object(_) => "{...}".to_string(),
+            Value::Function(_) => "<function>".to_string(),
+            Value::NativeFunction(_) => "<native>".to_string(),
+            Value::Future(_) => "<future>".to_string(),
+        }
     }
 
     fn eval_binary(
@@ -3156,6 +3406,30 @@ impl Runtime {
                 }
             }
         }
+    }
+}
+
+fn check_type<F>(value: &Value, check: F, expected: &str, msg: String) -> Result<Value, RuntimeError>
+where
+    F: Fn(&Value) -> bool,
+{
+    if !check(value) {
+        Err(RuntimeError::Thrown(format!(
+            "expected {} but got other{}",
+            expected, msg
+        )))
+    } else {
+        Ok(Value::Undefined)
+    }
+}
+
+fn to_num(args: &[Value], idx: usize, ctx: &str) -> Result<f64, RuntimeError> {
+    match args.get(idx) {
+        Some(Value::Number(n)) => Ok(*n),
+        _ => Err(RuntimeError::TypeError(format!(
+            "{}: expected number at position {}",
+            ctx, idx
+        ))),
     }
 }
 
