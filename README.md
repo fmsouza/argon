@@ -587,19 +587,19 @@ A test file consists of one or more `case()` blocks. Each case defines a suite w
 
 ```ts
 case("arithmetic", function(runner: Runner): void {
-  runner.beforeAll(function(assert: Assert): void {
+  runner.beforeAll(function(): void {
     // Suite-level setup, runs once before all tests
   });
 
-  runner.beforeEach(function(assert: Assert): void {
+  runner.beforeEach(function(): void {
     // Per-test setup, runs before each test
   });
 
-  runner.afterEach(function(assert: Assert): void {
+  runner.afterEach(function(): void {
     // Per-test teardown, runs after each test
   });
 
-  runner.afterAll(function(assert: Assert): void {
+  runner.afterAll(function(): void {
     // Suite-level teardown, runs once after all tests
   });
 

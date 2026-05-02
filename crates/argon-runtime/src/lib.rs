@@ -3495,8 +3495,7 @@ impl Runtime {
         for suite in suites {
             // Run beforeAll hook
             if let Some(ref before_all) = suite.before_all {
-                let assert_obj = test_framework::make_assert_object();
-                if let Err(_e) = self.call_value_function(before_all, &[assert_obj]) {
+                if let Err(_e) = self.call_value_function(before_all, &[]) {
                     // beforeAll failure: skip all tests in this suite
                     for test in &suite.tests {
                         results.outcomes.push(TestOutcome::Skip {
@@ -3508,8 +3507,7 @@ impl Runtime {
                     }
                     // Still run afterAll if defined
                     if let Some(ref after_all) = suite.after_all {
-                        let assert_obj = test_framework::make_assert_object();
-                        let _ = self.call_value_function(after_all, &[assert_obj]);
+                        let _ = self.call_value_function(after_all, &[]);
                     }
                     continue;
                 }
@@ -3529,8 +3527,7 @@ impl Runtime {
                 let test_start = std::time::Instant::now();
                 let outcome = (|| -> Result<(), String> {
                     if let Some(ref before_each) = suite.before_each {
-                        let assert_obj = test_framework::make_assert_object();
-                        self.call_value_function(before_each, &[assert_obj])
+                        self.call_value_function(before_each, &[])
                             .map(|_| ())
                             .map_err(|e| format!("beforeEach: {}", e))?;
                     }
@@ -3543,8 +3540,7 @@ impl Runtime {
 
                 // afterEach always runs
                 if let Some(ref after_each) = suite.after_each {
-                    let assert_obj = test_framework::make_assert_object();
-                    let _ = self.call_value_function(after_each, &[assert_obj]);
+                    let _ = self.call_value_function(after_each, &[]);
                 }
 
                 match outcome {
@@ -3571,8 +3567,7 @@ impl Runtime {
 
             // afterAll always runs
             if let Some(ref after_all) = suite.after_all {
-                let assert_obj = test_framework::make_assert_object();
-                let _ = self.call_value_function(after_all, &[assert_obj]);
+                let _ = self.call_value_function(after_all, &[]);
             }
         }
 
@@ -4271,7 +4266,7 @@ mod test_runner_tests {
 
     #[test]
     fn before_all_failure_skips_all() {
-        let src = r#"case("x", function(runner: any): any { runner.beforeAll(function(assert: any): any { assert.equals(1, 2); }); runner.when("t", function(assert: any): any { assert.equals(1, 1); }); });"#;
+        let src = r#"case("x", function(runner: any): any { runner.beforeAll(function(): any { const x = doesNotExist; }); runner.when("t", function(assert: any): any { assert.equals(1, 1); }); });"#;
         let r = run(src);
         assert_eq!(r.skipped, 1);
     }

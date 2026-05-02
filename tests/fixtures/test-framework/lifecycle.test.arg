@@ -1,14 +1,14 @@
 case("lifecycle", function(runner: any): any {
-  runner.beforeAll(function(assert: any): any {
+  runner.beforeAll(function(): any {
   });
 
-  runner.beforeEach(function(assert: any): any {
+  runner.beforeEach(function(): any {
   });
 
-  runner.afterEach(function(assert: any): any {
+  runner.afterEach(function(): any {
   });
 
-  runner.afterAll(function(assert: any): any {
+  runner.afterAll(function(): any {
   });
 
   runner.when("first test", function(assert: any): any {
