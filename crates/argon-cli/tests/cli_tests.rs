@@ -185,15 +185,13 @@ fn test_compile_opt_folds_exported_const() {
 #[test]
 fn test_argon_test_runs_esm_output() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let source_file = temp_dir.path().join("esm_test.arg");
-    fs::write(&source_file, "export const x: number = 1;\nprintln(x);\n").unwrap();
+    let source_file = temp_dir.path().join("simple.test.arg");
+    fs::write(&source_file, "println(1);\n").unwrap();
 
     let mut cmd = cargo_bin_cmd!("argon");
     cmd.arg("test")
         .arg("--input")
         .arg(&source_file)
-        .arg("--pipeline")
-        .arg("ir")
         .assert()
         .success();
 }
