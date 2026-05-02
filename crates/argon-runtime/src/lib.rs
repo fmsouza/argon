@@ -1503,6 +1503,40 @@ impl Runtime {
         Ok(Value::Undefined)
     }
 
+    fn call_value_function(
+        &mut self,
+        func: &RcFunction,
+        args: &[Value],
+    ) -> Result<Value, RuntimeError> {
+        let mut call_scope = func.closure.clone();
+        for (i, param) in func.params.iter().enumerate() {
+            let val = args.get(i).cloned().unwrap_or(Value::Undefined);
+            call_scope.define(param.clone(), val);
+        }
+        let saved_scope = std::mem::replace(&mut self.scope, call_scope);
+        let result = (|| {
+            for stmt in &func.body {
+                match self.execute_statement(stmt)? {
+                    ExecOutcome::Return(v) => return Ok(v),
+                    ExecOutcome::Normal => {}
+                    ExecOutcome::Break => {
+                        return Err(RuntimeError::InvalidControlFlow(
+                            "break outside loop".to_string(),
+                        ));
+                    }
+                    ExecOutcome::Continue => {
+                        return Err(RuntimeError::InvalidControlFlow(
+                            "continue outside loop".to_string(),
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Undefined)
+        })();
+        self.scope = saved_scope;
+        result
+    }
+
     fn execute_native_function(
         &mut self,
         name: &str,
@@ -1518,6 +1552,36 @@ impl Runtime {
                 let output: Vec<String> = args.iter().map(|v| self.value_to_string(v)).collect();
                 println!("{}", output.join(" "));
                 Ok(Value::Undefined)
+            }
+            "test.case" => {
+                let suite_name = match args.first() {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => {
+                        return Err(RuntimeError::TypeError(
+                            "case: expected string suite name".to_string(),
+                        ))
+                    }
+                };
+                let callback = match args.get(1) {
+                    Some(Value::Function(f)) => f.clone(),
+                    _ => {
+                        return Err(RuntimeError::TypeError(
+                            "case: expected function callback".to_string(),
+                        ))
+                    }
+                };
+
+                let suite_idx = self.test_context.suites.len();
+                self.test_context.suites.push(test_framework::TestSuite {
+                    name: suite_name,
+                    before_all: None,
+                    after_all: None,
+                    before_each: None,
+                    after_each: None,
+                    tests: Vec::new(),
+                });
+                let runner = test_framework::make_runner_object(suite_idx);
+                self.call_value_function(&callback, &[runner])
             }
             "Math.abs" => one_number(args, |n| Value::Number(n.abs())),
             "Math.floor" => one_number(args, |n| Value::Number(n.floor())),
@@ -2740,6 +2804,26 @@ impl Runtime {
                         Err(e) => Err(RuntimeError::TypeError(e.to_string())),
                     }
                 })
+            }
+
+            // --- test framework Runner dispatch ---
+            name if name.starts_with("Runner.") => {
+                let parts: Vec<&str> = name.splitn(4, '.').collect();
+                if parts.len() == 3 {
+                    if let Ok(suite_idx) = parts[1].parse::<usize>() {
+                        let method = parts[2];
+                        return test_framework::handle_runner_method(
+                            &mut self.test_context.suites,
+                            suite_idx,
+                            method,
+                            args,
+                        );
+                    }
+                }
+                Err(RuntimeError::TypeError(format!(
+                    "invalid Runner native function name: {}",
+                    name
+                )))
             }
 
             _ => Ok(Value::Undefined),
