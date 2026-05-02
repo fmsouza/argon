@@ -39,7 +39,7 @@ enum Commands {
         /// Implies --target native.
         #[arg(long)]
         triple: Option<String>,
-        /// What to emit for native target: exe (default), obj, asm.
+        /// What to emit for native target: exe (default), obj.
         /// For the wasm target, use `wat` to additionally write a `.wat` sidecar.
         #[arg(long, default_value = "exe")]
         emit: String,
@@ -266,9 +266,15 @@ fn compile_with_session(
         Target::Native => match emit {
             "exe" => (EmitKind::Exe, false),
             "obj" => (EmitKind::Obj, false),
-            "asm" => (EmitKind::Asm, false),
+            "asm" => {
+                return Err(
+                    "--emit asm is not currently supported for the native target. \
+                     Use --emit obj to get an object file, or --emit exe for a linked executable."
+                        .into(),
+                );
+            }
             other => {
-                return Err(format!("Unknown emit kind: {}. Use exe, obj, or asm.", other).into());
+                return Err(format!("Unknown emit kind: {}. Use exe or obj.", other).into());
             }
         },
         Target::Wasm => match emit {
@@ -297,7 +303,43 @@ fn compile_with_session(
         emit,
     };
 
-    // Multi-file project compilation: compile entry + all dependencies.
+    // Check the project graph first to validate deps before codegen.
+    let checked = match session.check_project(input) {
+        Ok(c) => c,
+        Err(e) => {
+            if let Some(diag) = e.diagnostics() {
+                eprintln!("{}", diag.rendered);
+            }
+            return Err(e.into());
+        }
+    };
+
+    let has_deps = !checked.deps.is_empty();
+
+    // Multi-file Argon projects are only supported for the JS target.
+    if has_deps {
+        match target {
+            Target::Native => {
+                return Err(
+                    "multi-file Argon projects are not yet supported for the native target. \
+                     Only single-file compilation is available for --target native. \
+                     Use --target js for multi-file projects."
+                        .into(),
+                );
+            }
+            Target::Wasm => {
+                return Err(
+                    "multi-file Argon projects are not yet supported for the WASM target. \
+                     Only single-file compilation is available for --target wasm. \
+                     Use --target js for multi-file projects."
+                        .into(),
+                );
+            }
+            Target::Js => {}
+        }
+    }
+
+    // Compile the entry file.
     let result = match session.compile_file(input, &options) {
         Ok(r) => r,
         Err(e) => {
@@ -309,7 +351,7 @@ fn compile_with_session(
     };
 
     // If there are dependencies, compile the full project.
-    if !result.deps.is_empty() {
+    if has_deps {
         let project = match session.compile_project(input, &options) {
             Ok(p) => p,
             Err(e) => {
@@ -526,20 +568,20 @@ fn compile_with_session(
     Ok(())
 }
 
-fn check(input: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+fn check(input: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let session = CompilationSession::new();
     check_with_session(&session, input)
 }
 
 fn check_with_session(
     session: &CompilationSession,
-    input: &PathBuf,
+    input: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Parsing {}...", input.display());
     println!("Type checking...");
     println!("Borrow checking...");
 
-    if let Err(e) = session.check_file(input) {
+    if let Err(e) = session.check_project(input) {
         if let Some(diag) = e.diagnostics() {
             eprintln!("{}", diag.rendered);
         }
@@ -550,24 +592,31 @@ fn check_with_session(
     Ok(())
 }
 
-fn run(input: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+fn run(input: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let session = CompilationSession::new();
     run_with_session(&session, input)
 }
 
 fn run_with_session(
     session: &CompilationSession,
-    input: &PathBuf,
+    input: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Parsing {}...", input.display());
     println!("Type checking...");
     println!("Borrow checking...");
 
-    let checked = session.check_file(input).map_err(|e| {
+    let checked = session.check_project(input).inspect_err(|e| {
         if let Some(diag) = e.diagnostics() {
             eprintln!("{}", diag.rendered);
         }
-        e
+    })?;
+
+    // Reject async programs — the interpreter is synchronous-only.
+    let compiler = Compiler::new();
+    compiler.validate_no_async(&checked.ast).inspect_err(|e| {
+        if let Some(diag) = e.diagnostics() {
+            eprintln!("{}", diag.rendered);
+        }
     })?;
 
     execute_checked_ast(&checked.ast)

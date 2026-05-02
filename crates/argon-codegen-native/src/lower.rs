@@ -491,7 +491,10 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                         self.bool_values.insert(*dest);
                     }
                 } else {
-                    // Could be a function reference or unknown variable
+                    // Function references (println, print, user functions, etc.)
+                    // don't exist as local variables — they're resolved during
+                    // call lowering via `callee_names`. Insert a placeholder value
+                    // so the Call instruction has a valid ValueId to reference.
                     let zero = self.builder.ins().f64const(0.0);
                     self.values.insert(*dest, zero);
                 }
@@ -672,16 +675,24 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                 ));
             }
 
-            // Async state machine instructions — stub for now
-            IrInstruction::EnumConstruct { dest, .. } => {
-                let zero = self.builder.ins().f64const(0.0);
-                self.values.insert(*dest, zero);
+            IrInstruction::EnumConstruct { .. } => {
+                return Err(CodegenError::Unsupported(
+                    "enum/async state machine construction is not supported for the native target"
+                        .to_string(),
+                ));
             }
-            IrInstruction::EnumField { dest, .. } => {
-                let zero = self.builder.ins().f64const(0.0);
-                self.values.insert(*dest, zero);
+            IrInstruction::EnumField { .. } => {
+                return Err(CodegenError::Unsupported(
+                    "enum/async state machine field access is not supported for the native target"
+                        .to_string(),
+                ));
             }
-            IrInstruction::EnumMutate { .. } => {}
+            IrInstruction::EnumMutate { .. } => {
+                return Err(CodegenError::Unsupported(
+                    "enum/async state machine mutation is not supported for the native target"
+                        .to_string(),
+                ));
+            }
 
             IrInstruction::Load { dest, src } => {
                 let val = self.get_value(*src)?;
@@ -720,13 +731,18 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                                 .load(types::F64, MemFlags::new(), obj_ptr, offset);
                         self.values.insert(*dest, val);
                     } else {
-                        let zero = self.builder.ins().f64const(0.0);
-                        self.values.insert(*dest, zero);
+                        return Err(CodegenError::Unsupported(format!(
+                            "unknown field '{}' on struct in native codegen",
+                            property
+                        )));
                     }
                 } else {
-                    // No layout info — fallback to 0
-                    let zero = self.builder.ins().f64const(0.0);
-                    self.values.insert(*dest, zero);
+                    return Err(CodegenError::Unsupported(
+                        format!(
+                            "member access on value with unknown layout in native codegen (property '{}')",
+                            property
+                        ),
+                    ));
                 }
             }
 
@@ -1004,12 +1020,10 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
                     | "wsConnectAsync"
                     | "serveAsync"
             ) {
-                // These intrinsics are recognized but produce a stub return value
-                // in native mode. Full implementation requires struct/object
-                // return values via heap allocation, which is a future enhancement.
-                let zero = self.builder.ins().f64const(0.0);
-                self.values.insert(dest, zero);
-                return Ok(());
+                return Err(CodegenError::Unsupported(format!(
+                    "async intrinsic '{}' is not supported for the native target",
+                    name
+                )));
             }
 
             // Regular function call
@@ -1031,10 +1045,11 @@ impl<'a, 'b> FunctionLowerer<'a, 'b> {
             }
         }
 
-        // Fallback: unknown call, return 0
-        let zero = self.builder.ins().f64const(0.0);
-        self.values.insert(dest, zero);
-        Ok(())
+        Err(CodegenError::Unsupported(format!(
+            "unresolved function call '{}' in native codegen",
+            self.find_callee_name(callee)
+                .unwrap_or_else(|| format!("<unknown v{}>", callee))
+        )))
     }
 
     fn find_callee_name(&self, callee_id: ValueId) -> Option<String> {

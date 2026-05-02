@@ -509,6 +509,13 @@ impl TypeChecker {
                         }
                     }
                 }
+                Stmt::Export(e) => {
+                    if let Some(ref decl) = e.declaration {
+                        let tmp =
+                            SourceFile::new(String::new(), vec![*decl.clone()], e.span.clone());
+                        self.collect_declarations(&tmp);
+                    }
+                }
                 _ => {}
             }
         }
@@ -668,7 +675,13 @@ impl TypeChecker {
             Stmt::Switch(s) => self.check_switch(s),
             Stmt::DoWhile(d) => self.check_do_while(d),
             Stmt::Match(m) => self.check_match(m),
-            Stmt::Import(_) | Stmt::Export(_) => Ok(()),
+            Stmt::Import(_) => Ok(()),
+            Stmt::Export(e) => {
+                if let Some(ref decl) = e.declaration {
+                    self.check_statement(decl)?;
+                }
+                Ok(())
+            }
             Stmt::Interface(_) => Ok(()),
             Stmt::Skill(_) => Ok(()),
             Stmt::Enum(_) => Ok(()),

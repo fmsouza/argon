@@ -6,13 +6,9 @@ mod session;
 
 use argon_ast::SourceFile;
 use argon_borrowck::BorrowChecker;
-use argon_codegen_js::{generate_type_declarations, JsCodegen};
-use argon_codegen_native::NativeCodegen;
-use argon_codegen_wasm::WasmCodegen;
+use argon_codegen_js::JsCodegen;
 use argon_diagnostics::{Diagnostic, DiagnosticBag, DiagnosticEngine, Severity};
-use argon_ir::IrBuilder;
 use argon_parser::{parse, ParseError};
-use argon_target::TargetTriple;
 use argon_types::{TypeCheckOutput, TypeChecker};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -258,6 +254,66 @@ impl Compiler {
         Ok(())
     }
 
+    /// Reject programs that use async/await/spawn — `argon run` is synchronous-only.
+    pub fn validate_no_async(&self, ast: &SourceFile) -> Result<(), DriverError> {
+        use argon_ast::Stmt;
+
+        for stmt in &ast.statements {
+            match stmt {
+                Stmt::AsyncFunction(f) => {
+                    let name =
+                        f.id.as_ref()
+                            .map(|id| id.sym.as_str())
+                            .unwrap_or("<anonymous>");
+                    return Err(DriverError::WithDiagnostics {
+                        message: format!(
+                            "async function '{}' cannot be executed with `argon run`. \
+                             The interpreter is synchronous-only. \
+                             Use `argon compile` and run the compiled output instead.",
+                            name
+                        ),
+                        diagnostics: Diagnostics {
+                            bag: DiagnosticBag::new(),
+                            rendered: format!(
+                                "error: async function '{}' is not supported by `argon run`\n\
+                                 note: the Argon interpreter is synchronous-only; \
+                                 compile with `argon compile` and execute the output instead",
+                                name
+                            ),
+                        },
+                    });
+                }
+                Stmt::Import(import) => {
+                    let raw = import.source.value.trim();
+                    let spec = raw
+                        .trim_start_matches('"')
+                        .trim_end_matches('"')
+                        .trim_start_matches('\'')
+                        .trim_end_matches('\'');
+
+                    if spec == "std:async" {
+                        return Err(DriverError::WithDiagnostics {
+                            message: "importing 'std:async' is not supported with `argon run`. \
+                                     The interpreter is synchronous-only. \
+                                     Use `argon compile` and run the compiled output instead."
+                                .to_string(),
+                            diagnostics: Diagnostics {
+                                bag: DiagnosticBag::new(),
+                                rendered: "error: 'std:async' is not supported by `argon run`\n\
+                                     note: the Argon interpreter is synchronous-only; \
+                                     compile with `argon compile` and execute the output instead"
+                                    .to_string(),
+                            },
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+
     /// Validate that all `std:*` imports reference known modules.
     pub fn validate_std_imports(&self, ast: &SourceFile) -> Result<(), DriverError> {
         use argon_ast::Stmt;
@@ -356,141 +412,6 @@ impl Compiler {
         let types = Arc::new(self.type_check_output(source, source_name, ast)?);
         self.borrow_check_typed(source, source_name, ast, Arc::clone(&types))?;
         Ok((*types).clone())
-    }
-
-    #[allow(dead_code)] // TODO: remove once all internal callers migrate to CompilationSession.
-    fn compile_js(
-        &self,
-        source: &str,
-        source_name: &str,
-        ast: &SourceFile,
-        options: &CompileOptions,
-    ) -> Result<CompileArtifacts, DriverError> {
-        let mut codegen = if options.source_map {
-            JsCodegen::new().with_source_map(source_name)
-        } else {
-            JsCodegen::new()
-        };
-
-        let js = match options.pipeline {
-            Pipeline::Ast => codegen.generate_from_ast(ast),
-            Pipeline::Ir => {
-                let mut builder = IrBuilder::new();
-                let mut ir = builder.build(ast).map_err(|e| {
-                    self.simple_error_to_driver(source, source_name, "ir error", &e)
-                })?;
-                if options.optimize {
-                    let _ = argon_ir::passes::optimize_module(&mut ir);
-                }
-                codegen.generate(&ir)
-            }
-        }
-        .map_err(|e| self.simple_error_to_driver(source, source_name, "codegen error", &e))?;
-
-        let source_map = codegen.get_source_map();
-        let declarations = options
-            .declarations
-            .then(|| generate_type_declarations(ast));
-
-        Ok(CompileArtifacts {
-            js: Some(js),
-            wasm: None,
-            wat: None,
-            wasm_loader_js: None,
-            wasm_host_js: None,
-            source_map,
-            declarations,
-            native_obj: None,
-            native_asm: None,
-        })
-    }
-
-    #[allow(dead_code)] // TODO: remove once all internal callers migrate to CompilationSession.
-    fn compile_wasm(
-        &self,
-        source: &str,
-        source_name: &str,
-        ast: &SourceFile,
-        options: &CompileOptions,
-    ) -> Result<CompileArtifacts, DriverError> {
-        // Check for unsupported WASM imports
-        self.validate_wasm_imports(source, source_name, ast)?;
-
-        let mut codegen = WasmCodegen::new();
-        let mut builder = IrBuilder::new();
-        let mut ir = builder
-            .build(ast)
-            .map_err(|e| self.simple_error_to_driver(source, source_name, "ir error", &e))?;
-
-        if options.optimize {
-            let _ = argon_ir::passes::optimize_module(&mut ir);
-        }
-
-        let wasm_host_js = self.generate_wasm_host_module_from_ir(source, source_name, &ir)?;
-        let wasm = match options.pipeline {
-            Pipeline::Ast => codegen.generate_from_ast(ast),
-            Pipeline::Ir => codegen.generate(&ir),
-        }
-        .map_err(|e| self.simple_error_to_driver(source, source_name, "codegen error", &e))?;
-
-        let wat = options
-            .emit_wat
-            .then(|| wasmprinter::print_bytes(&wasm).ok())
-            .flatten();
-
-        Ok(CompileArtifacts {
-            js: None,
-            wasm: Some(wasm),
-            wat,
-            wasm_loader_js: Some(self.generate_wasm_loader("__WASM_FILE__", "__HOST_FILE__")),
-            wasm_host_js: Some(wasm_host_js),
-            source_map: None,
-            declarations: None,
-            native_obj: None,
-            native_asm: None,
-        })
-    }
-
-    #[allow(dead_code)] // TODO: remove once all internal callers migrate to CompilationSession.
-    fn compile_native(
-        &self,
-        source: &str,
-        source_name: &str,
-        ast: &SourceFile,
-        options: &CompileOptions,
-    ) -> Result<CompileArtifacts, DriverError> {
-        let triple = match &options.target_triple {
-            Some(t) => TargetTriple::parse(t).map_err(|e| {
-                self.simple_error_to_driver(source, source_name, "target error", &e)
-            })?,
-            None => TargetTriple::host(),
-        };
-
-        let mut builder = IrBuilder::new();
-        let mut ir = builder
-            .build(ast)
-            .map_err(|e| self.simple_error_to_driver(source, source_name, "ir error", &e))?;
-
-        if options.optimize {
-            let _ = argon_ir::passes::optimize_module(&mut ir);
-        }
-
-        let codegen = NativeCodegen::new(triple).with_opt_level(options.native_opt_level);
-        let obj_bytes = codegen.generate(&ir).map_err(|e| {
-            self.simple_error_to_driver(source, source_name, "native codegen error", &e)
-        })?;
-
-        Ok(CompileArtifacts {
-            js: None,
-            wasm: None,
-            wat: None,
-            wasm_loader_js: None,
-            wasm_host_js: None,
-            source_map: None,
-            declarations: None,
-            native_obj: Some(obj_bytes),
-            native_asm: None,
-        })
     }
 
     pub(crate) fn generate_wasm_host_module_from_ir(
@@ -857,9 +778,11 @@ mod tests {
         .unwrap();
 
         let session = CompilationSession::new();
-        let first = session.project_files(&main_path).unwrap();
-        assert_eq!(first.len(), 1);
+        // Missing deps now produce an error instead of being silently skipped.
+        let first = session.project_files(&main_path);
+        assert!(first.is_err(), "should error when dep.arg is missing");
 
+        // Once the dep appears, the project graph should resolve.
         std::fs::write(&dep_path, "export const answer: i32 = 42;\n").unwrap();
 
         let second = session.project_files(&main_path).unwrap();
@@ -900,5 +823,128 @@ mod tests {
         let first_paths: Vec<_> = first.files.iter().map(|(path, _)| path.clone()).collect();
         let second_paths: Vec<_> = second.files.iter().map(|(path, _)| path.clone()).collect();
         assert_eq!(first_paths, second_paths);
+    }
+
+    #[test]
+    fn check_project_fails_on_missing_relative_module() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let main_path = temp_dir.path().join("main.arg");
+        std::fs::write(
+            &main_path,
+            "from \"./missing\" import { foo };\nconst x = foo();\n",
+        )
+        .unwrap();
+
+        let session = CompilationSession::new();
+        let result = session.check_project(&main_path);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("not found"),
+            "Expected 'not found' error, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn check_project_fails_on_missing_export() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dep_path = temp_dir.path().join("dep.arg");
+        let main_path = temp_dir.path().join("main.arg");
+
+        std::fs::write(&dep_path, "export const answer: i32 = 42;\n").unwrap();
+        std::fs::write(
+            &main_path,
+            "from \"./dep\" import { nonexistent };\nconst x = nonexistent;\n",
+        )
+        .unwrap();
+
+        let session = CompilationSession::new();
+        let result = session.check_project(&main_path);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("not exported"),
+            "Expected 'not exported' error, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn check_project_succeeds_with_valid_imports() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dep_path = temp_dir.path().join("dep.arg");
+        let main_path = temp_dir.path().join("main.arg");
+
+        std::fs::write(
+            &dep_path,
+            "export function greet(name: string): string { return name; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &main_path,
+            "from \"./dep\" import { greet };\nconst msg = greet(\"world\");\n",
+        )
+        .unwrap();
+
+        let session = CompilationSession::new();
+        let result = session.check_project(&main_path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn check_project_validates_exported_declaration_type_errors() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let main_path = temp_dir.path().join("main.arg");
+        std::fs::write(
+            &main_path,
+            "export function add(a: i32, b: i32): i32 { return a + b; }\nconst x = add(1, 2);\n",
+        )
+        .unwrap();
+
+        let session = CompilationSession::new();
+        // Should succeed — exported function is well-typed
+        let result = session.check_project(&main_path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_no_async_rejects_async_function() {
+        let compiler = Compiler::new();
+        let ast = compiler
+            .parse(
+                "async function fetchData(): Future<string> { return \"hello\"; }\n",
+                "test.arg",
+            )
+            .unwrap();
+        let result = compiler.validate_no_async(&ast);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("async"));
+    }
+
+    #[test]
+    fn validate_no_async_rejects_std_async_import() {
+        let compiler = Compiler::new();
+        let ast = compiler
+            .parse(
+                "from \"std:async\" import { spawn, sleep };\nconst x: i32 = 1;\n",
+                "test.arg",
+            )
+            .unwrap();
+        let result = compiler.validate_no_async(&ast);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("std:async"));
+    }
+
+    #[test]
+    fn validate_no_async_allows_synchronous_code() {
+        let compiler = Compiler::new();
+        let ast = compiler
+            .parse("function hello(): string { return \"hi\"; }\n", "test.arg")
+            .unwrap();
+        let result = compiler.validate_no_async(&ast);
+        assert!(result.is_ok());
     }
 }

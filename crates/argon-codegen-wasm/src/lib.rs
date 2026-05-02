@@ -599,8 +599,10 @@ impl<'a> ModuleLowerer<'a> {
                 wasm_fn.instruction(&Instruction::LocalSet(ctx.bb_local));
             }
             Terminator::EnumMatch { .. } => {
-                // Async state machine enum match — not yet supported in WASM codegen
-                wasm_fn.instruction(&Instruction::Unreachable);
+                return Err(CodegenError::Unsupported(
+                    "async state machine enum match is not supported for the WASM target"
+                        .to_string(),
+                ));
             }
         }
 
@@ -1350,10 +1352,24 @@ impl<'a> ModuleLowerer<'a> {
                     ctx.try_depth -= 1;
                 }
             }
-            // Async state machine instructions — not used in WASM codegen (async lowering is skipped)
-            IrInstruction::EnumConstruct { .. }
-            | IrInstruction::EnumField { .. }
-            | IrInstruction::EnumMutate { .. } => {}
+            IrInstruction::EnumConstruct { .. } => {
+                return Err(CodegenError::Unsupported(
+                    "enum/async state machine construction is not supported for the WASM target"
+                        .to_string(),
+                ));
+            }
+            IrInstruction::EnumField { .. } => {
+                return Err(CodegenError::Unsupported(
+                    "enum/async state machine field access is not supported for the WASM target"
+                        .to_string(),
+                ));
+            }
+            IrInstruction::EnumMutate { .. } => {
+                return Err(CodegenError::Unsupported(
+                    "enum/async state machine mutation is not supported for the WASM target"
+                        .to_string(),
+                ));
+            }
         }
         Ok(())
     }
