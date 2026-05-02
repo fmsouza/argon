@@ -1,0 +1,19 @@
+case("math", (runner) => {
+  runner.when("adds correctly", (assert) => {
+    assert.equals(1 + 1, 2);
+  });
+
+  runner.when("passes truth check", (assert) => {
+    assert.truthy(true);
+  });
+});
+
+case("strings", (runner) => {
+  runner.when("concatenates", (assert) => {
+    assert.equals("hello" + " world", "hello world");
+  });
+
+  runner.skip("unicode handling", (assert) => {
+    assert.equals("cafe", "café");
+  });
+});

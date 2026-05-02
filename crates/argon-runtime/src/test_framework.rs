@@ -31,7 +31,7 @@ pub(crate) struct TestContext {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum TestOutcome {
+pub enum TestOutcome {
     Pass {
         name: String,
         suite_name: String,
@@ -68,7 +68,7 @@ impl TestOutcome {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct TestResults {
+pub struct TestResults {
     pub outcomes: Vec<TestOutcome>,
     pub total_suites: usize,
     pub total_tests: usize,
@@ -82,10 +82,25 @@ pub(crate) struct TestResults {
 pub(crate) fn make_assert_object() -> Value {
     let mut methods = HashMap::new();
     for method in &[
-        "equals", "notEquals", "deepEquals", "truthy", "falsy",
-        "throws", "notThrows", "isString", "isNumber", "isBoolean",
-        "isArray", "isObject", "isNull", "isUndefined",
-        "greaterThan", "lessThan", "approximately", "contains", "hasKey",
+        "equals",
+        "notEquals",
+        "deepEquals",
+        "truthy",
+        "falsy",
+        "throws",
+        "notThrows",
+        "isString",
+        "isNumber",
+        "isBoolean",
+        "isArray",
+        "isObject",
+        "isNull",
+        "isUndefined",
+        "greaterThan",
+        "lessThan",
+        "approximately",
+        "contains",
+        "hasKey",
     ] {
         methods.insert(
             method.to_string(),
@@ -101,7 +116,14 @@ pub(crate) fn make_assert_object() -> Value {
 /// Native function names encode the suite index for dispatch.
 pub(crate) fn make_runner_object(suite_idx: usize) -> Value {
     let mut methods = HashMap::new();
-    for method in &["when", "skip", "beforeEach", "afterEach", "beforeAll", "afterAll"] {
+    for method in &[
+        "when",
+        "skip",
+        "beforeEach",
+        "afterEach",
+        "beforeAll",
+        "afterAll",
+    ] {
         methods.insert(
             method.to_string(),
             Value::NativeFunction(NativeFunction {
@@ -129,7 +151,8 @@ pub(crate) fn handle_runner_method(
                 Some(Value::String(s)) => s.clone(),
                 _ => {
                     return Err(RuntimeError::TypeError(format!(
-                        "runner.{}: expected string name", method
+                        "runner.{}: expected string name",
+                        method
                     )))
                 }
             };
@@ -137,7 +160,8 @@ pub(crate) fn handle_runner_method(
                 Some(Value::Function(f)) => f.clone(),
                 _ => {
                     return Err(RuntimeError::TypeError(format!(
-                        "runner.{}: expected function callback", method
+                        "runner.{}: expected function callback",
+                        method
                     )))
                 }
             };
