@@ -50,7 +50,7 @@ pub enum TestOutcome {
 }
 
 impl TestOutcome {
-    pub(crate) fn suite_name(&self) -> &str {
+    pub fn suite_name(&self) -> &str {
         match self {
             TestOutcome::Pass { suite_name, .. }
             | TestOutcome::Fail { suite_name, .. }
@@ -58,7 +58,7 @@ impl TestOutcome {
         }
     }
 
-    pub(crate) fn test_name(&self) -> &str {
+    pub fn test_name(&self) -> &str {
         match self {
             TestOutcome::Pass { name, .. }
             | TestOutcome::Fail { name, .. }

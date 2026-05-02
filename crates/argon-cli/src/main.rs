@@ -673,18 +673,19 @@ fn test(
         if let Some(ref pattern) = filter {
             let p = pattern.to_lowercase();
             results.outcomes.retain(|o| {
-                let (suite, name) = match o {
-                    TestOutcome::Pass { name, suite_name, .. } => (suite_name, name),
-                    TestOutcome::Fail { name, suite_name, .. } => (suite_name, name),
-                    TestOutcome::Skip { name, suite_name } => (suite_name, name),
-                };
-                format!("{} > {}", suite, name).to_lowercase().contains(&p)
+                format!("{} > {}", o.suite_name(), o.test_name())
+                    .to_lowercase()
+                    .contains(&p)
             });
             // Recompute counts after filtering
             results.total_tests = results.outcomes.len();
             results.passed = results.outcomes.iter().filter(|o| matches!(o, TestOutcome::Pass { .. })).count();
             results.failed = results.outcomes.iter().filter(|o| matches!(o, TestOutcome::Fail { .. })).count();
             results.skipped = results.outcomes.iter().filter(|o| matches!(o, TestOutcome::Skip { .. })).count();
+            results.total_suites = results.outcomes.iter()
+                .map(|o| o.suite_name())
+                .collect::<std::collections::HashSet<_>>()
+                .len();
         }
 
         if verbose && results.total_suites == 0 {
