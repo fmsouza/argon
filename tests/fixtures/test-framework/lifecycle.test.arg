@@ -1,0 +1,21 @@
+case("lifecycle", function(runner: any): any {
+  runner.beforeAll(function(assert: any): any {
+  });
+
+  runner.beforeEach(function(assert: any): any {
+  });
+
+  runner.afterEach(function(assert: any): any {
+  });
+
+  runner.afterAll(function(assert: any): any {
+  });
+
+  runner.when("first test", function(assert: any): any {
+    assert.equals(1, 1);
+  });
+
+  runner.when("second test", function(assert: any): any {
+    assert.equals(2, 2);
+  });
+});

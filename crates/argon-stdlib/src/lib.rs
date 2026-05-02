@@ -20,13 +20,16 @@ pub fn resolve_std_module(name: &str) -> Option<&'static str> {
         "http" => Some(include_str!("../stdlib/http.arg")),
         "ws" => Some(include_str!("../stdlib/ws.arg")),
         "async" => Some(include_str!("../stdlib/async.arg")),
+        "test" => Some(include_str!("../stdlib/test.arg")),
         _ => None,
     }
 }
 
 /// List all available `std:*` module names.
 pub fn available_modules() -> &'static [&'static str] {
-    &["io", "math", "error", "fs", "net", "http", "ws", "async"]
+    &[
+        "io", "math", "error", "fs", "net", "http", "ws", "async", "test",
+    ]
 }
 
 #[cfg(test)]
@@ -106,6 +109,16 @@ mod tests {
     }
 
     #[test]
+    fn resolves_test_module() {
+        let src = resolve_std_module("test").expect("test module should exist");
+        assert!(src.contains("struct Runner"));
+        assert!(src.contains("struct Assert"));
+        assert!(src.contains("function case("));
+        assert!(src.contains("when(name:"));
+        assert!(src.contains("beforeEach"));
+    }
+
+    #[test]
     fn unknown_module_returns_none() {
         assert!(resolve_std_module("nonexistent").is_none());
     }
@@ -121,5 +134,6 @@ mod tests {
         assert!(mods.contains(&"http"));
         assert!(mods.contains(&"ws"));
         assert!(mods.contains(&"async"));
+        assert!(mods.contains(&"test"));
     }
 }

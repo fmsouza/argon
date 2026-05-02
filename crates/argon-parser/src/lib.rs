@@ -2813,7 +2813,7 @@ impl Parser {
             return self.parse_template_literal();
         }
 
-        if self.match_one(&[TokenKind::Identifier]) {
+        if self.match_one(&[TokenKind::Identifier, TokenKind::Case]) {
             let span = self.previous().span.clone();
             let sym = self.source[span.clone()].to_string();
             return Ok(Expr::Identifier(Ident { sym, span }));
