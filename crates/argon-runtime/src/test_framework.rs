@@ -136,7 +136,7 @@ pub(crate) fn make_runner_object(suite_idx: usize) -> Value {
 
 /// Handle a Runner method call during registration.
 pub(crate) fn handle_runner_method(
-    suites: &mut Vec<TestSuite>,
+    suites: &mut [TestSuite],
     suite_idx: usize,
     method: &str,
     args: &[Value],

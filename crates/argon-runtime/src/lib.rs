@@ -3168,36 +3168,38 @@ impl Runtime {
             "greaterThan" => {
                 let a = to_num(args, 0, "greaterThan")?;
                 let b = to_num(args, 1, "greaterThan")?;
-                if !(a > b) {
+                if a > b {
+                    Ok(Value::Undefined)
+                } else {
                     Err(RuntimeError::Thrown(format!(
                         "expected {} > {}{}",
                         a,
                         b,
                         optional_msg(2)
                     )))
-                } else {
-                    Ok(Value::Undefined)
                 }
             }
             "lessThan" => {
                 let a = to_num(args, 0, "lessThan")?;
                 let b = to_num(args, 1, "lessThan")?;
-                if !(a < b) {
+                if a < b {
+                    Ok(Value::Undefined)
+                } else {
                     Err(RuntimeError::Thrown(format!(
                         "expected {} < {}{}",
                         a,
                         b,
                         optional_msg(2)
                     )))
-                } else {
-                    Ok(Value::Undefined)
                 }
             }
             "approximately" => {
                 let a = to_num(args, 0, "approximately")?;
                 let b = to_num(args, 1, "approximately")?;
                 let d = to_num(args, 2, "approximately")?;
-                if !((a - b).abs() < d) {
+                if (a - b).abs() < d {
+                    Ok(Value::Undefined)
+                } else {
                     Err(RuntimeError::Thrown(format!(
                         "expected {} within {} of {}{}",
                         a,
@@ -3205,8 +3207,6 @@ impl Runtime {
                         b,
                         optional_msg(3)
                     )))
-                } else {
-                    Ok(Value::Undefined)
                 }
             }
             "contains" => {

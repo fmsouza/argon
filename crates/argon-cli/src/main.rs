@@ -719,7 +719,7 @@ fn test(
         let mut results = runtime.run_all_suites();
 
         // Apply filter
-        if let Some(ref pattern) = filter {
+        if let Some(pattern) = filter {
             let p = pattern.to_lowercase();
             results.outcomes.retain(|o| {
                 format!("{} > {}", o.suite_name(), o.test_name())
